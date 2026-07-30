@@ -60,6 +60,8 @@ export interface DriveComment {
   anchor?: string;
   createdTime?: string;
   resolved?: boolean;
+  /** The document text the comment is anchored to (`value` is the highlight). */
+  quotedFileContent?: { mimeType?: string; value?: string };
   replies?: DriveReply[];
 }
 
@@ -169,19 +171,30 @@ export class GoogleDocsClient extends GoogleApiClient {
    *
    * @param docIdInput - Document ID or full Docs URL
    * @param requests - Docs API `Request` objects
-   * @returns The batchUpdate response
+   * @param writeMode - `"EDIT"` (default) applies edits directly; `"SUGGEST"`
+   *   applies them as tracked Google Docs suggestions the user accepts/rejects
+   *   in the editor. `SUGGEST` is a Google Workspace Developer Preview feature —
+   *   accounts not in the preview program will get a 400 back.
+   * @returns The batchUpdate response (includes `suggestionResponse` when
+   *   `writeMode` is `SUGGEST`)
    * @throws If any request is invalid
    * @example
    * ```ts
    * await docs.batchUpdate("<docId>", [{ insertText: { location: { index: 1 }, text: "Hi" } }]);
    * ```
    */
-  async batchUpdate<T = unknown>(docIdInput: string, requests: DocsRequest[]): Promise<T> {
+  async batchUpdate<T = unknown>(
+    docIdInput: string,
+    requests: DocsRequest[],
+    writeMode?: "EDIT" | "SUGGEST",
+  ): Promise<T> {
     const docId = extractGoogleId(docIdInput);
     if (!requests || requests.length === 0) return {} as T;
     return this.request<T>(`${DOCS_BASE}/documents/${docId}:batchUpdate`, {
       method: "POST",
-      body: { requests },
+      // `writeMode` is a top-level sibling of `requests` on the batchUpdate body
+      // (Developer Preview). Omit it entirely for normal edits.
+      body: writeMode ? { requests, writeMode } : { requests },
       scopes: [GoogleScope.Docs],
     });
   }
@@ -434,7 +447,7 @@ export class GoogleDocsClient extends GoogleApiClient {
       {
         query: {
           fields:
-            "comments(id,content,anchor,createdTime,resolved,replies(id,content,createdTime,action))",
+            "comments(id,content,anchor,createdTime,resolved,quotedFileContent,replies(id,content,createdTime,action))",
           includeDeleted: "false",
         },
         scopes: [GoogleScope.Drive],
@@ -456,7 +469,8 @@ export class GoogleDocsClient extends GoogleApiClient {
     const docId = extractGoogleId(docIdInput);
     return this.request<DriveComment>(`${DRIVE_BASE}/files/${docId}/comments/${commentId}`, {
       query: {
-        fields: "id,content,anchor,createdTime,resolved,replies(id,content,createdTime,action)",
+        fields:
+          "id,content,anchor,createdTime,resolved,quotedFileContent,replies(id,content,createdTime,action)",
       },
       scopes: [GoogleScope.Drive],
     });

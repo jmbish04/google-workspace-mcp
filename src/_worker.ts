@@ -35,6 +35,7 @@ import { handleMcpRequest } from "./backend/mcp/server"; // added in Task 14
 import { syncLabelsForAllAccounts } from "./backend/gmail/sync-service";
 import { captureAllAccounts } from "./backend/gmail/capture-service";
 import { purgeOldRenders } from "./backend/docs/browser-render";
+import { sweepComments } from "./backend/docs/comment-collab";
 import { handleGoogleAuth } from "./backend/api/routes/auth-google"; // added in Task 6
 import { handleOAuth } from "./backend/mcp/oauth"; // MCP OAuth authorization server
 
@@ -232,9 +233,14 @@ function makeHandler(): ExportedHandler<Env> {
       }
       return env.ASSETS.fetch(request as any);
     },
-    // Weekly cron (see wrangler.jsonc triggers.crons): reconcile the Gmail
-    // label registry for every signed-in account.
-    async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // Cron (see wrangler.jsonc triggers.crons), branched by pattern:
+    //   - "*/5 * * * *"  @colby-app comment-collaboration sweep.
+    //   - "0 6 * * 1"    weekly Gmail label reconcile + capture + render purge.
+    async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+      if (controller.cron === "*/5 * * * *") {
+        ctx.waitUntil(sweepComments(env).then(() => {}));
+        return;
+      }
       // Reconcile labels, then ingest messages for capture-enabled labels.
       ctx.waitUntil(
         (async () => {

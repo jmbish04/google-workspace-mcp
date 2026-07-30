@@ -18,6 +18,7 @@ import { getDb } from "@/backend/db";
 import { googleDocuments } from "@db/schemas";
 import { checkDocsHealth } from "@/backend/ai/agents/docs/health";
 import { buildDocsTools } from "@/backend/ai/agents/docs/methods/tools";
+import { reviewDoc, sweepComments, type ReviewMode } from "@/backend/docs/comment-collab";
 import docsSkill from "@/backend/ai/agents/skills/docs/SKILL.md?raw";
 
 /**
@@ -40,6 +41,7 @@ export class DocsAgent extends BaseGsuiteAgent {
         { name: "appendText", description: "Append text to a doc", params: "docId, text, account?", returns: "unknown" },
         { name: "replaceAllText", description: "Replace all text", params: "docId, find, replace, account?", returns: "unknown" },
         { name: "listComments", description: "List comments", params: "docId, filter?, account?", returns: "Comment[]" },
+        { name: "reviewDocComments", description: "Run the @colby-app comment-collaboration pass on a doc", params: "docId, mode?, account?", returns: "DocReviewResult" },
       ],
       tools: ["Google Docs API", "Google Drive API"],
     };
@@ -193,6 +195,48 @@ export class DocsAgent extends BaseGsuiteAgent {
   @callable()
   async replyToComment(docId: string, commentId: string, text: string, account: string = "workspace") {
     return this.docsClient(this.resolve(account)).replyToComment(docId, commentId, text);
+  }
+
+  /**
+   * Run the `@colby-app` comment-collaboration pass on one document: reply to
+   * tagged threads, and apply approved edits as native Docs suggestions.
+   *
+   * @param docId   Document ID or URL.
+   * @param mode    `"auto"` (default) lets the model decide comment-vs-suggest;
+   *                `"comment"` forces review-notes-only; `"suggest"` applies
+   *                edits as suggestions directly.
+   * @param account Account selector.
+   */
+  @callable()
+  async reviewDocComments(docId: string, mode: ReviewMode = "auto", account: string = "workspace") {
+    const acct = this.resolve(account);
+    const taskId = await this.recordTask({
+      kind: "docs",
+      title: `Review comments: ${docId}`,
+      status: "running",
+      account: acct,
+      googleFileId: docId,
+    });
+    try {
+      const result = await reviewDoc(this.env, this.docsClient(acct), docId, { mode });
+      await this.recordTask({ id: taskId, kind: "docs", title: `Review comments: ${docId}`, status: "done", account: acct, googleFileId: docId });
+      await this.logTaskEvent(taskId, "artifact", `Reviewed ${result.scanned} comments, actioned ${result.actioned}`, result as unknown as Record<string, unknown>);
+      return result;
+    } catch (error) {
+      await this.recordTask({ id: taskId, kind: "docs", title: `Review comments: ${docId}`, status: "error", account: acct, googleFileId: docId });
+      await this.logTaskEvent(taskId, "error", error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Sweep every authorized account for recently-modified docs carrying open
+   * `@colby-app` comments and review each. This is the 5-minute cron entry
+   * point; it spends zero AI calls when nothing is tagged.
+   */
+  @callable()
+  async sweepDocComments(mode: ReviewMode = "auto") {
+    return sweepComments(this.env, { mode });
   }
 
   /** Probe Docs/Drive connectivity. */
