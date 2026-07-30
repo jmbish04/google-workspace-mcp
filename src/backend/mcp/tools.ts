@@ -45,6 +45,8 @@ import { WorkspaceEventsService } from "./services/workspaceevents";
 import { PeopleService } from "./services/people";
 import { FormsService } from "./services/forms";
 import { queryCorpus } from "@/backend/ai/rag";
+import { GoogleDocsClient } from "@/backend/google";
+import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-collab";
 import type { AssetAction } from "./logging";
 
 export type ToolCtx = { env: Env; sub: string };
@@ -747,6 +749,36 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const r = await new CommentsService(env, acct(sub, a)).resolve(a.fileId, a.commentId, a.content);
       return { result: r, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { commentId: a.commentId, resolved: true } } };
+    },
+  },
+  {
+    name: "comments_review",
+    description:
+      "Run the @colby-app comment-collaboration agent. With `fileId`, reviews that doc's tagged threads now; without it, sweeps recently-modified docs for open call-sign comments. `mode`: 'auto' (model decides comment vs suggest), 'comment' (review notes only), 'suggest' (apply edits as native Docs suggestions). Skips any thread an MCP tool has claimed via comments_claim.",
+    inputSchema: z.object({
+      fileId: z.string().optional(),
+      mode: z.enum(["auto", "comment", "suggest"]).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const mode = a.mode ?? "auto";
+      if (a.fileId) {
+        const docs = new GoogleDocsClient(env, acct(sub, a));
+        const result = await reviewDoc(env, docs, a.fileId, { mode });
+        return { result, asset: { assetType: "drive", googleId: a.fileId, action: "modify" } };
+      }
+      return { result: await sweepComments(env, { mode }) };
+    },
+  },
+  {
+    name: "comments_claim",
+    description:
+      "Claim a comment thread for an external MCP tool by posting the standby marker '<callSign> standby, mcp tool handling'. The worker's @colby-app cron/agent then backs off that thread so your own model can carry the conversation via comments_reply.",
+    inputSchema: z.object({ fileId: z.string(), commentId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const marker = collabConfig(env).standbyMarker;
+      const r = await new CommentsService(env, acct(sub, a)).reply(a.fileId, a.commentId, marker);
+      return { result: r, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { commentId: a.commentId, claimed: true } } };
     },
   },
   // ---- Drive changes (classic watch/list) --------------------------------
