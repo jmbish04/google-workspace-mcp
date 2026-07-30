@@ -21,3 +21,7 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+
+# impeccable per-run caches / local config
+.impeccable/hook.cache.json
+.impeccable/config.local.json

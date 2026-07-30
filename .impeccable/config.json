@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "arial",
+        "createdAt": "2026-07-30T05:28:30.402Z",
+        "reason": "GAS in-editor sidebars should match native Workspace UI, not use a distinctive face"
+      }
+    ]
+  }
+}

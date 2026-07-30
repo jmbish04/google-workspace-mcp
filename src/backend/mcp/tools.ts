@@ -30,6 +30,7 @@ import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/sch
 import { htmlToRequests } from "@/backend/docs/html-to-braille";
 import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
 import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
+import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
 import { rasterizePdf, storeRender } from "@/backend/docs/browser-render";
 import { DriveService } from "./services/drive";
 import { DocsService } from "./services/docs";
@@ -600,6 +601,57 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const p = await new AppsScriptService(env, acct(sub, a)).createProject(a.title, a.parentId);
       return { result: p, asset: { assetType: "script", googleId: p.scriptId, title: a.title, action: "create" } };
+    },
+  },
+  {
+    name: "appscript_bind_doc",
+    description:
+      "Attach a container-bound Apps Script to an EXISTING Doc/Sheet/Slides file and push a ready-to-use template in one step. Creates the bound project on `parentId`, assembles the chosen template plus your `config` (custom menu + questions schema), and writes the code over the REST API — no clasp, no CI. Templates: 'agent-questions' (custom menu + JSON-driven questions sidebar; on submit the answers land in a new Doc tab / Sheet tab / appendix slide depending on the host — the AI follow-up-questions flow), 'webapp' (doGet HTML web app), or legacy 'sidebar'/'chat-sidebar'. Returns scriptId + editor URL. For 'webapp', deploy afterwards with appsscript_deploy. You must have edit access to the target file. Defaults to the signed-in account.",
+    inputSchema: z.object({
+      parentId: z.string().describe("The Doc/Sheet/Slides file ID or URL to bind the script to."),
+      template: z.enum(["agent-questions", "webapp", "sidebar", "chat-sidebar"]),
+      config: z
+        .object({
+          title: z.string(),
+          menu: z
+            .object({ name: z.string().optional(), items: z.array(z.object({ label: z.string(), fn: z.string() })) })
+            .optional(),
+          questions: z
+            .object({
+              title: z.string(),
+              intro: z.string().optional(),
+              outputTitle: z.string().optional(),
+              fields: z.array(
+                z.object({
+                  id: z.string(),
+                  label: z.string(),
+                  type: z.enum(["text", "textarea", "single", "multi"]),
+                  options: z.array(z.string()).optional(),
+                }),
+              ),
+            })
+            .optional(),
+          webapp: z.object({ title: z.string().optional(), intro: z.string().optional() }).optional(),
+        })
+        .describe("Per-doc config: project title, custom menu, questions schema, and/or web-app settings."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const svc = new AppsScriptService(env, acct(sub, a));
+      const project = await svc.createProject(a.config.title, a.parentId);
+      const files = buildTemplate(a.template, a.config as BindConfig);
+      await svc.updateContent(project.scriptId, files);
+      const url = `https://script.google.com/d/${project.scriptId}/edit`;
+      return {
+        result: { scriptId: project.scriptId, url, template: a.template, files: files.map((f) => f.name) },
+        asset: {
+          assetType: "script",
+          googleId: project.scriptId,
+          title: a.config.title,
+          action: "create",
+          detail: { template: a.template, parentId: a.parentId },
+        },
+      };
     },
   },
   {
