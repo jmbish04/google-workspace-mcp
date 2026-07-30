@@ -20,10 +20,11 @@
  * backs off that thread entirely, so an outside model can own the conversation
  * via the plain `comments_*` MCP tools. See `comments_claim`.
  *
- * The whole engine is billing-cheap by design: Google API calls (Drive list +
- * comment list) are free-ish and always run, but the Workers AI model is only
- * ever invoked for a thread that is genuinely actionable. A sweep that finds no
- * tagged, open, awaiting-agent threads spends zero AI calls.
+ * The whole engine is billing-cheap by design: the Drive/Docs REST calls (list
+ * files, list comments) always run but are not Cloudflare-billed — they only
+ * count against Google API quota. The Workers AI model (the billed resource) is
+ * invoked solely for a thread that is genuinely actionable, so a sweep that
+ * finds no tagged, open, awaiting-agent threads spends zero AI calls.
  */
 
 import { generateText } from "ai";
@@ -41,8 +42,8 @@ export const AGENT_REPLY_MARKER = "Colby Agent Update:";
 /** Chars of surrounding document context handed to the model on each side. */
 const CONTEXT_CHARS = 400;
 
-/** Model action for one thread turn. */
-type AgentAction = "COMMENT" | "PROPOSE" | "APPLY" | "SKIP";
+/** Model action for one thread turn (the only values `parseDecision` accepts). */
+type AgentAction = "COMMENT" | "PROPOSE" | "APPLY";
 
 /** Config knobs, all with env-var / default fallbacks. */
 export interface CollabConfig {
