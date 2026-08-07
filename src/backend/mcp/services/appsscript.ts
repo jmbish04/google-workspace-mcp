@@ -58,4 +58,30 @@ export class AppsScriptService {
   async listDeployments(scriptId: string): Promise<unknown> {
     return googleJson(this.env, this.sub, `${BASE}/projects/${scriptId}/deployments`);
   }
+
+  /**
+   * Re-point an EXISTING deployment at a different version — used to update a
+   * standing (API-executable) deployment to freshly-pushed code, or to roll it
+   * back to an earlier version. Leaves the deploymentId stable so callers that
+   * reference it keep working.
+   */
+  async updateDeployment(
+    scriptId: string,
+    deploymentId: string,
+    versionNumber: number,
+    description?: string,
+    manifestFileName = "appsscript",
+  ): Promise<{ deploymentId: string; entryPoints?: unknown[] }> {
+    return googleJson<{ deploymentId: string; entryPoints?: unknown[] }>(
+      this.env,
+      this.sub,
+      `${BASE}/projects/${scriptId}/deployments/${deploymentId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          deploymentConfig: { scriptId, versionNumber, manifestFileName, description: description ?? "Automated update" },
+        }),
+      },
+    );
+  }
 }

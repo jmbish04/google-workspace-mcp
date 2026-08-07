@@ -41,6 +41,7 @@ export * from "./schemas/gmail";
 export * from "./schemas/render-artifacts";
 export * from "./schemas/drive-notifications";
 export * from "./schemas/google-accounts";
+export * from "./schemas/appsscript-deployments";
 
 // ---------------------------------------------------------------------------
 // Agents SDK platform tables (ported from core-gsuite-tools, Phase 2)

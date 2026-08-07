@@ -25,6 +25,8 @@ import { searchGmail } from "@/backend/gmail/search-service";
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
 import { runCodeMode, toolCatalog, apiGuide } from "./code-mode";
+import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
+import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -1562,6 +1564,92 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ scriptId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       return { result: await new AppsScriptService(env, a.as_user ? acct(sub, a) : "sa").listDeployments(a.scriptId) };
+    },
+  },
+  {
+    name: "appscript_deploy_code",
+    description:
+      "Push agent-authored code to a standing Apps Script project and make it runnable: reads the project (preserving the manifest + existing files), merges the new/modified files by name, snapshots an immutable version, and re-points the standing (API-executable) deployment at it — then logs the deployment to D1 for audit/rollback. Omit scriptId to use the acting account's standing project. Namespace file names by use case (e.g. 'UseCaseA_Helper') so extensions don't clobber each other. Execute afterwards with appscript_run. Set createNew:true to mint a fresh deployment instead of updating the standing one.",
+    inputSchema: z.object({
+      useCase: z.string().describe("Short label for this deployment (audit + version description)."),
+      newFiles: z
+        .array(
+          z.object({
+            name: z.string(),
+            type: z.enum(["SERVER_JS", "HTML", "JSON"]),
+            source: z.string(),
+          }),
+        )
+        .min(1)
+        .describe("New or modified files. Use the manifest name 'appsscript' (type JSON) only to change the manifest."),
+      scriptId: z.string().optional().describe("Target project. Omit to use the acting account's standing script."),
+      description: z.string().optional(),
+      deploymentId: z.string().optional().describe("Deployment to update. Omit to use the cached/discovered standing deployment."),
+      createNew: z.boolean().optional().describe("Create a brand-new deployment instead of updating the standing one."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const accountKey = a.as_user ?? sub;
+      const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
+      if (!scriptId) {
+        throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}. Pass scriptId or call appscript_register_standing.`);
+      }
+      const result = await deployMergedVersion(env, acct(sub, a), {
+        scriptId,
+        newFiles: a.newFiles,
+        useCase: a.useCase,
+        description: a.description,
+        deploymentId: a.deploymentId,
+        createNew: a.createNew,
+        account: accountKey,
+      });
+      return { result, asset: { assetType: "script", googleId: scriptId, action: "modify", detail: { versionNumber: result.versionNumber, deploymentId: result.deploymentId } } };
+    },
+  },
+  {
+    name: "appscript_rollback",
+    description:
+      "Roll a standing Apps Script deployment back to an earlier version by re-pointing it — no recompile. Use appscript_deploy_history to find the target versionNumber. Omit scriptId to use the acting account's standing project.",
+    inputSchema: z.object({
+      versionNumber: z.number().int().min(1),
+      scriptId: z.string().optional(),
+      deploymentId: z.string().optional(),
+      description: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const accountKey = a.as_user ?? sub;
+      const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
+      if (!scriptId) throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}.`);
+      const result = await rollbackDeployment(env, acct(sub, a), {
+        scriptId,
+        versionNumber: a.versionNumber,
+        deploymentId: a.deploymentId,
+        description: a.description,
+        account: accountKey,
+      });
+      return { result, asset: { assetType: "script", googleId: scriptId, action: "modify", detail: { rollbackTo: a.versionNumber } } };
+    },
+  },
+  {
+    name: "appscript_deploy_history",
+    description: "List the D1 deployment/rollback audit log for an Apps Script project (newest version first), for reviewing past variants and picking a rollback target. Omit scriptId to use the acting account's standing project.",
+    inputSchema: z.object({ scriptId: z.string().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const accountKey = a.as_user ?? sub;
+      const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
+      if (!scriptId) throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}.`);
+      return { result: { scriptId, history: await deploymentHistory(env, scriptId) } };
+    },
+  },
+  {
+    name: "appscript_register_standing",
+    description: "Register (or override) the standing Apps Script project — and optionally its deployment id — for an account, so appscript_deploy_code/rollback can be called without a scriptId. Defaults the account to the acting identity.",
+    inputSchema: z.object({ scriptId: z.string(), deploymentId: z.string().optional(), account: z.string().email().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const accountKey = a.account ?? a.as_user ?? sub;
+      await setStandingScript(env, accountKey, a.scriptId, a.deploymentId);
+      return { result: { ok: true, account: accountKey, scriptId: a.scriptId, deploymentId: a.deploymentId ?? null } };
     },
   },
   {
