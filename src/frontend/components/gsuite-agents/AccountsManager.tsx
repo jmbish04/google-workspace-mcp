@@ -24,7 +24,6 @@ import {
   CheckCircle2,
   Plus,
   RefreshCw,
-  ShieldCheck,
   Star,
   Trash2,
   Users,
@@ -77,15 +76,8 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
-function kindBadge(kind: GoogleAccount["kind"]) {
-  if (kind === "workspace_dwd") {
-    return (
-      <Badge variant="secondary" className="gap-1">
-        <ShieldCheck className="size-3" />
-        Workspace (DWD)
-      </Badge>
-    );
-  }
+function kindBadge() {
+  // DWD is gone — every account authenticates via OAuth.
   return (
     <Badge variant="outline" className="gap-1">
       OAuth
@@ -341,13 +333,13 @@ export function AccountsManager() {
                       </span>
                       {account.isDefault ? (
                         <Badge className="gap-1">
-                          <Star className="size-3" />
+                          <Star className="size-3 fill-yellow-400 text-yellow-400" />
                           Default
                         </Badge>
                       ) : null}
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      {kindBadge(account.kind)}
+                      {kindBadge()}
                       {statusBadge(account.status)}
                       {account.label ? (
                         <span className="text-xs text-muted-foreground">{account.label}</span>
