@@ -7,6 +7,8 @@
  */
 import { getSecret } from "../utils/secrets";
 import { getDwdAccessToken, getServiceAccountAccessToken } from "./dwd";
+import { getOAuthAccessToken, hasOAuthRefreshToken } from "../auth/oauth-google";
+import { API_SCOPES } from "./scopes";
 
 export type GwsUser = {
   sub: string;
@@ -30,11 +32,18 @@ export async function getUser(env: Env, sub: string): Promise<GwsUser | null> {
 }
 
 export async function getAccessToken(env: Env, sub: string): Promise<string> {
-  // Domain-wide delegation: a `dwd:<email>` account ref impersonates that user
-  // via the service account instead of an OAuth refresh token. Passing
-  // `as_user` on a tool call takes this explicit path and always wins.
+  // Explicit `as_user`: a `dwd:<email>` account ref asks to act AS that email.
+  // Prefer a stored per-user OAuth refresh token when one exists — this is the
+  // ONLY path that works for consumer / standalone mailboxes and for any domain
+  // where the service account has no Domain-Wide Delegation grant (DWD returns
+  // `unauthorized_client` there). Fall back to DWD impersonation for Workspace
+  // users that were authorized via an admin DWD grant instead of OAuth consent.
   if (sub.startsWith("dwd:")) {
-    return getDwdAccessToken(env, sub.slice(4));
+    const email = sub.slice(4);
+    if (await hasOAuthRefreshToken(env, email)) {
+      return getOAuthAccessToken(env, email, API_SCOPES);
+    }
+    return getDwdAccessToken(env, email);
   }
 
   // Service-account own identity: reaches any Drive item shared with the SA's

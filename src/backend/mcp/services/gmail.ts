@@ -56,11 +56,53 @@ export class GmailService {
     );
   }
 
-  async send(to: string, subject: string, body: string): Promise<{ id: string }> {
-    const mime = [`To: ${to}`, `Subject: ${subject}`, "Content-Type: text/plain; charset=UTF-8", "", body].join("\r\n");
-    return googleJson<{ id: string }>(this.env, this.sub, `${BASE}/messages/send`, {
+  /**
+   * Send a plain-text email.
+   *
+   * @param opts.from - value for the `From` header (e.g. the impersonated
+   *   account). Only takes effect when the authenticated identity is allowed to
+   *   send as that address (it is when we auth AS that account via OAuth or DWD).
+   * @param opts.replyToMessageId - reply to this message: pulls its
+   *   Message-ID / References / Subject / threadId so the send sets
+   *   In-Reply-To + References and stays in the original thread.
+   * @param opts.threadId - explicit Gmail threadId to attach to (overrides the
+   *   one derived from replyToMessageId).
+   */
+  async send(
+    to: string,
+    subject: string,
+    body: string,
+    opts?: { from?: string; replyToMessageId?: string; threadId?: string },
+  ): Promise<{ id: string; threadId?: string }> {
+    let threadId = opts?.threadId;
+    let finalSubject = subject;
+    const extraHeaders: string[] = [];
+
+    if (opts?.replyToMessageId) {
+      const { headers, threadId: srcThread } = await this.getMessageHeaders(opts.replyToMessageId);
+      if (!threadId) threadId = srcThread;
+      const messageIdHeader = headers["message-id"] ?? "";
+      const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
+      if (messageIdHeader) extraHeaders.push(`In-Reply-To: ${messageIdHeader}`);
+      if (references) extraHeaders.push(`References: ${references}`);
+      // Preserve the original subject with a single "Re:" prefix when the caller
+      // didn't override it (an empty subject means "use the thread's subject").
+      if (!subject.trim()) {
+        const orig = headers["subject"] ?? "";
+        finalSubject = /^re:/i.test(orig.trim()) ? orig : `Re: ${orig}`;
+      }
+    }
+
+    const lines = [`To: ${to}`];
+    if (opts?.from) lines.push(`From: ${opts.from}`);
+    lines.push(`Subject: ${finalSubject}`, ...extraHeaders, "Content-Type: text/plain; charset=UTF-8", "", body);
+    const mime = lines.join("\r\n");
+
+    const payload: { raw: string; threadId?: string } = { raw: base64Url(mime) };
+    if (threadId) payload.threadId = threadId;
+    return googleJson<{ id: string; threadId?: string }>(this.env, this.sub, `${BASE}/messages/send`, {
       method: "POST",
-      body: JSON.stringify({ raw: base64Url(mime) }),
+      body: JSON.stringify(payload),
     });
   }
 

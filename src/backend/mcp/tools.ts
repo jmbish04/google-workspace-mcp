@@ -73,7 +73,9 @@ const asUser = {
     .string()
     .email()
     .optional()
-    .describe("Optional Workspace email to act as via domain-wide delegation. Omit to use the signed-in account (default)."),
+    .describe(
+      "Optional email to act as. Uses a stored per-user OAuth refresh token for that account when one exists (works for consumer/standalone mailboxes), otherwise falls back to Workspace domain-wide delegation. Omit to use the signed-in account (default).",
+    ),
 };
 
 /** Resolve the account ref for a call: DWD impersonation, or the OAuth caller. */
@@ -546,11 +548,35 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "gmail_send",
-    description: "Send a plain-text email immediately. Prefer gmail_create_draft when a human should review first.",
-    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string(), ...asUser }),
+    description:
+      "Send a plain-text email immediately. Pass replyToMessageId (or threadId) to reply within an existing thread — the send sets In-Reply-To/References and stays in that thread instead of starting a new one. Prefer gmail_create_draft when a human should review first.",
+    inputSchema: z.object({
+      to: z.string().email(),
+      subject: z.string(),
+      body: z.string(),
+      replyToMessageId: z
+        .string()
+        .optional()
+        .describe("Reply to this message id: sets In-Reply-To/References and keeps the reply in the original thread."),
+      threadId: z.string().optional().describe("Explicit Gmail threadId to attach the message to (overrides replyToMessageId's thread)."),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body);
-      return { result: sent, asset: { assetType: "gmail", googleId: sent.id, title: a.subject, action: "create", detail: { to: a.to } } };
+      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body, {
+        from: a.as_user,
+        replyToMessageId: a.replyToMessageId,
+        threadId: a.threadId,
+      });
+      return {
+        result: sent,
+        asset: {
+          assetType: "gmail",
+          googleId: sent.id,
+          title: a.subject,
+          action: "create",
+          detail: { to: a.to, ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
+        },
+      };
     },
   },
   {
