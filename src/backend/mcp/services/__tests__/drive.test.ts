@@ -113,7 +113,7 @@ describe("DriveService.getPermissions", () => {
     expect(out.permissions[0].id).toBe("p1");
     const url = fetchSpy.mock.calls[fetchSpy.mock.calls.length - 1][0] as string;
     expect(url).toContain("/files/f1/permissions");
-    expect(decodeURIComponent(url)).toContain("permissions(id,type,role,emailAddress,displayName)");
+    expect(decodeURIComponent(url)).toContain("permissions(id,type,role,emailAddress,domain,displayName,allowFileDiscovery)");
   });
 });
 

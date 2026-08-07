@@ -22,6 +22,8 @@ import { deconstruct, detectSurface, type BrailleSurface } from "@/backend/brail
 import { syncLabels, syncLabelsForAllAccounts, listCaptureAccounts } from "@/backend/gmail/sync-service";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
 import { searchGmail } from "@/backend/gmail/search-service";
+import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
+import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -209,6 +211,101 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ fileId: z.string(), mimeType: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       return { result: await new DriveService(env, acct(sub, a)).exportFile(a.fileId, a.mimeType), asset: { assetType: "drive", googleId: a.fileId, action: "read", detail: { export: a.mimeType } } };
+    },
+  },
+  {
+    name: "rename_file",
+    description: "Rename a Drive file or folder.",
+    inputSchema: z.object({ fileId: z.string(), name: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const f = await new DriveService(env, acct(sub, a)).updateFile(a.fileId, { name: a.name });
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, title: a.name, action: "update", detail: { rename: a.name } } };
+    },
+  },
+  {
+    name: "move_file",
+    description: "Move a Drive file or folder into a target folder (detaches it from its current parents).",
+    inputSchema: z.object({ fileId: z.string(), targetFolderId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const f = await new DriveService(env, acct(sub, a)).moveFile(a.fileId, a.targetFolderId);
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { movedTo: a.targetFolderId } } };
+    },
+  },
+  {
+    name: "list_folder_children",
+    description: "List the direct children (files + folders) of a Drive folder. Paginated via pageToken.",
+    inputSchema: z.object({ folderId: z.string(), pageToken: z.string().optional(), pageSize: z.number().int().min(1).max(1000).optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      return { result: await new DriveService(env, acct(sub, a)).listChildren(a.folderId, { pageToken: a.pageToken, pageSize: a.pageSize }) };
+    },
+  },
+  {
+    name: "list_folder_recursive",
+    description:
+      "Recursively list every descendant (files + folders) under a Drive folder. Bounded by maxNodes (default 2000); returns truncated:true if the tree is larger.",
+    inputSchema: z.object({ folderId: z.string(), maxNodes: z.number().int().min(1).max(5000).optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const { nodes, truncated } = await walkFolder(new DriveService(env, acct(sub, a)), a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
+      const files = nodes.map((n) => ({ id: n.id, name: n.name, mimeType: n.mimeType, parents: n.parents, webViewLink: n.webViewLink }));
+      return { result: { rootId: a.folderId, count: files.length, truncated, files } };
+    },
+  },
+  {
+    name: "delete_permission",
+    description: "Remove a single permission from a Drive file or folder by permissionId (see get_file_permissions).",
+    inputSchema: z.object({ fileId: z.string(), permissionId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      await new DriveService(env, acct(sub, a)).deletePermission(a.fileId, a.permissionId);
+      return { result: { ok: true }, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { removedPermission: a.permissionId } } };
+    },
+  },
+  {
+    name: "drive_audit_sharing",
+    description:
+      "Audit sharing across a Drive folder tree (recursive). Returns counts of files/folders shared to 'anyone with the link', and — when auditEmails is given — per-account shared/not-shared counts. Bounded by maxNodes (default 2000; truncated:true if exceeded).",
+    inputSchema: z.object({
+      folderId: z.string(),
+      auditEmails: z.array(z.string().email()).optional().describe("Accounts to report explicit shared/not-shared counts for."),
+      maxNodes: z.number().int().min(1).max(5000).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      const { nodes, truncated } = await walkFolder(drive, a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
+      return { result: auditSharing(a.folderId, nodes, truncated, a.auditEmails ?? []), asset: { assetType: "drive", googleId: a.folderId, action: "read", detail: { audited: nodes.length } } };
+    },
+  },
+  {
+    name: "drive_update_sharing_recursive",
+    description:
+      "Apply sharing changes across a Drive folder tree (recursive, includes the root). Any combination of: addAnyoneWithLink (grant anyone-with-link a role), removeAnyoneWithLink (strip all anyone permissions), removeEmails (revoke accounts), addEmails (grant accounts a role). Bounded by maxNodes; per-node failures are collected, not fatal.",
+    inputSchema: z
+      .object({
+        folderId: z.string(),
+        addAnyoneWithLink: z.enum(["reader", "commenter", "writer"]).optional(),
+        removeAnyoneWithLink: z.boolean().optional(),
+        removeEmails: z.array(z.string().email()).optional(),
+        addEmails: z.array(z.object({ email: z.string().email(), role: z.enum(["reader", "commenter", "writer"]) })).optional(),
+        maxNodes: z.number().int().min(1).max(5000).optional(),
+        ...asUser,
+      })
+      .refine(
+        (v) => v.addAnyoneWithLink || v.removeAnyoneWithLink || (v.removeEmails?.length ?? 0) > 0 || (v.addEmails?.length ?? 0) > 0,
+        { message: "Provide at least one action (addAnyoneWithLink, removeAnyoneWithLink, removeEmails, or addEmails)." },
+      ),
+    async run({ env, sub }, a) {
+      const result = await applySharingActions(
+        new DriveService(env, acct(sub, a)),
+        a.folderId,
+        {
+          addAnyoneWithLink: a.addAnyoneWithLink,
+          removeAnyoneWithLink: a.removeAnyoneWithLink,
+          removeEmails: a.removeEmails,
+          addEmails: a.addEmails,
+        },
+        a.maxNodes ?? DEFAULT_MAX_NODES,
+      );
+      return { result, asset: { assetType: "drive", googleId: a.folderId, action: "modify", detail: { scanned: result.scanned } } };
     },
   },
   // ---- Docs --------------------------------------------------------------
@@ -580,11 +677,64 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: "gmail_get_thread",
-    description: "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model.",
-    inputSchema: z.object({ threadId: z.string(), ...asUser }),
+    name: "gmail_attachments_to_drive",
+    description:
+      "Upload a message's (non-junk) attachments to the acting account's Google Drive and extract their text. Defaults to a folder named after the thread subject under the per-account 'MCP Email Threads' folder (created on first use); pass parentId to target a specific folder instead. Returns each attachment as { filename, driveId, driveUrl, mimetype, size, sha256_hash, doc_text }.",
+    inputSchema: z.object({
+      messageId: z.string(),
+      parentId: z.string().optional().describe("Target Drive folder id. Omit to use the thread-subject folder under 'MCP Email Threads'."),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      return { result: await new GmailService(env, acct(sub, a)).getThread(a.threadId) };
+      const account = acct(sub, a);
+      const gmail = new GmailService(env, account);
+      const raw = await gmail.getRawMessage(a.messageId);
+      const payload = (raw as { payload?: unknown }).payload;
+      const subject = subjectFromPayload(payload) ?? "(no subject)";
+      const { folderId, attachments } = await uploadMessageAttachments(env, account, a.as_user ?? sub, {
+        messageId: a.messageId,
+        payload,
+        subject,
+        parentId: a.parentId,
+        gmail,
+      });
+      return {
+        result: { folderId, attachments },
+        asset: folderId
+          ? { assetType: "drive", googleId: folderId, title: subject, action: "modify", detail: { attachments: attachments.length } }
+          : undefined,
+      };
+    },
+  },
+  {
+    name: "gmail_get_thread",
+    description:
+      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. By default each message's attachments are uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and returned as an attachments[] array of { filename, driveId, doc_text, sha256_hash, mimetype }. Pass includeAttachments:false to skip all Drive writes and return the raw thread only.",
+    inputSchema: z.object({ threadId: z.string(), includeAttachments: z.boolean().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const account = acct(sub, a);
+      const gmail = new GmailService(env, account);
+      const thread = await gmail.getThread(a.threadId);
+      if (a.includeAttachments === false) return { result: thread };
+
+      const accountKey = a.as_user ?? sub;
+      const subject = thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
+      // Resolve the thread folder once (on the first message that has attachments)
+      // and reuse it for the rest, so the whole thread lands in one folder.
+      let folderId: string | undefined;
+      const messages = [];
+      for (const m of thread.messages) {
+        const up = await uploadMessageAttachments(env, account, accountKey, {
+          messageId: m.id,
+          payload: m.payload,
+          subject,
+          folderId,
+          gmail,
+        });
+        if (up.folderId) folderId = up.folderId;
+        messages.push({ ...m, attachments: up.attachments });
+      }
+      return { result: { ...thread, messages, attachmentsFolderId: folderId ?? null } };
     },
   },
   {
