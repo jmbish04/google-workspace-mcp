@@ -22,6 +22,11 @@ import { deconstruct, detectSurface, type BrailleSurface } from "@/backend/brail
 import { syncLabels, syncLabelsForAllAccounts, listCaptureAccounts } from "@/backend/gmail/sync-service";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
 import { searchGmail } from "@/backend/gmail/search-service";
+import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
+import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
+import { runCodeMode, toolCatalog, apiGuide } from "./code-mode";
+import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
+import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -73,7 +78,9 @@ const asUser = {
     .string()
     .email()
     .optional()
-    .describe("Optional Workspace email to act as via domain-wide delegation. Omit to use the signed-in account (default)."),
+    .describe(
+      "Optional email to act as. Uses a stored per-user OAuth refresh token for that account when one exists (works for consumer/standalone mailboxes), otherwise falls back to Workspace domain-wide delegation. Omit to use the signed-in account (default).",
+    ),
 };
 
 /** Resolve the account ref for a call: DWD impersonation, or the OAuth caller. */
@@ -207,6 +214,101 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ fileId: z.string(), mimeType: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       return { result: await new DriveService(env, acct(sub, a)).exportFile(a.fileId, a.mimeType), asset: { assetType: "drive", googleId: a.fileId, action: "read", detail: { export: a.mimeType } } };
+    },
+  },
+  {
+    name: "rename_file",
+    description: "Rename a Drive file or folder.",
+    inputSchema: z.object({ fileId: z.string(), name: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const f = await new DriveService(env, acct(sub, a)).updateFile(a.fileId, { name: a.name });
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, title: a.name, action: "update", detail: { rename: a.name } } };
+    },
+  },
+  {
+    name: "move_file",
+    description: "Move a Drive file or folder into a target folder (detaches it from its current parents).",
+    inputSchema: z.object({ fileId: z.string(), targetFolderId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const f = await new DriveService(env, acct(sub, a)).moveFile(a.fileId, a.targetFolderId);
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { movedTo: a.targetFolderId } } };
+    },
+  },
+  {
+    name: "list_folder_children",
+    description: "List the direct children (files + folders) of a Drive folder. Paginated via pageToken.",
+    inputSchema: z.object({ folderId: z.string(), pageToken: z.string().optional(), pageSize: z.number().int().min(1).max(1000).optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      return { result: await new DriveService(env, acct(sub, a)).listChildren(a.folderId, { pageToken: a.pageToken, pageSize: a.pageSize }) };
+    },
+  },
+  {
+    name: "list_folder_recursive",
+    description:
+      "Recursively list every descendant (files + folders) under a Drive folder. Bounded by maxNodes (default 2000); returns truncated:true if the tree is larger.",
+    inputSchema: z.object({ folderId: z.string(), maxNodes: z.number().int().min(1).max(5000).optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const { nodes, truncated } = await walkFolder(new DriveService(env, acct(sub, a)), a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
+      const files = nodes.map((n) => ({ id: n.id, name: n.name, mimeType: n.mimeType, parents: n.parents, webViewLink: n.webViewLink }));
+      return { result: { rootId: a.folderId, count: files.length, truncated, files } };
+    },
+  },
+  {
+    name: "delete_permission",
+    description: "Remove a single permission from a Drive file or folder by permissionId (see get_file_permissions).",
+    inputSchema: z.object({ fileId: z.string(), permissionId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      await new DriveService(env, acct(sub, a)).deletePermission(a.fileId, a.permissionId);
+      return { result: { ok: true }, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { removedPermission: a.permissionId } } };
+    },
+  },
+  {
+    name: "drive_audit_sharing",
+    description:
+      "Audit sharing across a Drive folder tree (recursive). Returns counts of files/folders shared to 'anyone with the link', and — when auditEmails is given — per-account shared/not-shared counts. Bounded by maxNodes (default 2000; truncated:true if exceeded).",
+    inputSchema: z.object({
+      folderId: z.string(),
+      auditEmails: z.array(z.string().email()).optional().describe("Accounts to report explicit shared/not-shared counts for."),
+      maxNodes: z.number().int().min(1).max(5000).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      const { nodes, truncated } = await walkFolder(drive, a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
+      return { result: auditSharing(a.folderId, nodes, truncated, a.auditEmails ?? []), asset: { assetType: "drive", googleId: a.folderId, action: "read", detail: { audited: nodes.length } } };
+    },
+  },
+  {
+    name: "drive_update_sharing_recursive",
+    description:
+      "Apply sharing changes across a Drive folder tree (recursive, includes the root). Any combination of: addAnyoneWithLink (grant anyone-with-link a role), removeAnyoneWithLink (strip all anyone permissions), removeEmails (revoke accounts), addEmails (grant accounts a role). Bounded by maxNodes; per-node failures are collected, not fatal.",
+    inputSchema: z
+      .object({
+        folderId: z.string(),
+        addAnyoneWithLink: z.enum(["reader", "commenter", "writer"]).optional(),
+        removeAnyoneWithLink: z.boolean().optional(),
+        removeEmails: z.array(z.string().email()).optional(),
+        addEmails: z.array(z.object({ email: z.string().email(), role: z.enum(["reader", "commenter", "writer"]) })).optional(),
+        maxNodes: z.number().int().min(1).max(5000).optional(),
+        ...asUser,
+      })
+      .refine(
+        (v) => v.addAnyoneWithLink || v.removeAnyoneWithLink || (v.removeEmails?.length ?? 0) > 0 || (v.addEmails?.length ?? 0) > 0,
+        { message: "Provide at least one action (addAnyoneWithLink, removeAnyoneWithLink, removeEmails, or addEmails)." },
+      ),
+    async run({ env, sub }, a) {
+      const result = await applySharingActions(
+        new DriveService(env, acct(sub, a)),
+        a.folderId,
+        {
+          addAnyoneWithLink: a.addAnyoneWithLink,
+          removeAnyoneWithLink: a.removeAnyoneWithLink,
+          removeEmails: a.removeEmails,
+          addEmails: a.addEmails,
+        },
+        a.maxNodes ?? DEFAULT_MAX_NODES,
+      );
+      return { result, asset: { assetType: "drive", googleId: a.folderId, action: "modify", detail: { scanned: result.scanned } } };
     },
   },
   // ---- Docs --------------------------------------------------------------
@@ -546,19 +648,96 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "gmail_send",
-    description: "Send a plain-text email immediately. Prefer gmail_create_draft when a human should review first.",
-    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string(), ...asUser }),
+    description:
+      "Send a plain-text email immediately. Pass replyToMessageId (or threadId) to reply within an existing thread — the send sets In-Reply-To/References and stays in that thread instead of starting a new one. Prefer gmail_create_draft when a human should review first.",
+    inputSchema: z.object({
+      to: z.string().email(),
+      subject: z.string(),
+      body: z.string(),
+      replyToMessageId: z
+        .string()
+        .optional()
+        .describe("Reply to this message id: sets In-Reply-To/References and keeps the reply in the original thread."),
+      threadId: z.string().optional().describe("Explicit Gmail threadId to attach the message to (overrides replyToMessageId's thread)."),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body);
-      return { result: sent, asset: { assetType: "gmail", googleId: sent.id, title: a.subject, action: "create", detail: { to: a.to } } };
+      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body, {
+        from: a.as_user,
+        replyToMessageId: a.replyToMessageId,
+        threadId: a.threadId,
+      });
+      return {
+        result: sent,
+        asset: {
+          assetType: "gmail",
+          googleId: sent.id,
+          title: a.subject,
+          action: "create",
+          detail: { to: a.to, ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
+        },
+      };
+    },
+  },
+  {
+    name: "gmail_attachments_to_drive",
+    description:
+      "Upload a message's (non-junk) attachments to the acting account's Google Drive and extract their text. Defaults to a folder named after the thread subject under the per-account 'MCP Email Threads' folder (created on first use); pass parentId to target a specific folder instead. Returns each attachment as { filename, driveId, driveUrl, mimetype, size, sha256_hash, doc_text }.",
+    inputSchema: z.object({
+      messageId: z.string(),
+      parentId: z.string().optional().describe("Target Drive folder id. Omit to use the thread-subject folder under 'MCP Email Threads'."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const account = acct(sub, a);
+      const gmail = new GmailService(env, account);
+      const raw = await gmail.getRawMessage(a.messageId);
+      const payload = (raw as { payload?: unknown }).payload;
+      const subject = subjectFromPayload(payload) ?? "(no subject)";
+      const { folderId, attachments } = await uploadMessageAttachments(env, account, a.as_user ?? sub, {
+        messageId: a.messageId,
+        payload,
+        subject,
+        parentId: a.parentId,
+        gmail,
+      });
+      return {
+        result: { folderId, attachments },
+        asset: folderId
+          ? { assetType: "drive", googleId: folderId, title: subject, action: "modify", detail: { attachments: attachments.length } }
+          : undefined,
+      };
     },
   },
   {
     name: "gmail_get_thread",
-    description: "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model.",
-    inputSchema: z.object({ threadId: z.string(), ...asUser }),
+    description:
+      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. By default each message's attachments are uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and returned as an attachments[] array of { filename, driveId, doc_text, sha256_hash, mimetype }. Pass includeAttachments:false to skip all Drive writes and return the raw thread only.",
+    inputSchema: z.object({ threadId: z.string(), includeAttachments: z.boolean().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new GmailService(env, acct(sub, a)).getThread(a.threadId) };
+      const account = acct(sub, a);
+      const gmail = new GmailService(env, account);
+      const thread = await gmail.getThread(a.threadId);
+      if (a.includeAttachments === false) return { result: thread };
+
+      const accountKey = a.as_user ?? sub;
+      const subject = thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
+      // Resolve the thread folder once (on the first message that has attachments)
+      // and reuse it for the rest, so the whole thread lands in one folder.
+      let folderId: string | undefined;
+      const messages = [];
+      for (const m of thread.messages) {
+        const up = await uploadMessageAttachments(env, account, accountKey, {
+          messageId: m.id,
+          payload: m.payload,
+          subject,
+          folderId,
+          gmail,
+        });
+        if (up.folderId) folderId = up.folderId;
+        messages.push({ ...m, attachments: up.attachments });
+      }
+      return { result: { ...thread, messages, attachmentsFolderId: folderId ?? null } };
     },
   },
   {
@@ -1388,6 +1567,92 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "appscript_deploy_code",
+    description:
+      "Push agent-authored code to a standing Apps Script project and make it runnable: reads the project (preserving the manifest + existing files), merges the new/modified files by name, snapshots an immutable version, and re-points the standing (API-executable) deployment at it — then logs the deployment to D1 for audit/rollback. Omit scriptId to use the acting account's standing project. Namespace file names by use case (e.g. 'UseCaseA_Helper') so extensions don't clobber each other. Execute afterwards with appscript_run. Set createNew:true to mint a fresh deployment instead of updating the standing one.",
+    inputSchema: z.object({
+      useCase: z.string().describe("Short label for this deployment (audit + version description)."),
+      newFiles: z
+        .array(
+          z.object({
+            name: z.string(),
+            type: z.enum(["SERVER_JS", "HTML", "JSON"]),
+            source: z.string(),
+          }),
+        )
+        .min(1)
+        .describe("New or modified files. Use the manifest name 'appsscript' (type JSON) only to change the manifest."),
+      scriptId: z.string().optional().describe("Target project. Omit to use the acting account's standing script."),
+      description: z.string().optional(),
+      deploymentId: z.string().optional().describe("Deployment to update. Omit to use the cached/discovered standing deployment."),
+      createNew: z.boolean().optional().describe("Create a brand-new deployment instead of updating the standing one."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const accountKey = a.as_user ?? sub;
+      const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
+      if (!scriptId) {
+        throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}. Pass scriptId or call appscript_register_standing.`);
+      }
+      const result = await deployMergedVersion(env, acct(sub, a), {
+        scriptId,
+        newFiles: a.newFiles,
+        useCase: a.useCase,
+        description: a.description,
+        deploymentId: a.deploymentId,
+        createNew: a.createNew,
+        account: accountKey,
+      });
+      return { result, asset: { assetType: "script", googleId: scriptId, action: "modify", detail: { versionNumber: result.versionNumber, deploymentId: result.deploymentId } } };
+    },
+  },
+  {
+    name: "appscript_rollback",
+    description:
+      "Roll a standing Apps Script deployment back to an earlier version by re-pointing it — no recompile. Use appscript_deploy_history to find the target versionNumber. Omit scriptId to use the acting account's standing project.",
+    inputSchema: z.object({
+      versionNumber: z.number().int().min(1),
+      scriptId: z.string().optional(),
+      deploymentId: z.string().optional(),
+      description: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const accountKey = a.as_user ?? sub;
+      const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
+      if (!scriptId) throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}.`);
+      const result = await rollbackDeployment(env, acct(sub, a), {
+        scriptId,
+        versionNumber: a.versionNumber,
+        deploymentId: a.deploymentId,
+        description: a.description,
+        account: accountKey,
+      });
+      return { result, asset: { assetType: "script", googleId: scriptId, action: "modify", detail: { rollbackTo: a.versionNumber } } };
+    },
+  },
+  {
+    name: "appscript_deploy_history",
+    description: "List the D1 deployment/rollback audit log for an Apps Script project (newest version first), for reviewing past variants and picking a rollback target. Omit scriptId to use the acting account's standing project.",
+    inputSchema: z.object({ scriptId: z.string().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const accountKey = a.as_user ?? sub;
+      const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
+      if (!scriptId) throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}.`);
+      return { result: { scriptId, history: await deploymentHistory(env, scriptId) } };
+    },
+  },
+  {
+    name: "appscript_register_standing",
+    description: "Register (or override) the standing Apps Script project — and optionally its deployment id — for an account, so appscript_deploy_code/rollback can be called without a scriptId. Defaults the account to the acting identity.",
+    inputSchema: z.object({ scriptId: z.string(), deploymentId: z.string().optional(), account: z.string().email().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const accountKey = a.account ?? a.as_user ?? sub;
+      await setStandingScript(env, accountKey, a.scriptId, a.deploymentId);
+      return { result: { ok: true, account: accountKey, scriptId: a.scriptId, deploymentId: a.deploymentId ?? null } };
+    },
+  },
+  {
     name: "appscript_scaffold",
     description:
       "Overwrite an Apps Script project with a ready-to-use container-bound template: 'sidebar' (custom menu + sidebar shell) or 'chat-sidebar' (chat UI that calls the worker's /api/appscript/ai bridge). After: set Script Properties WORKER_URL + WORKER_KEY, then appsscript_deploy. Defaults to the SA identity.",
@@ -1679,6 +1944,29 @@ export const TOOLS: ToolDef[] = [
     }),
     async run({ env }, a) {
       return { result: { hits: await searchGmail(env, a.query, { account: a.account, topK: a.topK }) } };
+    },
+  },
+  // ---- Code mode ---------------------------------------------------------
+  {
+    name: "code_mode_api",
+    description:
+      "Return the code-mode API: usage guide + the list of tools (name + description) callable as `await tools.<name>(args)` inside code_mode_run. Call this first to discover what's available.",
+    inputSchema: z.object({}),
+    async run() {
+      return { result: { guide: apiGuide(), tools: toolCatalog() } };
+    },
+  },
+  {
+    name: "code_mode_run",
+    description:
+      "Execute a JavaScript snippet in an isolated sandbox (no network, no secrets) that can call any MCP tool via `await tools.<name>(args)`. Chain many calls, transform results, and `return` a final value; use console.log for debug output. Prefer this over many sequential tool calls when orchestrating multi-step work. See code_mode_api for the tool list.",
+    inputSchema: z.object({
+      code: z.string().describe("JavaScript function body. Use `await tools.<name>({...})`, `console.log(...)`, and `return <value>`."),
+      cpuMs: z.number().int().min(1000).max(300000).optional().describe("CPU time budget for the sandbox (default 30000)."),
+      subRequests: z.number().int().min(1).max(1000).optional().describe("Subrequest budget for the sandbox (default 50)."),
+    }),
+    async run({ env, sub }, a) {
+      return { result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }) };
     },
   },
 ];

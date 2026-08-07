@@ -1,10 +1,33 @@
 import { googleFetch, googleJson } from "../googleClient";
 
 export type DriveFile = { id: string; name: string; mimeType: string; webViewLink?: string; modifiedTime?: string };
-export type DrivePermission = { id: string; type: string; role: string; emailAddress?: string; displayName?: string };
+export type DrivePermission = {
+  id: string;
+  type: string;
+  role: string;
+  emailAddress?: string;
+  domain?: string;
+  displayName?: string;
+  /** For `type: "anyone"` / `"domain"`: false ⇒ link-only (not searchable). */
+  allowFileDiscovery?: boolean;
+};
+/** A node (file or folder) returned by a listing, optionally carrying its permissions. */
+export type DriveNode = {
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink?: string;
+  parents?: string[];
+  shared?: boolean;
+  permissions?: DrivePermission[];
+};
+
+export const FOLDER_MIME = "application/vnd.google-apps.folder";
+
 const BASE = "https://www.googleapis.com/drive/v3";
 const UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
 const FIELDS = "files(id,name,mimeType,webViewLink),nextPageToken";
+const PERMISSION_FIELDS = "id,type,role,emailAddress,domain,displayName,allowFileDiscovery";
 
 // Google Docs editor formats can't be downloaded directly; export them to a plain-text-ish equivalent instead.
 const EXPORT_MIME: Record<string, string> = {
@@ -68,7 +91,7 @@ export class DriveService {
   }
 
   /** Convert an Office file (docx/xlsx/pptx) to its Google-native equivalent via copy. */
-  async convertToGoogle(fileId: string, name?: string): Promise<DriveFile> {
+  async convertToGoogle(fileId: string, name?: string, parentId?: string): Promise<DriveFile> {
     const meta = await this.get(fileId);
     const target: Record<string, string> = {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "application/vnd.google-apps.document",
@@ -79,7 +102,7 @@ export class DriveService {
     if (!mimeType) throw new Error(`Not a convertible Office file (mimeType: ${meta.mimeType ?? "unknown"}).`);
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`, {
       method: "POST",
-      body: JSON.stringify({ name: name ?? meta.name, mimeType }),
+      body: JSON.stringify({ name: name ?? meta.name, mimeType, parents: parentId ? [parentId] : undefined }),
     });
   }
 
@@ -145,8 +168,41 @@ export class DriveService {
   }
 
   async getPermissions(fileId: string): Promise<{ permissions: DrivePermission[] }> {
-    const fields = "permissions(id,type,role,emailAddress,displayName)";
+    const fields = `permissions(${PERMISSION_FIELDS})`;
     return googleJson<{ permissions: DrivePermission[] }>(this.env, this.sub, `${BASE}/files/${fileId}/permissions?fields=${encodeURIComponent(fields)}`);
+  }
+
+  /**
+   * List the direct children of a folder. Requests each child's `permissions`
+   * inline so a recursive audit needs one list call per folder instead of an
+   * extra permissions call per file.
+   */
+  async listChildren(
+    folderId: string,
+    opts: { pageToken?: string; pageSize?: number } = {},
+  ): Promise<{ files: DriveNode[]; nextPageToken?: string }> {
+    const fields = `nextPageToken,files(id,name,mimeType,webViewLink,parents,shared,permissions(${PERMISSION_FIELDS}))`;
+    const params = new URLSearchParams({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields,
+      pageSize: String(opts.pageSize ?? 100),
+      spaces: "drive",
+    });
+    if (opts.pageToken) params.set("pageToken", opts.pageToken);
+    return googleJson<{ files: DriveNode[]; nextPageToken?: string }>(this.env, this.sub, `${BASE}/files?${params}`);
+  }
+
+  /** Remove a single permission from a file/folder. */
+  async deletePermission(fileId: string, permissionId: string): Promise<void> {
+    await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/permissions/${permissionId}`, { method: "DELETE" });
+  }
+
+  /** Find a child folder by exact name under a parent, or create it. Returns its id. */
+  async findOrCreateChildFolder(name: string, parentId: string): Promise<string> {
+    const q = `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`;
+    const { files } = await this.search(q, 1);
+    if (files[0]) return files[0].id;
+    return (await this.createFolder(name, parentId)).id;
   }
 
   async share(
@@ -174,6 +230,13 @@ export class DriveService {
       method: "PATCH",
       body: JSON.stringify(opts.name !== undefined ? { name: opts.name } : {}),
     });
+  }
+
+  /** Move a file/folder into `targetFolderId`, detaching it from its current parents. */
+  async moveFile(fileId: string, targetFolderId: string): Promise<DriveFile> {
+    const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?fields=parents`);
+    const removeParents = (meta.parents ?? []).join(",");
+    return this.updateFile(fileId, { addParents: targetFolderId, removeParents: removeParents || undefined });
   }
 
   async exportFile(fileId: string, mimeType: string): Promise<{ content: string; mimeType: string }> {
