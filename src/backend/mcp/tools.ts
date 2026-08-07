@@ -1969,4 +1969,65 @@ export const TOOLS: ToolDef[] = [
       return { result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }) };
     },
   },
+  // ---- Diagnostics -------------------------------------------------------
+  {
+    name: "accounts_health_check",
+    description:
+      "Health-check every configured Google account by making a cheap read call against each Workspace service (Gmail, Drive, Calendar, Contacts, Apps Script). Returns per-account, per-service ok/fail with latency and error messages, plus a summary of how many accounts are fully working. Use to verify which accounts are connected and online. Docs/Sheets/Slides/Forms share Drive's OAuth scope, so a passing Drive check covers their file access too.",
+    inputSchema: z.object({}),
+    async run({ env }) {
+      const accounts = await listCaptureAccounts(env);
+      // Cheap, id-free read per service (each exercises that service's scope).
+      const probes: { service: string; run: (ref: string) => Promise<unknown> }[] = [
+        { service: "gmail", run: (r) => new GmailService(env, r).getProfile() },
+        { service: "drive", run: (r) => new DriveService(env, r).getStorageFree() },
+        { service: "calendar", run: (r) => new CalendarService(env, r).listCalendars() },
+        { service: "contacts", run: (r) => new PeopleService(env, r).getContact("people/me", "names") },
+        { service: "appsscript", run: (r) => new AppsScriptService(env, r).listProcesses() },
+      ];
+      const results = await Promise.all(
+        accounts.map(async ({ email, ref }) => {
+          const services = await Promise.all(
+            probes.map(async ({ service, run }) => {
+              const t = Date.now();
+              try {
+                await run(ref);
+                return { service, status: "ok" as const, latencyMs: Date.now() - t };
+              } catch (e) {
+                return {
+                  service,
+                  status: "fail" as const,
+                  latencyMs: Date.now() - t,
+                  error: e instanceof Error ? e.message : String(e),
+                };
+              }
+            }),
+          );
+          const okCount = services.filter((s) => s.status === "ok").length;
+          return {
+            email,
+            online: okCount > 0,
+            fullyWorking: okCount === services.length,
+            okCount,
+            serviceCount: services.length,
+            services,
+          };
+        }),
+      );
+      const working = results.filter((a) => a.fullyWorking).length;
+      return {
+        result: {
+          checkedAt: new Date().toISOString(),
+          accountCount: results.length,
+          fullyWorkingAccounts: working,
+          summary:
+            results.length === 0
+              ? "No Google accounts are registered/connected."
+              : `${working}/${results.length} account(s) fully working across all probed services.`,
+          accounts: results,
+          note: "Probed services: gmail, drive, calendar, contacts, appsscript. Docs/Sheets/Slides/Forms use the same Drive OAuth scope, so a passing 'drive' check indicates their file access works too.",
+        },
+      };
+    },
+  },
 ];

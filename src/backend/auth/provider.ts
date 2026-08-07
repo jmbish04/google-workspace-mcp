@@ -170,30 +170,19 @@ export interface AuthorizedAccount {
 }
 
 /**
- * List the dynamic account registry from D1 plus the always-present synthetic
- * `workspace` (DWD primary) account.
+ * List the account registry from D1 (real OAuth accounts).
+ *
+ * DWD was dropped (per-account OAuth only), so there is no synthetic
+ * `workspace` account any more — every card is a genuine authorized identity.
  *
  * @param env - Worker env
- * @returns All authorized accounts, with `workspace` first.
+ * @returns All authorized accounts.
  */
 export async function listAuthorizedAccounts(env: Env): Promise<AuthorizedAccount[]> {
   const db = getDb(env);
   const rows = await db.select().from(googleAccounts);
 
-  const hasExplicitDefault = rows.some((r) => r.isDefault && r.status === "active");
-
-  const synthetic: AuthorizedAccount = {
-    email: "workspace",
-    kind: "workspace_dwd",
-    label: `Workspace (DWD — ${env.GOOGLE_WORKSPACE_ACCOUNT_EMAIL ?? env.GOOGLE_USER_TO_IMPERSONATE})`,
-    // Workspace is the default unless another account has explicitly claimed it.
-    isDefault: !hasExplicitDefault,
-    status: "active",
-    scopes: null,
-    authorizedAt: null,
-  };
-
-  const dynamic: AuthorizedAccount[] = rows.map((r) => ({
+  return rows.map((r) => ({
     email: r.email,
     kind: r.kind === "workspace_dwd" ? "workspace_dwd" : "oauth",
     label: r.label,
@@ -202,6 +191,4 @@ export async function listAuthorizedAccounts(env: Env): Promise<AuthorizedAccoun
     scopes: Array.isArray(r.scopesJson) ? (r.scopesJson as string[]) : null,
     authorizedAt: r.authorizedAt ? r.authorizedAt.toISOString() : null,
   }));
-
-  return [synthetic, ...dynamic];
 }
