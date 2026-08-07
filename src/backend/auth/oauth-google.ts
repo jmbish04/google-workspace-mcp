@@ -38,8 +38,10 @@
 import { ALL_GOOGLE_SCOPES } from "@/backend/lib/google-auth";
 import {
   getGoogleOAuthClientId,
-  getGoogleOAuthClientSecret,
+  getGoogleOAuthClientIdForAccount,
+  getGoogleOAuthClientSecretForAccount,
   getSeedPersonalRefreshToken,
+  getSeedRefreshTokenForAccount,
 } from "@/backend/utils/secrets";
 import { getDb } from "@/backend/db";
 import { googleAccounts } from "@db/schemas";
@@ -70,9 +72,11 @@ function accessTokenKey(email: string): string {
  *   an opaque string.
  * @returns The full Google authorization URL to redirect the user to
  */
-export async function buildConsentUrl(env: Env, state: string): Promise<string> {
+export async function buildConsentUrl(env: Env, state: string, email?: string): Promise<string> {
   const params = new URLSearchParams({
-    client_id: await getGoogleOAuthClientId(env),
+    // Use the account's dedicated OAuth client when one is configured (e.g.
+    // justin@126colby.com), else the shared client.
+    client_id: email ? await getGoogleOAuthClientIdForAccount(env, email) : await getGoogleOAuthClientId(env),
     redirect_uri: env.GOOGLE_OAUTH_REDIRECT_URI,
     response_type: "code",
     scope: ALL_GOOGLE_SCOPES.join(" "),
@@ -81,6 +85,8 @@ export async function buildConsentUrl(env: Env, state: string): Promise<string> 
     prompt: "consent",
     state,
   });
+  // Nudge Google to pre-select the intended account on the consent screen.
+  if (email) params.set("login_hint", email);
   return `${GOOGLE_AUTH_URL}?${params.toString()}`;
 }
 
@@ -109,10 +115,14 @@ async function resolveAuthorizedEmail(accessToken: string): Promise<string> {
  * @returns The authorized account email
  * @throws If the exchange fails or no refresh token is returned
  */
-export async function exchangeCodeForTokens(env: Env, code: string): Promise<{ email: string }> {
+export async function exchangeCodeForTokens(env: Env, code: string, accountHint?: string): Promise<{ email: string }> {
+  // When the consent was started for a specific account (label), use that
+  // account's dedicated OAuth client so the code exchanges against the same
+  // client the refresh token will later be refreshed with.
+  const hint = accountHint ?? "";
   const [clientId, clientSecret] = await Promise.all([
-    getGoogleOAuthClientId(env),
-    getGoogleOAuthClientSecret(env),
+    getGoogleOAuthClientIdForAccount(env, hint),
+    getGoogleOAuthClientSecretForAccount(env, hint),
   ]);
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -201,6 +211,14 @@ async function resolveRefreshToken(env: Env, email: string): Promise<string | un
   const stored = await env.SESSIONS.get(refreshTokenKey(email));
   if (stored) return stored;
 
+  // Per-account seed secret (e.g. GOOGLE_OAUTH_REFRESH_TOKEN_JUSTIN_126COLBY_COM),
+  // set from the account's creds JSON before any interactive consent has run.
+  const accountSeed = await getSeedRefreshTokenForAccount(env, email);
+  if (accountSeed) {
+    await env.SESSIONS.put(refreshTokenKey(email), accountSeed);
+    return accountSeed;
+  }
+
   const personalEmail = env.GOOGLE_PERSONAL_ACCOUNT_EMAIL?.toLowerCase();
   if (personalEmail && email.toLowerCase() === personalEmail) {
     const seed = await getSeedPersonalRefreshToken(env);
@@ -259,9 +277,11 @@ export async function getOAuthAccessToken(
     );
   }
 
+  // A refresh token is bound to the client that issued it, so refresh with the
+  // account's dedicated client when one is configured (else the shared client).
   const [clientId, clientSecret] = await Promise.all([
-    getGoogleOAuthClientId(env),
-    getGoogleOAuthClientSecret(env),
+    getGoogleOAuthClientIdForAccount(env, email),
+    getGoogleOAuthClientSecretForAccount(env, email),
   ]);
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",

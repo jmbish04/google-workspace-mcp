@@ -5,10 +5,30 @@
  * access tokens (`gwstok:<sub>`) in the SESSIONS KV namespace, refreshing
  * via Google's token endpoint when the cached token is missing or expiring.
  */
-import { getSecret } from "../utils/secrets";
+import { getSecret, hasDedicatedOAuthClient } from "../utils/secrets";
 import { getDwdAccessToken, getServiceAccountAccessToken } from "./dwd";
 import { getOAuthAccessToken, hasOAuthRefreshToken } from "../auth/oauth-google";
 import { API_SCOPES } from "./scopes";
+
+/**
+ * Accounts that must use OAuth and never fall back to Domain-Wide Delegation.
+ * An account is OAuth-only if it's listed here, named in the
+ * `GOOGLE_OAUTH_ONLY_ACCOUNTS` env (comma-separated), or has a dedicated OAuth
+ * client secret configured. For these, a missing token is a "log in" error
+ * rather than a confusing DWD `unauthorized_client`.
+ */
+const DEFAULT_OAUTH_ONLY = new Set(["justin@126colby.com"]);
+
+async function isOAuthOnlyAccount(env: Env, email: string): Promise<boolean> {
+  const e = email.trim().toLowerCase();
+  if (DEFAULT_OAUTH_ONLY.has(e)) return true;
+  const configured = (env.GOOGLE_OAUTH_ONLY_ACCOUNTS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (configured.includes(e)) return true;
+  return hasDedicatedOAuthClient(env, e);
+}
 
 export type GwsUser = {
   sub: string;
@@ -42,6 +62,14 @@ export async function getAccessToken(env: Env, sub: string): Promise<string> {
     const email = sub.slice(4);
     if (await hasOAuthRefreshToken(env, email)) {
       return getOAuthAccessToken(env, email, API_SCOPES);
+    }
+    // OAuth-only accounts (e.g. justin@126colby.com) never use DWD — surface a
+    // clear "log in" error instead of Google's `unauthorized_client`.
+    if (await isOAuthOnlyAccount(env, email)) {
+      throw new Error(
+        `${email} is configured for OAuth (DWD disabled) but has no stored credentials. ` +
+          `Set its refresh-token secret, or log in at /api/auth/google/oauth/start?label=${encodeURIComponent(email)}.`,
+      );
     }
     return getDwdAccessToken(env, email);
   }

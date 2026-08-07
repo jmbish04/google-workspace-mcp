@@ -151,3 +151,49 @@ export async function getGoogleOAuthClientSecret(env: Env): Promise<string> {
 export async function getSeedPersonalRefreshToken(env: Env): Promise<string | undefined> {
   return getSecret(env, "GOOGLE_PERSONAL_REFRESH_TOKEN");
 }
+
+// ---------------------------------------------------------------------------
+// Per-account OAuth (dedicated client + refresh token per email)
+//
+// Some accounts (e.g. justin@126colby.com) use their OWN Google OAuth client
+// rather than the shared GOOGLE_CLIENT_ID. Those creds are stored as plain
+// Worker secrets (via `wrangler secret put`/`bulk`, NOT the Secrets Store),
+// named with a normalized email suffix:
+//
+//   GOOGLE_OAUTH_CLIENT_ID_<SUFFIX>
+//   GOOGLE_OAUTH_CLIENT_SECRET_<SUFFIX>
+//   GOOGLE_OAUTH_REFRESH_TOKEN_<SUFFIX>   (optional seed)
+//
+// where <SUFFIX> = accountSecretSuffix(email). See scripts/create-account-secrets.mjs.
+// ---------------------------------------------------------------------------
+
+/** Normalize an email to a secret-name suffix, e.g. `justin@126colby.com` → `JUSTIN_126COLBY_COM`. */
+export function accountSecretSuffix(email: string): string {
+  return email
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/** OAuth client id for a specific account, falling back to the shared client. */
+export async function getGoogleOAuthClientIdForAccount(env: Env, email: string): Promise<string> {
+  const perAccount = await getSecret(env, `GOOGLE_OAUTH_CLIENT_ID_${accountSecretSuffix(email)}`);
+  return perAccount ?? (await getGoogleOAuthClientId(env));
+}
+
+/** OAuth client secret for a specific account, falling back to the shared client. */
+export async function getGoogleOAuthClientSecretForAccount(env: Env, email: string): Promise<string> {
+  const perAccount = await getSecret(env, `GOOGLE_OAUTH_CLIENT_SECRET_${accountSecretSuffix(email)}`);
+  return perAccount ?? (await getGoogleOAuthClientSecret(env));
+}
+
+/** Optional seed refresh token for a specific account (set before consent runs). */
+export async function getSeedRefreshTokenForAccount(env: Env, email: string): Promise<string | undefined> {
+  return getSecret(env, `GOOGLE_OAUTH_REFRESH_TOKEN_${accountSecretSuffix(email)}`);
+}
+
+/** Whether an account has a dedicated OAuth client secret configured. */
+export async function hasDedicatedOAuthClient(env: Env, email: string): Promise<boolean> {
+  return Boolean(await getSecret(env, `GOOGLE_OAUTH_CLIENT_SECRET_${accountSecretSuffix(email)}`));
+}

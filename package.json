@@ -28,7 +28,8 @@
     "cf-typegen": "wrangler types",
     "deps:lockfile": "corepack pnpm install --no-frozen-lockfile && wrangler types",
     "deps:update": "corepack pnpm update --latest && corepack pnpm install --no-frozen-lockfile && wrangler types",
-    "secrets": "node scripts/create-worker-secrets.mjs"
+    "secrets": "node scripts/create-worker-secrets.mjs",
+    "secrets:account": "node scripts/create-account-secrets.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.176",

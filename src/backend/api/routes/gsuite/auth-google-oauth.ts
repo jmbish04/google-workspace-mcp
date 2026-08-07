@@ -85,7 +85,9 @@ authGoogleOauthRouter.openapi(
       path: "/",
       maxAge: 600,
     });
-    return c.redirect(await buildConsentUrl(c.env, state), 302);
+    // When `label` is an email, it selects that account's dedicated OAuth client
+    // and pre-fills the consent screen (e.g. ?label=justin@126colby.com).
+    return c.redirect(await buildConsentUrl(c.env, state, label), 302);
   },
 );
 
@@ -128,7 +130,9 @@ authGoogleOauthRouter.openapi(
     }
 
     try {
-      const { email } = await exchangeCodeForTokens(c.env, code);
+      // Pass the label (intended account email) so the exchange uses that
+      // account's dedicated OAuth client, matching the one used at /start.
+      const { email } = await exchangeCodeForTokens(c.env, code, verified.label ?? undefined);
       // Prefer a 302 to the frontend accounts page; HTML fallback below.
       const redirectUrl = `/accounts?added=${encodeURIComponent(email)}`;
       return c.html(

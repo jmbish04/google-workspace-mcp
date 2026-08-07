@@ -12,6 +12,8 @@ import type { GsuiteService } from "@/backend/rpc";
 declare global {
   interface Env {
     SELF_RPC?: GsuiteService;
+    /** Comma-separated emails forced to OAuth (never DWD). Optional var. */
+    GOOGLE_OAUTH_ONLY_ACCOUNTS?: string;
   }
 }
 
