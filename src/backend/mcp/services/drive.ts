@@ -91,7 +91,7 @@ export class DriveService {
   }
 
   /** Convert an Office file (docx/xlsx/pptx) to its Google-native equivalent via copy. */
-  async convertToGoogle(fileId: string, name?: string): Promise<DriveFile> {
+  async convertToGoogle(fileId: string, name?: string, parentId?: string): Promise<DriveFile> {
     const meta = await this.get(fileId);
     const target: Record<string, string> = {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "application/vnd.google-apps.document",
@@ -102,7 +102,7 @@ export class DriveService {
     if (!mimeType) throw new Error(`Not a convertible Office file (mimeType: ${meta.mimeType ?? "unknown"}).`);
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`, {
       method: "POST",
-      body: JSON.stringify({ name: name ?? meta.name, mimeType }),
+      body: JSON.stringify({ name: name ?? meta.name, mimeType, parents: parentId ? [parentId] : undefined }),
     });
   }
 

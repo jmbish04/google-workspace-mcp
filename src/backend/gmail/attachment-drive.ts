@@ -11,6 +11,7 @@
  */
 import { DriveService } from "@/backend/mcp/services/drive";
 import type { GmailService } from "@/backend/mcp/services/gmail";
+import { OFFICE_TO_GOOGLE, exportGoogleAsMarkdown } from "@/backend/drive/office-markdown";
 
 import { keepableAttachments } from "./attachments";
 import { decodeAttachment, hashBytes } from "./attachment-store";
@@ -25,7 +26,11 @@ export interface DriveAttachment {
   mimetype: string;
   size: number;
   sha256_hash: string;
+  /** Extracted text: PDF/image OCR, or Markdown for converted Office files. */
   doc_text: string;
+  /** For Office attachments: the Google-native file created by conversion. */
+  googleDriveId?: string;
+  googleMimeType?: string;
 }
 
 /** Safe Drive file name (mirrors attachment-store's private helper). */
@@ -81,32 +86,47 @@ export async function uploadMessageAttachments(
 
   for (const part of parts) {
     const bytes = decodeAttachment((await opts.gmail.getAttachment(opts.messageId, part.attachmentId)).data);
+    const name = safeName(part.filename || part.attachmentId);
     const [sha256, file] = await Promise.all([
       sha256Hex(bytes),
-      drive.uploadBinary(safeName(part.filename || part.attachmentId), part.mimeType, bytes, folderId),
+      drive.uploadBinary(name, part.mimeType, bytes, folderId),
     ]);
 
     let docText = "";
+    let googleDriveId: string | undefined;
+    let googleMimeType: string | undefined;
+    const office = OFFICE_TO_GOOGLE[part.mimeType];
     try {
-      // ocrAttachment dedups by MD5 against previously OCR'd bytes.
-      docText = (await ocrAttachment(env, {
-        bytes,
-        mimeType: part.mimeType,
-        hash: hashBytes(bytes),
-        filename: part.filename || undefined,
-      })) ?? "";
+      if (office) {
+        // Office file: import the uploaded copy to a Google-native file in the
+        // same folder, then export it as Markdown for doc_text.
+        const converted = await drive.convertToGoogle(file.id, name, folderId);
+        googleDriveId = converted.id;
+        googleMimeType = converted.mimeType;
+        docText = await exportGoogleAsMarkdown(drive, converted.id, office.kind);
+      } else {
+        // ocrAttachment dedups by MD5 against previously OCR'd bytes.
+        docText =
+          (await ocrAttachment(env, {
+            bytes,
+            mimeType: part.mimeType,
+            hash: hashBytes(bytes),
+            filename: part.filename || undefined,
+          })) ?? "";
+      }
     } catch (err) {
       console.error(`[attachment-drive] text extract ${part.filename}:`, err instanceof Error ? err.message : err);
     }
 
     attachments.push({
-      filename: part.filename || safeName(part.attachmentId),
+      filename: part.filename || name,
       driveId: file.id,
       driveUrl: file.webViewLink ?? null,
       mimetype: part.mimeType,
       size: part.size,
       sha256_hash: sha256,
       doc_text: docText,
+      ...(googleDriveId ? { googleDriveId, googleMimeType } : {}),
     });
   }
 

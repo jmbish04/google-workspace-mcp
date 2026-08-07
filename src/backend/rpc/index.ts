@@ -47,6 +47,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { getAgentByName } from "agents";
 
+import { TOOLS } from "@/backend/mcp/tools";
+
 import type { GmailAgent } from "@/backend/ai/agents/gmail";
 import type { DocsAgent } from "@/backend/ai/agents/docs";
 import type { SheetsAgent } from "@/backend/ai/agents/sheets";
@@ -72,6 +74,30 @@ import { agentTasks, taskEvents } from "@db/schemas";
  * `fetch()` call to the Worker.
  */
 export class GsuiteService extends WorkerEntrypoint<Env> {
+
+  // ---------------------------------------------------------------------------
+  // Code mode
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Dispatch a single MCP tool by name — the bridge used by "code mode"
+   * (`src/backend/mcp/code-mode.ts`). Bound as this Worker's own `SELF_RPC`
+   * service binding and passed into the code-mode sandbox so model-authored
+   * code can call `await tools.<name>(args)` without ever holding this Worker's
+   * secrets. Args are validated against the tool's Zod schema; the tool's
+   * `result` is returned.
+   *
+   * @param name - tool name (see the `TOOLS` catalog)
+   * @param args - tool arguments (validated against the tool schema)
+   * @param sub - caller identity the tool acts as (unless args carry `as_user`)
+   */
+  async callTool(name: string, args: unknown, sub: string): Promise<unknown> {
+    const tool = TOOLS.find((t) => t.name === name);
+    if (!tool) throw new Error(`Unknown tool: ${name}`);
+    const parsed = tool.inputSchema.parse(args ?? {});
+    const { result } = await tool.run({ env: this.env, sub }, parsed);
+    return result;
+  }
 
   // ---------------------------------------------------------------------------
   // Gmail

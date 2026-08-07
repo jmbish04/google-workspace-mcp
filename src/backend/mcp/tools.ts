@@ -24,6 +24,7 @@ import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-serv
 import { searchGmail } from "@/backend/gmail/search-service";
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
+import { runCodeMode, toolCatalog, apiGuide } from "./code-mode";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -1855,6 +1856,29 @@ export const TOOLS: ToolDef[] = [
     }),
     async run({ env }, a) {
       return { result: { hits: await searchGmail(env, a.query, { account: a.account, topK: a.topK }) } };
+    },
+  },
+  // ---- Code mode ---------------------------------------------------------
+  {
+    name: "code_mode_api",
+    description:
+      "Return the code-mode API: usage guide + the list of tools (name + description) callable as `await tools.<name>(args)` inside code_mode_run. Call this first to discover what's available.",
+    inputSchema: z.object({}),
+    async run() {
+      return { result: { guide: apiGuide(), tools: toolCatalog() } };
+    },
+  },
+  {
+    name: "code_mode_run",
+    description:
+      "Execute a JavaScript snippet in an isolated sandbox (no network, no secrets) that can call any MCP tool via `await tools.<name>(args)`. Chain many calls, transform results, and `return` a final value; use console.log for debug output. Prefer this over many sequential tool calls when orchestrating multi-step work. See code_mode_api for the tool list.",
+    inputSchema: z.object({
+      code: z.string().describe("JavaScript function body. Use `await tools.<name>({...})`, `console.log(...)`, and `return <value>`."),
+      cpuMs: z.number().int().min(1000).max(300000).optional().describe("CPU time budget for the sandbox (default 30000)."),
+      subRequests: z.number().int().min(1).max(1000).optional().describe("Subrequest budget for the sandbox (default 50)."),
+    }),
+    async run({ env, sub }, a) {
+      return { result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }) };
     },
   },
 ];
