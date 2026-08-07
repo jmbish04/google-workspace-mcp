@@ -184,6 +184,10 @@ export async function listAuthorizedAccounts(env: Env): Promise<AuthorizedAccoun
 
   return rows.map((r) => ({
     email: r.email,
+    // No account is created as workspace_dwd any more, but the backend token
+    // path (tokenProvider `dwd:` refs, listCaptureAccounts) still models DWD as
+    // a fallback, so legacy rows are surfaced with their stored kind rather than
+    // silently coerced. The frontend renders every account as OAuth regardless.
     kind: r.kind === "workspace_dwd" ? "workspace_dwd" : "oauth",
     label: r.label,
     isDefault: Boolean(r.isDefault),

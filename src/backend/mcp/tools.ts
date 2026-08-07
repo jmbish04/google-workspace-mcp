@@ -1985,35 +1985,44 @@ export const TOOLS: ToolDef[] = [
         { service: "contacts", run: (r) => new PeopleService(env, r).getContact("people/me", "names") },
         { service: "appsscript", run: (r) => new AppsScriptService(env, r).listProcesses() },
       ];
-      const results = await Promise.all(
-        accounts.map(async ({ email, ref }) => {
-          const services = await Promise.all(
-            probes.map(async ({ service, run }) => {
-              const t = Date.now();
-              try {
-                await run(ref);
-                return { service, status: "ok" as const, latencyMs: Date.now() - t };
-              } catch (e) {
-                return {
-                  service,
-                  status: "fail" as const,
-                  latencyMs: Date.now() - t,
-                  error: e instanceof Error ? e.message : String(e),
-                };
-              }
-            }),
-          );
-          const okCount = services.filter((s) => s.status === "ok").length;
-          return {
-            email,
-            online: okCount > 0,
-            fullyWorking: okCount === services.length,
-            okCount,
-            serviceCount: services.length,
-            services,
-          };
-        }),
-      );
+      // ponytail: probe accounts sequentially, services parallel within each,
+      // so at most `probes.length` (5) subrequests are ever in flight — bounded
+      // regardless of account count, well clear of the Workers subrequest cap.
+      const results: {
+        email: string;
+        online: boolean;
+        fullyWorking: boolean;
+        okCount: number;
+        serviceCount: number;
+        services: { service: string; status: "ok" | "fail"; latencyMs: number; error?: string }[];
+      }[] = [];
+      for (const { email, ref } of accounts) {
+        const services = await Promise.all(
+          probes.map(async ({ service, run }) => {
+            const t = Date.now();
+            try {
+              await run(ref);
+              return { service, status: "ok" as const, latencyMs: Date.now() - t };
+            } catch (e) {
+              return {
+                service,
+                status: "fail" as const,
+                latencyMs: Date.now() - t,
+                error: e instanceof Error ? e.message : String(e),
+              };
+            }
+          }),
+        );
+        const okCount = services.filter((s) => s.status === "ok").length;
+        results.push({
+          email,
+          online: okCount > 0,
+          fullyWorking: okCount === services.length,
+          okCount,
+          serviceCount: services.length,
+          services,
+        });
+      }
       const working = results.filter((a) => a.fullyWorking).length;
       return {
         result: {

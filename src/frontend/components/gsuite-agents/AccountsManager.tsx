@@ -76,7 +76,7 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
-function kindBadge(_kind: GoogleAccount["kind"]) {
+function kindBadge() {
   // DWD is gone — every account authenticates via OAuth.
   return (
     <Badge variant="outline" className="gap-1">
@@ -339,7 +339,7 @@ export function AccountsManager() {
                       ) : null}
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      {kindBadge(account.kind)}
+                      {kindBadge()}
                       {statusBadge(account.status)}
                       {account.label ? (
                         <span className="text-xs text-muted-foreground">{account.label}</span>
