@@ -10,20 +10,21 @@ import { z } from "zod";
 
 import { getDb } from "@/db";
 import { assetEvents, mcpLogs, workspaceAssets } from "@db/schemas";
-import { TOOLS } from "@/backend/mcp/tools";
+import { MCP_EXPOSED_TOOLS } from "@/backend/mcp/tools";
 import { verifySessionCookie } from "@/backend/lib/cookies";
 
 import type { AppBindings } from "../index";
 
 export const gwsRouter = new OpenAPIHono<AppBindings>();
 
-/** GET /tools — the MCP tool catalog with JSON-Schema input shapes. */
+/** GET /tools — the public MCP catalog with JSON-Schema input and output shapes. */
 gwsRouter.get("/tools", (c) =>
   c.json({
-    tools: TOOLS.map((t) => ({
+    tools: MCP_EXPOSED_TOOLS.map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: z.toJSONSchema(t.inputSchema),
+      outputSchema: t.outputSchema ? z.toJSONSchema(t.outputSchema) : undefined,
     })),
   }),
 );

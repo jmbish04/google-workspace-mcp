@@ -8,9 +8,12 @@ presentations, emails, chat, and calendar events without leaving your terminal.
 
 ## Cloudflare Worker MCP
 
-This repo also ships a self-hostable **remote MCP server** on Cloudflare Workers,
-exposing Google Drive, Docs, Sheets, and Gmail as MCP tools over a stateless
-`/mcp` JSON-RPC endpoint — single Worker, D1-backed operation/asset logging, and
+This repo also ships a self-hostable **remote MCP server** on Cloudflare Workers.
+As of August 10, 2026, the public `/mcp` surface is **code-mode-first**: clients
+discover `code_mode_api`, then use `code_mode_run` to orchestrate the internal
+Google Workspace tool catalog with a much smaller token footprint than exposing
+every native tool directly. The Worker still provides stateless JSON-RPC over
+`/mcp`, single-Worker deployment, D1-backed operation/asset logging, and
 per-user Google OAuth (multi-user, keyed by Google account). See
 [`/gws/setup`](src/frontend/pages/gws/setup.astro) (served at `/gws/setup` once
 deployed) for the full setup and deploy walkthrough: OAuth client creation,

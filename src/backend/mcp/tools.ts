@@ -69,8 +69,26 @@ export type ToolDef = {
   name: string;
   description: string;
   inputSchema: z.ZodType<any>;
+  outputSchema?: z.ZodType<any>;
   run(ctx: ToolCtx, args: any): Promise<{ result: unknown; asset?: ToolAsset }>;
 };
+
+const codeModeApiResultSchema = z.object({
+  guide: z.string(),
+  tools: z.array(
+    z.object({
+      name: z.string(),
+      description: z.string(),
+    }),
+  ),
+});
+
+const codeModeRunResultSchema = z.object({
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+  logs: z.array(z.string()),
+});
 
 /** Optional impersonation field mixed into every tool schema. */
 const asUser = {
@@ -1952,6 +1970,7 @@ export const TOOLS: ToolDef[] = [
     description:
       "Return the code-mode API: usage guide + the list of tools (name + description) callable as `await tools.<name>(args)` inside code_mode_run. Call this first to discover what's available.",
     inputSchema: z.object({}),
+    outputSchema: codeModeApiResultSchema,
     async run() {
       return { result: { guide: apiGuide(), tools: toolCatalog() } };
     },
@@ -1965,6 +1984,7 @@ export const TOOLS: ToolDef[] = [
       cpuMs: z.number().int().min(1000).max(300000).optional().describe("CPU time budget for the sandbox (default 30000)."),
       subRequests: z.number().int().min(1).max(1000).optional().describe("Subrequest budget for the sandbox (default 50)."),
     }),
+    outputSchema: codeModeRunResultSchema,
     async run({ env, sub }, a) {
       return { result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }) };
     },
@@ -2040,3 +2060,12 @@ export const TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/**
+ * The public MCP surface is intentionally code-mode-only to keep the tool
+ * catalog token footprint small. The full `TOOLS` list remains available to
+ * the internal code-mode sandbox via `toolCatalog()` + `GsuiteService.callTool`.
+ */
+export const MCP_EXPOSED_TOOLS = TOOLS.filter((tool) =>
+  tool.name === "code_mode_api" || tool.name === "code_mode_run",
+);

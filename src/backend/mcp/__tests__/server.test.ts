@@ -73,15 +73,17 @@ describe("handleMcpRequest", () => {
     expect(body.result.serverInfo).toEqual({ name: "google-workspace-mcp", version: "1.0.0" });
   });
 
-  it("tools/list (authed) returns the catalog with JSON Schema input shapes", async () => {
+  it("tools/list (authed) returns only the code-mode catalog with JSON Schema input/output shapes", async () => {
     const res = await handleMcpRequest(await authed({ jsonrpc: "2.0", id: 2, method: "tools/list" }), env, ctx);
     expect(res.status).toBe(200);
     const body = await rpcJson(res);
     const names = body.result.tools.map((t: any) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["search_files", "docs_create", "sheets_get_values", "gmail_send"]));
+    expect(names).toEqual(["code_mode_api", "code_mode_run"]);
     for (const t of body.result.tools) {
       expect(typeof t.inputSchema).toBe("object");
       expect(t.inputSchema).not.toBeNull();
+      expect(typeof t.outputSchema).toBe("object");
+      expect(t.outputSchema).not.toBeNull();
     }
   });
 
@@ -108,6 +110,7 @@ describe("handleMcpRequest", () => {
     const body = await rpcJson(res);
     expect(body.error).toBeDefined();
     expect(body.error!.code).toBe(-32602);
+    expect(body.error!.message).toContain("Unknown tool: gmail_send");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

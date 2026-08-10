@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { TOOLS } from "../tools";
+import { MCP_EXPOSED_TOOLS, TOOLS } from "../tools";
 
 describe("tool catalog", () => {
   it("exposes drive/docs/sheets/gmail tools with schemas", () => {
@@ -10,6 +10,13 @@ describe("tool catalog", () => {
     for (const t of TOOLS) {
       expect(typeof t.description).toBe("string");
       expect(t.inputSchema).toBeDefined();
+    }
+  });
+
+  it("exposes only code-mode tools publicly, each with an output schema", () => {
+    expect(MCP_EXPOSED_TOOLS.map((t) => t.name)).toEqual(["code_mode_api", "code_mode_run"]);
+    for (const tool of MCP_EXPOSED_TOOLS) {
+      expect(tool.outputSchema).toBeDefined();
     }
   });
 });
