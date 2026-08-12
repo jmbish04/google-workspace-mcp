@@ -120,6 +120,48 @@
       "when": 1786104229468,
       "tag": "0016_mean_psylocke",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1786478470235,
+      "tag": "0017_bitter_rocket_raccoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1786507139461,
+      "tag": "0018_perfect_micromacro",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1786508068603,
+      "tag": "0019_mature_titanium_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1786512358013,
+      "tag": "0020_pretty_patch",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1786526797271,
+      "tag": "0021_curious_wendell_vaughn",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1786527328332,
+      "tag": "0022_great_norman_osborn",
+      "breakpoints": true
     }
   ]
 }

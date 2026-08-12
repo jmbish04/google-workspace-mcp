@@ -15,17 +15,22 @@ vi.mock("../logging", () => ({
 }));
 
 const FAKE_RESULT = { ok: true, body: "sensitive response body" };
+const FAKE_TOOL = {
+  name: "fake_tool",
+  description: "test-only tool",
+  inputSchema: { parse: (a: unknown) => a },
+  async run() {
+    return { result: FAKE_RESULT };
+  },
+};
+// Expose the fake tool on BOTH the full list and the public (code-mode) surface
+// so it survives the code-mode surface filter. `acct`/`SHADOW_TOOLS` are consumed
+// by the tool-runner and must exist on the mocked module.
 vi.mock("../tools", () => ({
-  TOOLS: [
-    {
-      name: "fake_tool",
-      description: "test-only tool",
-      inputSchema: { parse: (a: unknown) => a },
-      async run() {
-        return { result: FAKE_RESULT };
-      },
-    },
-  ],
+  TOOLS: [FAKE_TOOL],
+  MCP_EXPOSED_TOOLS: [FAKE_TOOL],
+  acct: (sub: string) => sub,
+  SHADOW_TOOLS: new Set<string>(),
 }));
 
 const { handleMcpRequest } = await import("../server");

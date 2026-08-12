@@ -1,12 +1,31 @@
 import { googleJson } from "../googleClient";
+import { buildOutgoingRaw } from "@/backend/gmail/build-outgoing";
+import type { BlobInput, AttachmentSpec, AttachmentReportItem } from "@/backend/gmail/outgoing-attachments";
 
 export type GmailMessage = { id: string; snippet: string; payload?: unknown };
 
-const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-
-function base64Url(input: string): string {
-  return btoa(unescape(encodeURIComponent(input))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+/** Rich body + attachments accepted by send / draft helpers. */
+export interface RichContent {
+  /** Raw HTML body (sanitized + CSS-inlined for Gmail by the worker). */
+  html?: string;
+  /** Markdown body (rendered + inlined for Gmail by the worker). */
+  markdown?: string;
+  /** Unified attachment specs: Drive files, inline blobs, or forced links. */
+  attachments?: AttachmentSpec[];
+  /** Legacy: Drive file ids to attach (auto-fallback to shared links over the size cap). */
+  driveIds?: string[];
+  /** Legacy: inline base64 blobs to attach (auto-fallback to shared links over the size cap). */
+  blobs?: BlobInput[];
 }
+
+/** Pass the caller's attachment inputs through to the MIME builder. */
+function attachmentOpts(opts?: RichContent): Pick<RichContent, "attachments" | "driveIds" | "blobs"> {
+  return { attachments: opts?.attachments, driveIds: opts?.driveIds, blobs: opts?.blobs };
+}
+
+export type { AttachmentReportItem };
+
+const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 // Extracts bare email addresses from a comma-separated header value, handling "Name <a@b.com>" forms.
 function extractEmails(headerValue: string | undefined): string[] {
@@ -72,19 +91,19 @@ export class GmailService {
     to: string,
     subject: string,
     body: string,
-    opts?: { from?: string; replyToMessageId?: string; threadId?: string },
-  ): Promise<{ id: string; threadId?: string }> {
+    opts?: { from?: string; replyToMessageId?: string; threadId?: string } & RichContent,
+  ): Promise<{ id: string; threadId?: string; attachments: AttachmentReportItem[] }> {
     let threadId = opts?.threadId;
     let finalSubject = subject;
-    const extraHeaders: string[] = [];
+    let inReplyTo: string | undefined;
+    let references: string | undefined;
 
     if (opts?.replyToMessageId) {
       const { headers, threadId: srcThread } = await this.getMessageHeaders(opts.replyToMessageId);
       if (!threadId) threadId = srcThread;
       const messageIdHeader = headers["message-id"] ?? "";
-      const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
-      if (messageIdHeader) extraHeaders.push(`In-Reply-To: ${messageIdHeader}`);
-      if (references) extraHeaders.push(`References: ${references}`);
+      inReplyTo = messageIdHeader || undefined;
+      references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim() || undefined;
       // Preserve the original subject with a single "Re:" prefix when the caller
       // didn't override it (an empty subject means "use the thread's subject").
       if (!subject.trim()) {
@@ -93,24 +112,53 @@ export class GmailService {
       }
     }
 
-    const lines = [`To: ${to}`];
-    if (opts?.from) lines.push(`From: ${opts.from}`);
-    lines.push(`Subject: ${finalSubject}`, ...extraHeaders, "Content-Type: text/plain; charset=UTF-8", "", body);
-    const mime = lines.join("\r\n");
+    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+      to,
+      from: opts?.from,
+      subject: finalSubject,
+      inReplyTo,
+      references,
+      text: body,
+      html: opts?.html,
+      markdown: opts?.markdown,
+      ...attachmentOpts(opts),
+    });
 
-    const payload: { raw: string; threadId?: string } = { raw: base64Url(mime) };
+    const payload: { raw: string; threadId?: string } = { raw };
     if (threadId) payload.threadId = threadId;
-    return googleJson<{ id: string; threadId?: string }>(this.env, this.sub, `${BASE}/messages/send`, {
+    const sent = await googleJson<{ id: string; threadId?: string }>(this.env, this.sub, `${BASE}/messages/send`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    return { ...sent, attachments: attachmentReport };
   }
 
-  async createDraft(to: string, subject: string, body: string): Promise<{ id: string; message?: { id: string } }> {
-    const mime = [`To: ${to}`, `Subject: ${subject}`, "Content-Type: text/plain; charset=UTF-8", "", body].join("\r\n");
-    return googleJson<{ id: string; message?: { id: string } }>(this.env, this.sub, `${BASE}/drafts`, {
+  async createDraft(
+    to: string,
+    subject: string,
+    body: string,
+    opts?: RichContent,
+  ): Promise<{ id: string; message?: { id: string }; attachments: AttachmentReportItem[] }> {
+    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+      to,
+      subject,
+      text: body,
+      html: opts?.html,
+      markdown: opts?.markdown,
+      ...attachmentOpts(opts),
+    });
+    const draft = await googleJson<{ id: string; message?: { id: string } }>(this.env, this.sub, `${BASE}/drafts`, {
       method: "POST",
-      body: JSON.stringify({ message: { raw: base64Url(mime) } }),
+      body: JSON.stringify({ message: { raw } }),
+    });
+    return { ...draft, attachments: attachmentReport };
+  }
+
+  /** Send an existing draft by id (used by the scheduled-send sweep). */
+  async sendDraft(draftId: string): Promise<{ id: string; threadId?: string }> {
+    return googleJson<{ id: string; threadId?: string }>(this.env, this.sub, `${BASE}/drafts/send`, {
+      method: "POST",
+      body: JSON.stringify({ id: draftId }),
     });
   }
 
@@ -138,8 +186,8 @@ export class GmailService {
   async createReplyDraft(
     messageId: string,
     body: string,
-    opts?: { to?: string[]; replyAll?: boolean },
-  ): Promise<{ id: string; message?: { id: string; threadId?: string } }> {
+    opts?: { to?: string[]; replyAll?: boolean } & RichContent,
+  ): Promise<{ id: string; message?: { id: string; threadId?: string }; attachments: AttachmentReportItem[] }> {
     const [{ headers, threadId }, profile] = await Promise.all([this.getMessageHeaders(messageId), this.getProfile()]);
     const self = profile.emailAddress.toLowerCase();
 
@@ -164,20 +212,22 @@ export class GmailService {
     const messageIdHeader = headers["message-id"] ?? "";
     const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
 
-    const mime = [
-      `To: ${recipients.join(", ")}`,
-      `Subject: ${subject}`,
-      `In-Reply-To: ${messageIdHeader}`,
-      `References: ${references}`,
-      "Content-Type: text/plain; charset=UTF-8",
-      "",
-      body,
-    ].join("\r\n");
-
-    return googleJson<{ id: string; message?: { id: string; threadId?: string } }>(this.env, this.sub, `${BASE}/drafts`, {
-      method: "POST",
-      body: JSON.stringify({ message: { raw: base64Url(mime), threadId } }),
+    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+      to: recipients.join(", "),
+      subject,
+      inReplyTo: messageIdHeader || undefined,
+      references: references || undefined,
+      text: body,
+      html: opts?.html,
+      markdown: opts?.markdown,
+      ...attachmentOpts(opts),
     });
+
+    const draft = await googleJson<{ id: string; message?: { id: string; threadId?: string } }>(this.env, this.sub, `${BASE}/drafts`, {
+      method: "POST",
+      body: JSON.stringify({ message: { raw, threadId } }),
+    });
+    return { ...draft, attachments: attachmentReport };
   }
 
   async listLabels(): Promise<{ labels: unknown[] }> {

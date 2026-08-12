@@ -57,6 +57,41 @@ export class DriveService {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
   }
 
+  /** Parent folder ids of a file (empty when the file lives in My Drive root). */
+  async getParents(fileId: string): Promise<string[]> {
+    const params = new URLSearchParams({ fields: "parents", supportsAllDrives: "true" });
+    const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
+    return meta.parents ?? [];
+  }
+
+  /** Name / mimeType / byte size / view link — for deciding attach-vs-link. */
+  async getContentMeta(fileId: string): Promise<{ id: string; name: string; mimeType: string; size: number; webViewLink?: string }> {
+    const params = new URLSearchParams({ fields: "id,name,mimeType,size,webViewLink", supportsAllDrives: "true" });
+    const m = await googleJson<{ id: string; name: string; mimeType: string; size?: string; webViewLink?: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?${params}`,
+    );
+    return { id: m.id, name: m.name, mimeType: m.mimeType, size: Number(m.size ?? 0), webViewLink: m.webViewLink };
+  }
+
+  /** Download a file's raw bytes (alt=media). For binary attachments. */
+  async downloadBytes(fileId: string): Promise<Uint8Array> {
+    const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?alt=media&supportsAllDrives=true`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /** Parents + last-modified time in one call (for export provenance). */
+  async getLocationInfo(fileId: string): Promise<{ parents: string[]; modifiedTime?: string }> {
+    const params = new URLSearchParams({ fields: "parents,modifiedTime", supportsAllDrives: "true" });
+    const meta = await googleJson<{ parents?: string[]; modifiedTime?: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?${params}`,
+    );
+    return { parents: meta.parents ?? [], modifiedTime: meta.modifiedTime };
+  }
+
   async createFolder(name: string, parentId?: string): Promise<DriveFile> {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,mimeType,webViewLink`, {
       method: "POST",

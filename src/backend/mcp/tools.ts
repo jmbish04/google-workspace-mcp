@@ -17,14 +17,20 @@ import { z } from "zod";
 import { eq, desc, and } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { templateArtifacts, driveNotifications, brailleArtifacts, gmailLabels } from "@db/schemas";
+import { templateArtifacts, driveNotifications, brailleArtifacts, gmailLabels, sheetExportJobs, docExportJobs, scheduledSends, scheduledEmails, emailPreviews, emailTemplates, type ScheduledEmailSpec } from "@db/schemas";
+import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
+import { seedBuiltinTemplates } from "@/backend/gmail/email-templates";
 import { deconstruct, detectSurface, type BrailleSurface } from "@/backend/braille/deconstruct";
-import { syncLabels, syncLabelsForAllAccounts, listCaptureAccounts } from "@/backend/gmail/sync-service";
+import { syncLabels, syncLabelsForAllAccounts, listCaptureAccounts, accountEmailFor } from "@/backend/gmail/sync-service";
+import { exportSheetsToJson } from "@/backend/google/sheet-export";
+import { exportDocsToFiles } from "@/backend/google/doc-export";
+import { isValidCron } from "@/backend/gmail/cron";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
 import { searchGmail } from "@/backend/gmail/search-service";
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
+import { attachmentManifest } from "@/backend/gmail/attachments";
 import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
-import { runCodeMode, toolCatalog, apiGuide } from "./code-mode";
+import { runCodeMode, runCodeModeSearch } from "./code-mode";
 import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
 import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
@@ -69,8 +75,18 @@ export type ToolDef = {
   name: string;
   description: string;
   inputSchema: z.ZodType<any>;
+  /** Advertised on the MCP surface (tools/list) so clients know the result shape. */
+  outputSchema?: z.ZodType<any>;
   run(ctx: ToolCtx, args: any): Promise<{ result: unknown; asset?: ToolAsset }>;
 };
+
+/** Output shape of both code-mode tools — the sandbox execution result. */
+const codeModeResultSchema = z.object({
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+  logs: z.array(z.string()),
+});
 
 /** Optional impersonation field mixed into every tool schema. */
 const asUser = {
@@ -83,10 +99,93 @@ const asUser = {
     ),
 };
 
+/**
+ * Rich-body + attachment fields mixed into the Gmail compose tools. The worker
+ * owns formatting: it inlines CSS (Gmail ignores <style>/classes) and renders
+ * markdown, so the model just supplies content. Attachments over Gmail's 25 MiB
+ * ceiling auto-fall back to "anyone with link" Drive links (like Gmail).
+ */
+const richBody = {
+  html: z
+    .string()
+    .optional()
+    .describe("Rich HTML body. The worker inlines all CSS for Gmail — you do NOT need to write inline styles yourself. Takes precedence over `body`."),
+  markdown: z
+    .string()
+    .optional()
+    .describe("Markdown body. The worker renders it to Gmail-safe inline-styled HTML (headings, bold, lists, links, tables). Takes precedence over `body`."),
+  attachments: z
+    .array(
+      z.union([
+        z.object({ driveFileId: z.string(), as: z.enum(["attach", "link"]).optional() }),
+        z.object({ blob: z.string().describe("base64"), filename: z.string(), mimeType: z.string().optional(), as: z.enum(["attach", "link"]).optional() }),
+      ]),
+    )
+    .optional()
+    .describe(
+      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), or { driveFileId, as:'link' } (force a shared Drive link instead of attaching). Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), the overflow files auto-fall back to 'anyone with link' Drive links added at the top of the email. The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
+    ),
+  driveIds: z
+    .array(z.string())
+    .optional()
+    .describe("Legacy shorthand for attachments: Drive file ids to attach (same size/link fallback as `attachments`)."),
+  blobs: z
+    .array(z.object({ filename: z.string(), mimeType: z.string().optional(), contentBase64: z.string() }))
+    .optional()
+    .describe("Legacy shorthand for attachments: inline base64 files (same size/link fallback as `attachments`)."),
+};
+
 /** Resolve the account ref for a call: DWD impersonation, or the OAuth caller. */
-function acct(sub: string, a: { as_user?: string }): string {
+export function acct(sub: string, a: { as_user?: string }): string {
   return a.as_user ? `dwd:${a.as_user}` : sub;
 }
+
+/**
+ * Read-only, account-scoped tools eligible for mandatory cross-account "shadow
+ * search" (see {@link file://./tool-runner.ts}). The same read is re-run in every
+ * OTHER registered account and an `_shadowSearch` FYI is attached, so the model
+ * can self-correct when it targeted the wrong account (an id/query that returns
+ * nothing in account A but has hits in account B).
+ *
+ * ONLY read-only tools belong here: shadowing re-invokes the tool in another
+ * account, so a write/execute (gmail_send, appsscript_run, *_create/update, Drive
+ * mutations) would cause real side effects in a second mailbox. Never add one.
+ * gmail_get_thread is excluded on both counts — its default path writes to Drive,
+ * and a threadId is account-scoped so a cross-account lookup is meaningless.
+ */
+export const SHADOW_TOOLS = new Set<string>([
+  // Drive — id lookups + name/query search + sharing audit
+  "search_files",
+  "list_recent_files",
+  "get_file_metadata",
+  "get_file_permissions",
+  "read_file_content",
+  "download_file_content",
+  "list_folder_children",
+  "list_folder_recursive",
+  "drive_audit_sharing",
+  // Docs / Sheets / Slides — read by id
+  "docs_get",
+  "docs_get_json",
+  "sheets_get_values",
+  "sheets_get_metadata",
+  "slides_get",
+  "slides_get_thumbnail",
+  // Calendar / People / Forms
+  "calendar_list_events",
+  "calendar_get_event",
+  "calendar_list_calendars",
+  "people_list_connections",
+  "people_search_contacts",
+  "people_search_directory",
+  "forms_get",
+  "forms_list_responses",
+  // Gmail search (threadId lookups are account-scoped, so not gmail_get_thread)
+  "gmail_list",
+  // Apps Script — read content / deployments by id (NOT appsscript_run)
+  "appsscript_get_content",
+  "appsscript_list_deployments",
+]);
 
 /**
  * Insert braille rows in chunks. D1 caps bound parameters at 100 per query;
@@ -394,6 +493,134 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "sheets_export_json",
+    description:
+      "Export one or MANY Google Spreadsheets to a JSON file (reflecting ALL tabs), saved beside each source sheet in Drive, and return each JSON file's Drive id, view url, and direct download url. " +
+      "`sheets` accepts a Drive id OR a full Drive/Sheets url, as a single value OR an array, freely mixed (ids and urls together) — each url is reduced to its id automatically. " +
+      "IMPORTANT — if the user did NOT give you a specific spreadsheet id or url, do NOT guess: first call search_files to find candidates, CONFIRM with the user which file they mean, then call this with the confirmed id/url. " +
+      "Cross-account is automatic: the sheet may live in any registered account (e.g. jmbish04@ vs justin@); each account is tried until one can read it, and the winning account is reported per item. " +
+      "Each ref is processed independently — a bad/inaccessible id yields an error report item without aborting the rest. `shape`: 'records' (each tab → objects keyed by the header row, default) or 'values' (raw 2-D arrays). Every run is tracked in D1 (sheet_export_jobs).",
+    inputSchema: z.object({
+      sheets: z.union([z.string(), z.array(z.string()).min(1)]).describe("Drive id or url, or an array of them (ids/urls may be mixed)."),
+      shape: z.enum(["records", "values"]).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      // Order accounts with the caller's intended account first; the rest are
+      // automatic cross-account fallback for sheets owned elsewhere.
+      const primaryEmail = await accountEmailFor(env, acct(sub, a));
+      const registered = await listCaptureAccounts(env);
+      const accounts = [
+        ...registered.filter((x) => x.email === primaryEmail),
+        ...registered.filter((x) => x.email !== primaryEmail),
+      ];
+      if (!accounts.some((x) => x.email === primaryEmail)) {
+        accounts.unshift({ email: primaryEmail, ref: acct(sub, a) });
+      }
+
+      const results = await exportSheetsToJson(env, accounts, a.sheets, a.shape ?? "records");
+
+      // One requestId groups this call's rows; dedupe is within-request only (see
+      // exportSheetsToJson) — a later call re-exports, tracked under a new requestId.
+      const requestId = crypto.randomUUID();
+      const db = getDb(env);
+      const rows = results.map((r) => ({
+        requestId,
+        requestedRef: r.requested,
+        spreadsheetId: r.spreadsheetId,
+        sourceAccount: r.sourceAccount ?? null,
+        triedAccounts: r.triedAccounts,
+        status: r.status,
+        tabCount: r.tabCount ?? null,
+        jsonDriveId: r.jsonDriveId ?? null,
+        jsonDriveUrl: r.jsonDriveUrl ?? null,
+        jsonDownloadUrl: r.jsonDownloadUrl ?? null,
+        jsonSha256: r.jsonSha256 ?? null,
+        sourceModifiedTime: r.sourceModifiedTime ?? null,
+        error: r.error ?? null,
+      }));
+      // ~14 bound cols/row → chunk under D1's 100-param cap.
+      for (let i = 0; i < rows.length; i += 6) {
+        await db.insert(sheetExportJobs).values(rows.slice(i, i + 6));
+      }
+
+      const firstDone = results.find((r) => r.status === "done");
+      return {
+        result: {
+          requestId,
+          results,
+          summary: { total: results.length, done: results.filter((r) => r.status === "done").length },
+        },
+        asset: firstDone?.jsonDriveId
+          ? { assetType: "drive", googleId: firstDone.jsonDriveId, title: "sheet export JSON", url: firstDone.jsonDriveUrl, action: "create" as const }
+          : undefined,
+      };
+    },
+  },
+  {
+    name: "docs_export",
+    description:
+      "Export one or MANY Google Docs to a file saved beside each source doc in Drive, returning each file's Drive id, view url, and download url. `docs` accepts a Drive id OR a Docs/Drive url, single or an array, freely mixed — each is normalized to its id. " +
+      "IMPORTANT — if the user did NOT give a specific id/url, do NOT guess: search_files first, CONFIRM which doc with the user, then export the confirmed ref. " +
+      "`format` (default 'pdf'): pdf | markdown | docx | html | txt | odt | rtf | epub. " +
+      "`tab` (default 'all'): 'all' = whole document in the chosen format; 'first' or a tabId = a single tab — but single-tab export is Markdown-only (Google has no native per-tab PDF), so a single tab with a non-markdown format is reported as an error for that item. " +
+      "Cross-account is automatic (the doc may live in any registered account); each ref is processed independently (a bad id yields an error item, others still run). Every run is tracked in D1 (doc_export_jobs) with a requestId, content hash, and the source doc's modifiedTime.",
+    inputSchema: z.object({
+      docs: z.union([z.string(), z.array(z.string()).min(1)]).describe("Drive id or url, or an array of them (ids/urls may be mixed)."),
+      format: z.enum(["pdf", "markdown", "docx", "html", "txt", "odt", "rtf", "epub"]).optional(),
+      tab: z.string().optional().describe("'all' (default), 'first', or a specific tabId. Single-tab is markdown-only."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const primaryEmail = await accountEmailFor(env, acct(sub, a));
+      const registered = await listCaptureAccounts(env);
+      const accounts = [
+        ...registered.filter((x) => x.email === primaryEmail),
+        ...registered.filter((x) => x.email !== primaryEmail),
+      ];
+      if (!accounts.some((x) => x.email === primaryEmail)) {
+        accounts.unshift({ email: primaryEmail, ref: acct(sub, a) });
+      }
+
+      const results = await exportDocsToFiles(env, accounts, a.docs, a.format ?? "pdf", a.tab ?? "all");
+
+      const requestId = crypto.randomUUID();
+      const db = getDb(env);
+      const rows = results.map((r) => ({
+        requestId,
+        requestedRef: r.requested,
+        documentId: r.documentId,
+        sourceAccount: r.sourceAccount ?? null,
+        triedAccounts: r.triedAccounts,
+        status: r.status,
+        format: r.format,
+        tabScope: r.tabScope,
+        exportDriveId: r.exportDriveId ?? null,
+        exportDriveUrl: r.exportDriveUrl ?? null,
+        exportDownloadUrl: r.exportDownloadUrl ?? null,
+        exportSha256: r.exportSha256 ?? null,
+        sourceModifiedTime: r.sourceModifiedTime ?? null,
+        error: r.error ?? null,
+      }));
+      // ~14 bound cols/row → chunk under D1's 100-param cap.
+      for (let i = 0; i < rows.length; i += 6) {
+        await db.insert(docExportJobs).values(rows.slice(i, i + 6));
+      }
+
+      const firstDone = results.find((r) => r.status === "done");
+      return {
+        result: {
+          requestId,
+          results,
+          summary: { total: results.length, done: results.filter((r) => r.status === "done").length },
+        },
+        asset: firstDone?.exportDriveId
+          ? { assetType: "drive", googleId: firstDone.exportDriveId, title: `doc export (${firstDone.format})`, url: firstDone.exportDriveUrl, action: "create" as const }
+          : undefined,
+      };
+    },
+  },
+  {
     name: "sheets_add_sheet",
     description: "Add a new tab (sheet) to a spreadsheet.",
     inputSchema: z.object({ spreadsheetId: z.string(), title: z.string(), ...asUser }),
@@ -623,10 +850,17 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "gmail_create_draft",
-    description: "Create a Gmail DRAFT (not sent) so a human can review before sending. Preferred over gmail_send for agent workflows.",
-    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string(), ...asUser }),
+    description:
+      "Create a Gmail DRAFT (not sent) so a human can review before sending. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`.",
+    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string().optional(), ...richBody, ...asUser }),
     async run({ env, sub }, a) {
-      const d = await new GmailService(env, acct(sub, a)).createDraft(a.to, a.subject, a.body);
+      const d = await new GmailService(env, acct(sub, a)).createDraft(a.to, a.subject, a.body ?? "", {
+        html: a.html,
+        markdown: a.markdown,
+        attachments: a.attachments,
+        driveIds: a.driveIds,
+        blobs: a.blobs,
+      });
       return { result: d, asset: { assetType: "gmail", googleId: d.id, title: a.subject, action: "create", detail: { to: a.to, draft: true } } };
     },
   },
@@ -636,36 +870,51 @@ export const TOOLS: ToolDef[] = [
       "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review.",
     inputSchema: z.object({
       messageId: z.string(),
-      body: z.string(),
+      body: z.string().optional(),
       to: z.array(z.string().email()).optional(),
       replyAll: z.boolean().optional(),
+      ...richBody,
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const d = await new GmailService(env, acct(sub, a)).createReplyDraft(a.messageId, a.body, { to: a.to, replyAll: a.replyAll });
+      const d = await new GmailService(env, acct(sub, a)).createReplyDraft(a.messageId, a.body ?? "", {
+        to: a.to,
+        replyAll: a.replyAll,
+        html: a.html,
+        markdown: a.markdown,
+        attachments: a.attachments,
+        driveIds: a.driveIds,
+        blobs: a.blobs,
+      });
       return { result: d, asset: { assetType: "gmail", googleId: d.id, action: "create", detail: { replyTo: a.messageId, draft: true } } };
     },
   },
   {
     name: "gmail_send",
     description:
-      "Send a plain-text email immediately. Pass replyToMessageId (or threadId) to reply within an existing thread — the send sets In-Reply-To/References and stays in that thread instead of starting a new one. Prefer gmail_create_draft when a human should review first.",
+      "Send an email immediately. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
     inputSchema: z.object({
       to: z.string().email(),
       subject: z.string(),
-      body: z.string(),
+      body: z.string().optional(),
       replyToMessageId: z
         .string()
         .optional()
         .describe("Reply to this message id: sets In-Reply-To/References and keeps the reply in the original thread."),
       threadId: z.string().optional().describe("Explicit Gmail threadId to attach the message to (overrides replyToMessageId's thread)."),
+      ...richBody,
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body, {
+      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body ?? "", {
         from: a.as_user,
         replyToMessageId: a.replyToMessageId,
         threadId: a.threadId,
+        html: a.html,
+        markdown: a.markdown,
+        attachments: a.attachments,
+        driveIds: a.driveIds,
+        blobs: a.blobs,
       });
       return {
         result: sent,
@@ -677,6 +926,184 @@ export const TOOLS: ToolDef[] = [
           detail: { to: a.to, ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
         },
       };
+    },
+  },
+  {
+    name: "gmail_schedule_send",
+    description:
+      "Schedule an existing Gmail DRAFT to be sent later on a cron schedule (UTC). Flow: create the draft first (gmail_create_draft) to get a draftId, then call this with draftId + a 5-field cron. An hourly worker checks pending schedules and, once a cron occurrence has passed, sends the draft and marks it sent. Cron is UTC, 5 fields (minute hour day-of-month month day-of-week). Examples: '0 14 * * 1' = 14:00 UTC every Monday; '30 9 5 * *' = 09:30 UTC on the 5th of the month.",
+    inputSchema: z.object({
+      draftId: z.string().describe("Gmail draft id from gmail_create_draft."),
+      cron: z.string().describe("5-field UTC cron: minute hour day-of-month month day-of-week."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      if (!isValidCron(a.cron)) {
+        throw new Error(
+          `Invalid cron "${a.cron}". Use 5 UTC fields: minute hour day-of-month month day-of-week (e.g. "0 14 * * 1").`,
+        );
+      }
+      const ref = acct(sub, a);
+      const email = await accountEmailFor(env, ref);
+      const [row] = await getDb(env)
+        .insert(scheduledSends)
+        .values({ draftId: a.draftId, accountRef: ref, accountEmail: email, cron: a.cron })
+        .returning({ id: scheduledSends.id });
+      return {
+        result: { id: row.id, draftId: a.draftId, cron: a.cron, account: email, timezone: "UTC", status: "scheduled" },
+      };
+    },
+  },
+  {
+    name: "schedule_email",
+    description:
+      "Schedule an email to send at an absolute future time. IMPORTANT: Gmail has NO native scheduled-send API (its 'Schedule send' is UI-only) — this is a worker-side queue: the full message is persisted and a background sweep sends it at `send_at`, atomically (no double-send). Takes the SAME inputs as gmail_send (to, subject, body/html/markdown, attachments) PLUS `send_at`. YOU must resolve relative phrases ('Monday 9am') to a concrete ISO-8601 UTC instant before calling — this tool only accepts a timestamp. Prefer Drive file ids over large inline blobs (blobs are stored inline; keep them small, re-fetch big files via driveFileId at send time). Manage the queue with list_scheduled_emails / cancel_scheduled_email.",
+    inputSchema: z.object({
+      to: z.string().email(),
+      subject: z.string(),
+      body: z.string().optional(),
+      send_at: z.string().describe("Absolute send time as ISO-8601 UTC (e.g. '2026-08-18T16:00:00Z'). Resolve relative phrases yourself first."),
+      ...richBody,
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const when = new Date(a.send_at);
+      if (Number.isNaN(when.getTime())) {
+        throw new Error(`Invalid send_at "${a.send_at}". Pass an absolute ISO-8601 UTC instant, e.g. "2026-08-18T16:00:00Z".`);
+      }
+      const ref = acct(sub, a);
+      const email = await accountEmailFor(env, ref);
+      const spec: ScheduledEmailSpec = {
+        to: a.to,
+        subject: a.subject,
+        body: a.body,
+        html: a.html,
+        markdown: a.markdown,
+        attachments: a.attachments,
+        driveIds: a.driveIds,
+        blobs: a.blobs,
+      };
+      const [row] = await getDb(env)
+        .insert(scheduledEmails)
+        .values({ accountRef: ref, accountEmail: email, spec, sendAt: when, status: "scheduled" })
+        .returning({ id: scheduledEmails.id });
+      return {
+        result: { id: row.id, to: a.to, subject: a.subject, sendAt: when.toISOString(), account: email, status: "scheduled" },
+      };
+    },
+  },
+  {
+    name: "list_scheduled_emails",
+    description:
+      "List queued scheduled emails (schedule_email), newest send-time first. Shows id, recipient, subject, send time, status (scheduled | sending | sent | error | canceled), and any last error.",
+    inputSchema: z.object({
+      status: z.enum(["scheduled", "sending", "sent", "error", "canceled"]).optional().describe("Filter to one status."),
+    }),
+    async run({ env }, a) {
+      const db = getDb(env);
+      const rows = a.status
+        ? await db.select().from(scheduledEmails).where(eq(scheduledEmails.status, a.status)).orderBy(desc(scheduledEmails.sendAt)).limit(200)
+        : await db.select().from(scheduledEmails).orderBy(desc(scheduledEmails.sendAt)).limit(200);
+      return {
+        result: {
+          scheduledEmails: rows.map((r) => ({
+            id: r.id,
+            to: r.spec.to,
+            subject: r.spec.subject,
+            sendAt: r.sendAt instanceof Date ? r.sendAt.toISOString() : r.sendAt,
+            status: r.status,
+            account: r.accountEmail,
+            messageId: r.messageId,
+            error: r.error,
+          })),
+        },
+      };
+    },
+  },
+  {
+    name: "cancel_scheduled_email",
+    description:
+      "Cancel a queued scheduled email by id — only while still pending (status 'scheduled'). Returns { canceled: true } if it was pending and is now canceled, or { canceled: false } if it was already sent/sending/canceled.",
+    inputSchema: z.object({ id: z.number().int() }),
+    async run({ env }, a) {
+      // Conditional update: only cancel a still-'scheduled' row (never a sending/sent one).
+      const canceled = await getDb(env)
+        .update(scheduledEmails)
+        .set({ status: "canceled" })
+        .where(and(eq(scheduledEmails.id, a.id), eq(scheduledEmails.status, "scheduled")))
+        .returning({ id: scheduledEmails.id });
+      return { result: { id: a.id, canceled: canceled.length === 1 } };
+    },
+  },
+  {
+    name: "email_preview_host",
+    description:
+      "Render an email draft to Gmail-safe inlined HTML and HOST it on the worker frontend, returning a direct preview URL the user can open to eyeball the email before sending. Use this when the user wants to SEE a draft: ask them first, and if yes, call this and give them the returned `url`. Accepts the same body inputs as gmail_send (body / html / markdown). The preview renders in a sandboxed iframe.",
+    inputSchema: z.object({
+      subject: z.string().optional(),
+      to: z.string().optional(),
+      body: z.string().optional(),
+      html: z.string().optional(),
+      markdown: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const composed = composeBody({ text: a.body, html: a.html, markdown: a.markdown });
+      const html = composed.html ?? `<pre style="font-family:ui-monospace,monospace;white-space:pre-wrap;">${composed.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string)}</pre>`;
+      const id = crypto.randomUUID();
+      const account = await accountEmailFor(env, acct(sub, a)).catch(() => undefined);
+      await getDb(env).insert(emailPreviews).values({ id, subject: a.subject ?? null, toAddr: a.to ?? null, html, account: account ?? null });
+      const base = (env as { PUBLIC_BASE_URL?: string }).PUBLIC_BASE_URL;
+      const path = `/gws/email-preview/${id}`;
+      return { result: { id, path, url: base ? `${base}${path}` : path } };
+    },
+  },
+  {
+    name: "email_templates_list",
+    description:
+      "List available Gmail-safe HTML email templates (built-in best-practice ones + user-added), for the model to pick a solid starting core. Returns id, name, description, category, isBuiltin. Fetch the full HTML with email_template_get.",
+    inputSchema: z.object({ category: z.string().optional() }),
+    async run({ env }, a) {
+      await seedBuiltinTemplates(env);
+      const db = getDb(env);
+      const rows = a.category
+        ? await db.select().from(emailTemplates).where(eq(emailTemplates.category, a.category))
+        : await db.select().from(emailTemplates);
+      return {
+        result: {
+          templates: rows.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category, isBuiltin: t.isBuiltin })),
+        },
+      };
+    },
+  },
+  {
+    name: "email_template_get",
+    description:
+      "Get one email template's full Gmail-inlined HTML by id (from email_templates_list). Fill its {{placeholders}} then send with gmail_send/gmail_create_draft `html`.",
+    inputSchema: z.object({ id: z.string() }),
+    async run({ env }, a) {
+      await seedBuiltinTemplates(env);
+      const [t] = await getDb(env).select().from(emailTemplates).where(eq(emailTemplates.id, a.id)).limit(1);
+      if (!t) throw new Error(`Template ${a.id} not found. Use email_templates_list to see available ids.`);
+      return { result: { id: t.id, name: t.name, description: t.description, category: t.category, html: t.html, isBuiltin: t.isBuiltin } };
+    },
+  },
+  {
+    name: "email_template_add",
+    description:
+      "Add a reusable email template to the marketplace. The HTML is sanitized + CSS-inlined for Gmail on save (use {{placeholders}} for fill-in fields). Returns the new template id.",
+    inputSchema: z.object({
+      name: z.string(),
+      html: z.string(),
+      description: z.string().optional(),
+      category: z.string().optional(),
+    }),
+    async run({ env, sub }, a) {
+      const id = crypto.randomUUID();
+      await getDb(env)
+        .insert(emailTemplates)
+        .values({ id, name: a.name, description: a.description ?? null, category: a.category ?? null, html: inlineGmailStyles(a.html), isBuiltin: false, createdBySub: sub });
+      return { result: { id, name: a.name, status: "added" } };
     },
   },
   {
@@ -712,13 +1139,19 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_get_thread",
     description:
-      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. By default each message's attachments are uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and returned as an attachments[] array of { filename, driveId, doc_text, sha256_hash, mimetype }. Pass includeAttachments:false to skip all Drive writes and return the raw thread only.",
+      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. Every message ALWAYS carries an attachments[] manifest of { filename, mimeType, size, attachmentId } so the model knows attachments exist. By default each message's attachments are ALSO uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and the manifest is enriched with { driveId, doc_text, sha256_hash }. Pass includeAttachments:false to skip all Drive writes and return the raw thread with the metadata-only manifest.",
     inputSchema: z.object({ threadId: z.string(), includeAttachments: z.boolean().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const gmail = new GmailService(env, account);
       const thread = await gmail.getThread(a.threadId);
-      if (a.includeAttachments === false) return { result: thread };
+      if (a.includeAttachments === false) {
+        // Still surface attachment metadata (count/filename/mimeType/size) for
+        // every message — cheap payload walk, no Drive writes — so the model is
+        // never blind to attachments just because byte-fetching was skipped.
+        const messages = thread.messages.map((m) => ({ ...m, attachments: attachmentManifest(m.payload) }));
+        return { result: { ...thread, messages } };
+      }
 
       const accountKey = a.as_user ?? sub;
       const subject = thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
@@ -1946,25 +2379,31 @@ export const TOOLS: ToolDef[] = [
       return { result: { hits: await searchGmail(env, a.query, { account: a.account, topK: a.topK }) } };
     },
   },
-  // ---- Code mode ---------------------------------------------------------
+  // ---- Code mode (search + execute — the entire toolset in ~1k tokens) ---
   {
-    name: "code_mode_api",
+    name: "code_mode_search",
     description:
-      "Return the code-mode API: usage guide + the list of tools (name + description) callable as `await tools.<name>(args)` inside code_mode_run. Call this first to discover what's available.",
-    inputSchema: z.object({}),
-    async run() {
-      return { result: { guide: apiGuide(), tools: toolCatalog() } };
+      "DISCOVER tools without loading the whole catalog into context. Write a JS async function body; `codemode.tools()` returns the full array of { name, description, inputSchema } for every Workspace tool. Filter/map it and RETURN only what you need — only your return value enters context, never the whole catalog. " +
+      "Example: `const all = codemode.tools(); return all.filter(t => /gmail|draft/.test(t.name)).map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));`. " +
+      "Then run the tools you found with code_mode_run. Search is read-only: no tool execution, no network.",
+    inputSchema: z.object({
+      code: z.string().describe("JS function body. Use `codemode.tools()` to read the catalog and `return` the filtered subset you need."),
+    }),
+    outputSchema: codeModeResultSchema,
+    async run({ env }, a) {
+      return { result: await runCodeModeSearch(env, a.code) };
     },
   },
   {
     name: "code_mode_run",
     description:
-      "Execute a JavaScript snippet in an isolated sandbox (no network, no secrets) that can call any MCP tool via `await tools.<name>(args)`. Chain many calls, transform results, and `return` a final value; use console.log for debug output. Prefer this over many sequential tool calls when orchestrating multi-step work. See code_mode_api for the tool list.",
+      "EXECUTE a JavaScript snippet in an isolated sandbox (no network, no secrets) that can call any Workspace tool via `await tools.<name>(args)`. Discover tool names + arg schemas first with code_mode_search. Chain many calls, transform results, and `return` a final value; use console.log for debug output. Prefer this over many sequential tool calls when orchestrating multi-step work.",
     inputSchema: z.object({
       code: z.string().describe("JavaScript function body. Use `await tools.<name>({...})`, `console.log(...)`, and `return <value>`."),
       cpuMs: z.number().int().min(1000).max(300000).optional().describe("CPU time budget for the sandbox (default 30000)."),
       subRequests: z.number().int().min(1).max(1000).optional().describe("Subrequest budget for the sandbox (default 50)."),
     }),
+    outputSchema: codeModeResultSchema,
     async run({ env, sub }, a) {
       return { result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }) };
     },
@@ -2040,3 +2479,17 @@ export const TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/**
+ * The public MCP surface is intentionally **code-mode-only** — only these two
+ * tools are advertised over `/mcp` (tools/list + tools/call), so the client's
+ * tool-catalog token footprint stays ~constant (~1k tokens) regardless of how
+ * many tools exist (Cloudflare's search+execute Code Mode pattern). The full
+ * {@link TOOLS} list is discovered on demand INSIDE the sandbox: `code_mode_search`
+ * filters the catalog (only the subset returns to context) and `code_mode_run`
+ * executes `await tools.<name>(args)` (routed through `GsuiteService.callTool`).
+ * Both exposed tools declare an `outputSchema`.
+ */
+export const MCP_EXPOSED_TOOLS: ToolDef[] = TOOLS.filter(
+  (tool) => tool.name === "code_mode_search" || tool.name === "code_mode_run",
+);

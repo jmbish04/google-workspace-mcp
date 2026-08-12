@@ -73,15 +73,17 @@ describe("handleMcpRequest", () => {
     expect(body.result.serverInfo).toEqual({ name: "google-workspace-mcp", version: "1.0.0" });
   });
 
-  it("tools/list (authed) returns the catalog with JSON Schema input shapes", async () => {
+  it("tools/list (authed) returns only the code-mode catalog with JSON Schema input/output shapes", async () => {
     const res = await handleMcpRequest(await authed({ jsonrpc: "2.0", id: 2, method: "tools/list" }), env, ctx);
     expect(res.status).toBe(200);
     const body = await rpcJson(res);
     const names = body.result.tools.map((t: any) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["search_files", "docs_create", "sheets_get_values", "gmail_send"]));
+    expect(names).toEqual(["code_mode_search", "code_mode_run"]);
     for (const t of body.result.tools) {
       expect(typeof t.inputSchema).toBe("object");
       expect(t.inputSchema).not.toBeNull();
+      expect(typeof t.outputSchema).toBe("object");
+      expect(t.outputSchema).not.toBeNull();
     }
   });
 
@@ -98,7 +100,7 @@ describe("handleMcpRequest", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("tools/call with auth but invalid arguments returns -32602 and never hits the network", async () => {
+  it("tools/call for a non-exposed tool (gmail_send) returns -32602 — code-mode surface only", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const res = await handleMcpRequest(
       await authed({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "gmail_send", arguments: {} } }),
@@ -108,6 +110,7 @@ describe("handleMcpRequest", () => {
     const body = await rpcJson(res);
     expect(body.error).toBeDefined();
     expect(body.error!.code).toBe(-32602);
+    expect(body.error!.message).toContain("Unknown tool: gmail_send");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

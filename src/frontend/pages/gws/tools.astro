@@ -8,7 +8,7 @@
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { Badge } from "@/components/ui/badge";
 
-type Tool = { name: string; description: string; inputSchema: unknown };
+type Tool = { name: string; description: string; inputSchema: unknown; outputSchema?: unknown };
 
 let tools: Tool[] = [];
 try {
@@ -23,15 +23,18 @@ try {
 
 <BaseLayout
   title="MCP Tools"
-  description="The Google Workspace MCP tool catalog — names, descriptions, and JSON-Schema input shapes"
+  description="The Google Workspace MCP code-mode catalog — names, descriptions, and JSON-Schema input/output shapes"
 >
   <div class="container mx-auto max-w-4xl px-4 py-16">
     <section class="mb-10 space-y-4">
       <Badge variant="outline" class="font-mono text-[11px]">{tools.length} tools</Badge>
       <h1 class="text-balance text-4xl font-bold tracking-tight">MCP Tools</h1>
       <p class="max-w-2xl text-base text-muted-foreground">
-        Every tool below is callable through the stateless <code class="text-primary">/mcp</code> JSON-RPC
-        endpoint once you're signed in. Loaded live from <code class="text-primary">GET /api/gws/tools</code>.
+        The public MCP surface is intentionally code-mode-only (~1k tokens regardless of tool count):
+        <code class="text-primary">code_mode_search</code> filters the catalog inside a sandbox and returns only
+        what you need, then <code class="text-primary">code_mode_run</code> executes it
+        (<code class="text-primary">await tools.&lt;name&gt;(args)</code>).
+        Loaded live from <code class="text-primary">GET /api/gws/tools</code>.
       </p>
     </section>
 

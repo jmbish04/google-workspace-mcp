@@ -48,6 +48,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { getAgentByName } from "agents";
 
 import { TOOLS } from "@/backend/mcp/tools";
+import { runTool } from "@/backend/mcp/tool-runner";
 
 import type { GmailAgent } from "@/backend/ai/agents/gmail";
 import type { DocsAgent } from "@/backend/ai/agents/docs";
@@ -95,7 +96,7 @@ export class GsuiteService extends WorkerEntrypoint<Env> {
     const tool = TOOLS.find((t) => t.name === name);
     if (!tool) throw new Error(`Unknown tool: ${name}`);
     const parsed = tool.inputSchema.parse(args ?? {});
-    const { result } = await tool.run({ env: this.env, sub }, parsed);
+    const { result } = await runTool(tool, { env: this.env, sub }, parsed);
     return result;
   }
 

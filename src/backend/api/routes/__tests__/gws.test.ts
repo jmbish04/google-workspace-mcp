@@ -53,19 +53,20 @@ const env = { SESSIONS: { get: async () => "test-key-please-change" } } as unkno
 const { gwsRouter } = await import("../gws");
 
 describe("GET /api/gws/tools", () => {
-  it("returns the tool catalog with JSON-Schema input shapes, no auth required", async () => {
+  it("returns the public code-mode catalog with JSON-Schema input/output shapes, no auth required", async () => {
     const res = await gwsRouter.request("/tools");
     expect(res.status).toBe(200);
     const json: any = await res.json();
     const names = json.tools.map((t: any) => t.name);
-    expect(names).toContain("gmail_send");
+    expect(names).toEqual(["code_mode_search", "code_mode_run"]);
 
-    const gmailSend = json.tools.find((t: any) => t.name === "gmail_send");
-    expect(typeof gmailSend.description).toBe("string");
-    expect(gmailSend.inputSchema).toBeTypeOf("object");
-    expect(gmailSend.inputSchema.properties).toHaveProperty("to");
-    expect(gmailSend.inputSchema.properties).toHaveProperty("subject");
-    expect(gmailSend.inputSchema.properties).toHaveProperty("body");
+    const codeModeRun = json.tools.find((t: any) => t.name === "code_mode_run");
+    expect(typeof codeModeRun.description).toBe("string");
+    expect(codeModeRun.inputSchema).toBeTypeOf("object");
+    expect(codeModeRun.inputSchema.properties).toHaveProperty("code");
+    expect(codeModeRun.outputSchema).toBeTypeOf("object");
+    expect(codeModeRun.outputSchema.properties).toHaveProperty("ok");
+    expect(codeModeRun.outputSchema.properties).toHaveProperty("logs");
   });
 });
 

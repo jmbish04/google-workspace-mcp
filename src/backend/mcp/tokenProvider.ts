@@ -19,9 +19,25 @@ import { API_SCOPES } from "./scopes";
  */
 const DEFAULT_OAUTH_ONLY = new Set(["justin@126colby.com"]);
 
+/**
+ * Consumer Google domains that can NEVER use Domain-Wide Delegation — DWD only
+ * impersonates users inside a Workspace domain the service account is trusted
+ * for, so a `@gmail.com`/`@googlemail.com` identity is unreachable via DWD and
+ * must go through per-user OAuth. Treating them as OAuth-only turns a missing
+ * token into an actionable "log in" error instead of a confusing DWD failure.
+ */
+const CONSUMER_GOOGLE_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
+
+/** True for consumer Google mailboxes (gmail.com / googlemail.com). */
+export function isConsumerGoogleAccount(email: string): boolean {
+  const domain = email.trim().toLowerCase().split("@")[1] ?? "";
+  return CONSUMER_GOOGLE_DOMAINS.has(domain);
+}
+
 async function isOAuthOnlyAccount(env: Env, email: string): Promise<boolean> {
   const e = email.trim().toLowerCase();
   if (DEFAULT_OAUTH_ONLY.has(e)) return true;
+  if (isConsumerGoogleAccount(e)) return true; // consumer Gmail → OAuth-only, DWD impossible
   const configured = (env.GOOGLE_OAUTH_ONLY_ACCOUNTS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
