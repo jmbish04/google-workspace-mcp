@@ -53,9 +53,11 @@ export async function buildOutgoingRaw(
   o: OutgoingOptions,
 ): Promise<BuiltOutgoing> {
   const specs = toAttachmentSpecs({ attachments: o.attachments, driveIds: o.driveIds, blobs: o.blobs });
-  const resolved = await resolveAttachments(env, accountRef, specs);
 
+  // Compose the body first so its size counts against the 25 MiB attachment cap.
   let { html, text } = composeBody({ text: o.text, html: o.html, markdown: o.markdown });
+  const bodyRawBytes = new TextEncoder().encode((html ?? "") + text).length;
+  const resolved = await resolveAttachments(env, accountRef, specs, bodyRawBytes);
 
   if (resolved.links.length > 0) {
     // Prepend a "shared via Drive" section (Gmail auto-linkifies the plain-text urls).

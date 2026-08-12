@@ -8,6 +8,14 @@
  *
  * The sweep logic is split from its IO so it's unit-testable: {@link runSweep}
  * takes injectable deps; {@link sweepScheduledEmails} wires them to D1 + Gmail.
+ *
+ * ponytail: if the worker is hard-killed between the claim and markSent/markError
+ * (e.g. isolate eviction mid-send), a row can be left in 'sending' and won't be
+ * re-swept (listDue only claims scheduled/error) — it stays VISIBLE in
+ * list_scheduled_emails (never silently dropped), but isn't auto-retried. Safe
+ * auto-recovery needs a `claimedAt` timestamp so a stale 'sending' row can be
+ * reclaimed atomically without racing a genuinely in-flight send. Add that column
+ * if crash-recovery matters; the double-send guarantee does not depend on it.
  */
 import { and, eq, inArray, lt, lte } from "drizzle-orm";
 

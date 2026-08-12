@@ -62,9 +62,16 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-/** base64-encoded byte length for `n` raw bytes (4 chars per 3 bytes, padded). */
+/**
+ * Encoded byte cost of `n` raw bytes in a MIME message: base64 (4 chars / 3
+ * bytes, padded) PLUS the CRLF added every 76 chars (~+2.6%) PLUS a fixed slack
+ * for the part's MIME headers + boundary. Overcounting slightly is the safe
+ * direction — it keeps the real message under Gmail's 25 MiB cap at the boundary.
+ */
 function encodedSize(rawBytes: number): number {
-  return Math.ceil(rawBytes / 3) * 4;
+  const b64 = Math.ceil(rawBytes / 3) * 4;
+  const crlf = Math.ceil(b64 / 76) * 2;
+  return b64 + crlf + 256;
 }
 
 function viewUrl(id: string, webViewLink?: string): string {
@@ -81,12 +88,16 @@ export async function resolveAttachments(
   env: Env,
   accountRef: string,
   specs: AttachmentSpec[],
+  /** Raw byte size of the message body (html+text) — counts against the same 25 MiB cap. */
+  bodyRawBytes = 0,
 ): Promise<ResolvedAttachments> {
   const drive = new DriveService(env, accountRef);
   const attachments: MimeAttachment[] = [];
   const links: AttachLink[] = [];
   const report: AttachmentReportItem[] = [];
-  let usedEncoded = 0;
+  // Seed the running total with the body's encoded cost so attachments can't
+  // push the whole message over the cap.
+  let usedEncoded = encodedSize(bodyRawBytes);
 
   /** Share a Drive file anyone-with-link (reader) and record a link + report row. */
   const linkDriveFile = async (
