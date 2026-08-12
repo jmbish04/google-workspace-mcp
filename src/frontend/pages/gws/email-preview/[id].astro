@@ -1,0 +1,56 @@
+---
+/**
+ * `/gws/email-preview/:id` — renders a hosted email-draft preview (created by the
+ * `email_preview_host` MCP tool). SSR-fetches the stored, already-sanitized HTML
+ * from `GET /api/gws/email-preview/:id` and renders it inside a **sandboxed**
+ * iframe (`sandbox=""` — no scripts, no same-origin) so nothing in the email body
+ * can touch the app.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+
+const { id } = Astro.params;
+
+type Preview = { id: string; subject: string | null; to: string | null; account: string | null; html: string };
+let preview: Preview | null = null;
+try {
+  const res = await fetch(new URL(`/api/gws/email-preview/${id}`, Astro.url), {
+    headers: { cookie: Astro.request.headers.get("cookie") ?? "" },
+  });
+  if (res.ok) preview = (await res.json()) as Preview;
+} catch {
+  // fall through to not-found
+}
+---
+
+<BaseLayout title="Email Preview" description="Preview a hosted email draft before sending.">
+  <div class="container mx-auto max-w-3xl px-4 py-12">
+    {preview === null ? (
+      <p class="rounded-xl bg-card p-8 text-center text-sm text-muted-foreground ring-1 ring-border/40">
+        This preview wasn't found. It may have expired or the link is incorrect.
+      </p>
+    ) : (
+      <div class="space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" class="font-mono text-[11px]">draft preview</Badge>
+          {preview.account && <Badge variant="secondary" class="font-mono text-[11px]">{preview.account}</Badge>}
+        </div>
+        <div class="rounded-xl bg-card p-5 ring-1 ring-border/40">
+          <div class="mb-1 text-lg font-semibold tracking-tight">{preview.subject || "(no subject)"}</div>
+          {preview.to && <div class="text-sm text-muted-foreground">To: {preview.to}</div>}
+        </div>
+        <div class="overflow-hidden rounded-xl bg-white ring-1 ring-border/40">
+          <iframe
+            title="Email body preview"
+            sandbox=""
+            srcdoc={preview.html}
+            style="width:100%;height:70vh;border:0;background:#ffffff;"
+          ></iframe>
+        </div>
+        <p class="text-center text-xs text-muted-foreground">
+          Rendered in a sandboxed frame. This is a preview only — the email has not been sent.
+        </p>
+      </div>
+    )}
+  </div>
+</BaseLayout>

@@ -8,7 +8,8 @@
   //   - "*/5 * * * *"  @colby-app comment-collaboration sweep (every 5 min).
   //                    Winds down with ZERO AI spend when no doc modified in the
   //                    last COMMENT_SWEEP_WINDOW_MIN carries an open call-sign comment.
-  "triggers": { "crons": ["0 6 * * 1", "*/5 * * * *"] },
+  //   - "0 * * * *"    hourly scheduled-send sweep (gmail_schedule_send queue).
+  "triggers": { "crons": ["0 6 * * 1", "*/5 * * * *", "0 * * * *"] },
   "upload_source_maps": true,
   "workers_dev": true,
   "preview_urls": true,

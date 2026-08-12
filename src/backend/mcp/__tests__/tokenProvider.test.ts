@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getAccessToken, saveUser } from "../tokenProvider";
+import { getAccessToken, saveUser, isConsumerGoogleAccount } from "../tokenProvider";
 
 function kvMock() {
   const store = new Map<string, string>();
@@ -35,5 +35,30 @@ describe("tokenProvider", () => {
     const tok2 = await getAccessToken(env, "s1");
     expect(tok2).toBe("at-123");
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("classifies consumer Google mailboxes", () => {
+    expect(isConsumerGoogleAccount("jmbish04@gmail.com")).toBe(true);
+    expect(isConsumerGoogleAccount("Foo@GoogleMail.com")).toBe(true);
+    expect(isConsumerGoogleAccount("justin@126colby.com")).toBe(false);
+  });
+
+  it("never attempts DWD for a consumer account with no stored token — actionable login error", async () => {
+    // No refresh token stored for this gmail.com account. The OAuth-only branch
+    // throws a login-URL error; the DWD path would throw a different one, so this
+    // message proves we did NOT fall through to domain-wide delegation.
+    await expect(getAccessToken(env, "dwd:jmbish04@gmail.com")).rejects.toThrow(
+      /log in at \/api\/auth\/google\/oauth\/start\?label=/,
+    );
+  });
+
+  it("uses the stored OAuth token for a consumer account when present (no DWD)", async () => {
+    await env.SESSIONS.put("google:oauth:jmbish04@gmail.com:refresh_token", "rt-consumer");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ access_token: "at-oauth", expires_in: 3600 }), { status: 200 }),
+    );
+    const tok = await getAccessToken(env, "dwd:jmbish04@gmail.com");
+    expect(tok).toBe("at-oauth");
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

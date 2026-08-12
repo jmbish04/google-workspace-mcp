@@ -53,6 +53,8 @@ export const siteConfig: SiteConfig = {
         { href: "/gws/tools", label: "MCP Tools" },
         { href: "/gws/templates", label: "Templates" },
         { href: "/gws/operations", label: "Operations Log" },
+        { href: "/gws/scheduled-sends", label: "Scheduled Sends" },
+        { href: "/gws/email-templates", label: "Email Templates" },
         { href: "/gws/assets", label: "Asset Activity" },
         { href: "/gws/notifications", label: "Notifications" },
       ],

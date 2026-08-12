@@ -35,6 +35,20 @@ export class SheetsService {
     return { values: out.values ?? [] };
   }
 
+  /** Fetch values for many ranges/tabs in a single call. */
+  async batchGetValues(
+    spreadsheetId: string,
+    ranges: string[],
+  ): Promise<{ valueRanges: { range?: string; values?: string[][] }[] }> {
+    const qs = ranges.map((r) => `ranges=${encodeURIComponent(r)}`).join("&");
+    const out = await googleJson<{ valueRanges?: { range?: string; values?: string[][] }[] }>(
+      this.env,
+      this.sub,
+      `${BASE}/${spreadsheetId}/values:batchGet?${qs}`,
+    );
+    return { valueRanges: out.valueRanges ?? [] };
+  }
+
   async updateValues(
     spreadsheetId: string,
     range: string,

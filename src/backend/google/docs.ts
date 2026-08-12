@@ -124,6 +124,15 @@ export class GoogleDocsClient extends GoogleApiClient {
     });
   }
 
+  /** Fetch the doc WITH per-tab content (`includeTabsContent=true`) — for tab-scoped export. */
+  async getWithTabs<T = unknown>(docIdInput: string): Promise<T> {
+    const docId = extractGoogleId(docIdInput);
+    return this.request<T>(`${DOCS_BASE}/documents/${docId}`, {
+      query: { includeTabsContent: "true" },
+      scopes: [GoogleScope.Docs],
+    });
+  }
+
   /**
    * Append plain text to the end of a document body.
    *

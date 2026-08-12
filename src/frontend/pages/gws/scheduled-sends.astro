@@ -1,0 +1,29 @@
+---
+/**
+ * `/gws/scheduled-sends` — the scheduled Gmail send queue.
+ *
+ * Thin Astro shell: BaseLayout chrome + header, then the `<ScheduledSends>`
+ * React island (client:load) which fetches GET /api/gws/scheduled-sends and
+ * owns the cancel flow (shadcn AlertDialog confirm, never window.confirm).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { ScheduledSends } from "@/components/scheduled-sends";
+---
+
+<BaseLayout
+  title="Scheduled Sends"
+  description="The queue of Gmail drafts scheduled to send on a cron. Cancel a pending send, or see which have already gone out."
+>
+  <div class="container mx-auto max-w-5xl px-4 py-16">
+    <section class="mb-10 space-y-4">
+      <h1 class="text-balance text-4xl font-bold tracking-tight">Scheduled Sends</h1>
+      <p class="max-w-2xl text-base text-muted-foreground">
+        Gmail drafts queued to send on a schedule (UTC cron), newest first. Cancel a
+        pending send before it goes out; already-sent items are marked
+        <code class="text-primary">sent</code>.
+      </p>
+    </section>
+
+    <ScheduledSends client:load />
+  </div>
+</BaseLayout>

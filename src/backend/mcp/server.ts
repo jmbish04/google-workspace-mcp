@@ -16,7 +16,8 @@ import { z } from "zod";
 import { verifySessionCookie } from "@/backend/lib/cookies";
 import { logOperation, logAssetTouch } from "./logging";
 import { resolveAccessToken, oauthBaseUrl } from "./oauth";
-import { TOOLS } from "./tools";
+import { MCP_EXPOSED_TOOLS } from "./tools";
+import { runTool } from "./tool-runner";
 
 type JsonRpcRequest = { jsonrpc?: string; id?: string | number | null; method: string; params?: any };
 type JsonRpcResponse = { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } };
@@ -109,10 +110,11 @@ async function dispatch(req: JsonRpcRequest, env: Env, sub: string | null): Prom
 
     case "tools/list":
       return rpcResult(id, {
-        tools: TOOLS.map((t) => ({
+        tools: MCP_EXPOSED_TOOLS.map((t) => ({
           name: t.name,
           description: t.description,
           inputSchema: z.toJSONSchema(t.inputSchema),
+          outputSchema: t.outputSchema ? z.toJSONSchema(t.outputSchema) : undefined,
         })),
       });
 
@@ -122,7 +124,7 @@ async function dispatch(req: JsonRpcRequest, env: Env, sub: string | null): Prom
       }
       const name = req.params?.name;
       const args = req.params?.arguments ?? {};
-      const tool = TOOLS.find((t) => t.name === name);
+      const tool = MCP_EXPOSED_TOOLS.find((t) => t.name === name);
       if (!tool) {
         return rpcError(id, -32602, `Unknown tool: ${name}`);
       }
@@ -137,7 +139,7 @@ async function dispatch(req: JsonRpcRequest, env: Env, sub: string | null): Prom
 
       const started = Date.now();
       try {
-        const { result, asset } = await tool.run({ env, sub }, parsedArgs);
+        const { result, asset } = await runTool(tool, { env, sub }, parsedArgs);
         // ponytail: mcp_logs is served by public-ish /api/gws/operations to any
         // signed-in user — never persist raw arg values or response bodies
         // (gmail_send body, gmail_list contents, etc). Key names are enough for
