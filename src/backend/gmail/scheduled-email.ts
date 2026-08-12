@@ -17,7 +17,7 @@
  * reclaimed atomically without racing a genuinely in-flight send. Add that column
  * if crash-recovery matters; the double-send guarantee does not depend on it.
  */
-import { and, eq, inArray, lt, lte } from "drizzle-orm";
+import { and, eq, lt, lte, or, sql } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { scheduledEmails, type ScheduledEmailSpec } from "@db/schemas";
@@ -25,26 +25,29 @@ import { GmailService } from "@/backend/mcp/services/gmail";
 
 /** Give up (leave visible) after this many failed attempts. */
 export const MAX_ATTEMPTS = 5;
-/** Statuses a due row can be claimed from. */
-export const CLAIMABLE_STATUSES = ["scheduled", "error"] as const;
+/** A row stuck in 'sending' longer than this (ms) is treated as crashed and reclaimable. */
+export const STALE_SENDING_MS = 15 * 60 * 1000;
 
 export interface DueRow {
   id: number;
   status: string;
+  /** Epoch ms this row was last claimed (null unless status='sending'). */
+  claimedAt: number | null;
   accountRef: string;
   spec: ScheduledEmailSpec;
 }
 
 /** IO the sweep depends on — real (D1/Gmail) in prod, in-memory in tests. */
 export interface SweepDeps {
-  /** Rows whose send_at has passed and are still claimable. */
+  /** Rows due to send: scheduled/error under the attempt cap, plus crashed 'sending' rows. */
   listDue(now: number): Promise<DueRow[]>;
   /**
-   * Atomically claim a row: flip `expectedStatus` → 'sending' and return true
-   * IFF this caller won. MUST be a single conditional write (no read-then-write
-   * gap) so concurrent ticks can't both win.
+   * Atomically claim a row: flip it → 'sending' (stamping claimedAt=now) and
+   * return true IFF this caller won. MUST be a single conditional write guarded
+   * on BOTH the status AND the claimedAt we read (optimistic lock), so neither
+   * two fresh ticks nor two stale-'sending' reclaims can both win.
    */
-  claim(id: number, expectedStatus: string): Promise<boolean>;
+  claim(row: DueRow, now: number): Promise<boolean>;
   /** Perform the real send; returns the Gmail message id. */
   send(row: DueRow): Promise<string>;
   markSent(id: number, messageId: string): Promise<void>;
@@ -59,7 +62,7 @@ export async function runSweep(deps: SweepDeps, now: number): Promise<{ due: num
   const due = await deps.listDue(now);
   let sent = 0;
   for (const row of due) {
-    if (!(await deps.claim(row.id, row.status))) continue; // lost the race — another tick has it
+    if (!(await deps.claim(row, now))) continue; // lost the race — another tick has it
     try {
       const messageId = await deps.send(row);
       await deps.markSent(row.id, messageId);
@@ -76,27 +79,44 @@ export async function sweepScheduledEmails(env: Env, now: number = Date.now()): 
   const db = getDb(env);
   const nowDate = new Date(now);
 
+  const staleBefore = new Date(now - STALE_SENDING_MS);
   const deps: SweepDeps = {
     async listDue() {
       const rows = await db
         .select()
         .from(scheduledEmails)
         .where(
-          and(
-            inArray(scheduledEmails.status, CLAIMABLE_STATUSES as unknown as string[]),
-            lte(scheduledEmails.sendAt, nowDate),
-            lt(scheduledEmails.attempts, MAX_ATTEMPTS),
+          or(
+            // Fresh work: scheduled/error, due, under the attempt cap.
+            and(
+              or(eq(scheduledEmails.status, "scheduled"), eq(scheduledEmails.status, "error")),
+              lte(scheduledEmails.sendAt, nowDate),
+              lt(scheduledEmails.attempts, MAX_ATTEMPTS),
+            ),
+            // Crashed work: stuck in 'sending' past the stale window → reclaim.
+            and(eq(scheduledEmails.status, "sending"), lte(scheduledEmails.claimedAt, staleBefore)),
           ),
         );
-      return rows.map((r) => ({ id: r.id, status: r.status, accountRef: r.accountRef, spec: r.spec }));
+      return rows.map((r) => ({
+        id: r.id,
+        status: r.status,
+        claimedAt: r.claimedAt instanceof Date ? r.claimedAt.getTime() : r.claimedAt ?? null,
+        accountRef: r.accountRef,
+        spec: r.spec,
+      }));
     },
-    async claim(id, expectedStatus) {
-      // Single conditional UPDATE ... WHERE status=expected RETURNING — atomic in
-      // SQLite/D1, so only one concurrent tick flips scheduled/error → sending.
+    async claim(row, whenMs) {
+      // Single conditional UPDATE guarded on status AND the claimedAt we read
+      // (optimistic lock) — atomic in SQLite/D1, so only one tick wins whether
+      // this is a fresh scheduled/error row or a stale-'sending' reclaim.
+      const claimedGuard =
+        row.claimedAt == null
+          ? sql`${scheduledEmails.claimedAt} is null`
+          : eq(scheduledEmails.claimedAt, new Date(row.claimedAt));
       const claimed = await db
         .update(scheduledEmails)
-        .set({ status: "sending" })
-        .where(and(eq(scheduledEmails.id, id), eq(scheduledEmails.status, expectedStatus)))
+        .set({ status: "sending", claimedAt: new Date(whenMs) })
+        .where(and(eq(scheduledEmails.id, row.id), eq(scheduledEmails.status, row.status), claimedGuard))
         .returning({ id: scheduledEmails.id });
       return claimed.length === 1;
     },

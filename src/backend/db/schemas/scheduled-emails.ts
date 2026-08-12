@@ -46,6 +46,8 @@ export const scheduledEmails = sqliteTable(
     error: text("error"),
     /** Send attempts so far (bounded to stop infinite retries on permanent errors). */
     attempts: integer("attempts").notNull().default(0),
+    /** When the row was last claimed (set to 'sending'); lets a stale claim be reclaimed after a crash. */
+    claimedAt: integer("claimed_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),
