@@ -20,7 +20,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -98,13 +97,11 @@ export function EmailTemplates() {
             <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />
             Refresh
           </Button>
+          <Button size="sm" onClick={() => setOpen(true)}>
+            <Plus className="size-4" />
+            Add template
+          </Button>
           <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm">
-                <Plus className="size-4" />
-                Add template
-              </Button>
-            </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Add email template</DialogTitle>
