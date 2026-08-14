@@ -162,3 +162,35 @@ describe("DriveService.exportFile", () => {
     expect(decodeURIComponent(url)).toContain("/files/f1/export?mimeType=application/pdf");
   });
 });
+
+describe("DriveService.resolveFolderPath", () => {
+  it("find-or-creates each path segment and returns the deepest folder id", async () => {
+    // Each segment: search returns no match → createFolder returns a new id.
+    let created = 0;
+    const ids = ["id-A", "id-B", "id-C"];
+    fetchSpy.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === "POST"
+        ? new Response(JSON.stringify({ id: ids[created++], name: "seg", mimeType: "application/vnd.google-apps.folder" }), { status: 200 })
+        : new Response(JSON.stringify({ files: [] }), { status: 200 }),
+    );
+    fetchSpy.mockClear(); // scope call assertions to this test (calls accumulate across the file)
+    const svc = new DriveService({} as any, "s1");
+    const id = await svc.resolveFolderPath("A/B/C");
+    expect(id).toBe("id-C");
+    // One create per segment; the third is parented under the second folder.
+    const posts = fetchSpy.mock.calls.filter((c: any[]) => c[1]?.method === "POST");
+    expect(posts).toHaveLength(3);
+    expect(JSON.parse(posts[2][1].body as string).parents).toEqual(["id-B"]);
+  });
+
+  it("reuses an existing folder when search finds one — no create", async () => {
+    fetchSpy.mockImplementation(async () =>
+      new Response(JSON.stringify({ files: [{ id: "existing", name: "X", mimeType: "application/vnd.google-apps.folder" }] }), { status: 200 }),
+    );
+    fetchSpy.mockClear();
+    const svc = new DriveService({} as any, "s1");
+    const id = await svc.resolveFolderPath("X");
+    expect(id).toBe("existing");
+    expect(fetchSpy.mock.calls.some((c: any[]) => c[1]?.method === "POST")).toBe(false);
+  });
+});

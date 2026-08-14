@@ -240,6 +240,20 @@ export class DriveService {
     return (await this.createFolder(name, parentId)).id;
   }
 
+  /**
+   * Resolve a `/`-separated folder path (e.g. `"Clients/Acme/2026"`) under
+   * `rootId` (default My Drive root), creating any missing segment. Returns the
+   * id of the deepest folder — the target parent for an upload. Each level is
+   * find-or-create so repeat calls converge on the same tree.
+   */
+  async resolveFolderPath(path: string, rootId = "root"): Promise<string> {
+    let parent = rootId;
+    for (const seg of path.split("/").map((s) => s.trim()).filter(Boolean)) {
+      parent = await this.findOrCreateChildFolder(seg, parent);
+    }
+    return parent;
+  }
+
   async share(
     fileId: string,
     role: string,
