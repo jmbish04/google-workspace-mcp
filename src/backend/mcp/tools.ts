@@ -44,6 +44,7 @@ import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
 import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
 import { rasterizePdf, storeRender } from "@/backend/docs/browser-render";
 import { DriveService } from "./services/drive";
+import { extractGoogleId } from "@/backend/google/core/ids";
 import { DocsService } from "./services/docs";
 import { SheetsService } from "./services/sheets";
 import { GmailService } from "./services/gmail";
@@ -202,6 +203,15 @@ async function insertBrailleRows(
   }
 }
 
+/** Cap for in-memory Drive uploads (simple `uploadType=media` buffers the whole body). */
+export const MAX_DRIVE_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+/** Decode standard or url-safe base64 to bytes (for binary Drive uploads). */
+export function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
 export const TOOLS: ToolDef[] = [
   // ---- Drive -------------------------------------------------------------
   {
@@ -280,6 +290,34 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const f = await new DriveService(env, acct(sub, a)).createFolder(a.name, a.parentId);
       return { result: f, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { name: a.name } } };
+    },
+  },
+  {
+    name: "drive_upload_file",
+    description:
+      "Upload a document to Drive from base64 bytes (any binary type — PDF, docx, images, …). Target the destination by `folderId`, or by `folderPath` (a '/'-separated path like 'Clients/Acme/2026' whose folders are auto-created); omit both to land in My Drive root. Returns { id, name, url, folderId } — the Drive file id and shareable webViewLink. For plain-text content prefer create_file; for a real HTTP multipart file upload use POST /api/drive/upload.",
+    inputSchema: z.object({
+      name: z.string().describe("File name including extension, e.g. 'invoice.pdf'."),
+      mimeType: z.string().describe("MIME type of the bytes, e.g. 'application/pdf'."),
+      contentBase64: z.string().describe("File bytes, base64-encoded (standard or url-safe)."),
+      folderId: z.string().optional().describe("Destination folder id. Takes precedence over folderPath."),
+      folderPath: z.string().optional().describe("'/'-separated destination folder path; missing segments are created."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const bytes = base64ToBytes(a.contentBase64);
+      if (bytes.length > MAX_DRIVE_UPLOAD_BYTES) {
+        throw new Error(`File too large (${bytes.length} bytes); max ${MAX_DRIVE_UPLOAD_BYTES}.`);
+      }
+      const drive = new DriveService(env, acct(sub, a));
+      // Accept a pasted Drive folder URL as well as a bare id.
+      const folderId = a.folderId ? extractGoogleId(a.folderId) : a.folderPath ? await drive.resolveFolderPath(a.folderPath) : undefined;
+      const f = await drive.uploadBinary(a.name, a.mimeType, bytes, folderId);
+      const url = f.webViewLink ?? `https://drive.google.com/file/d/${f.id}/view`;
+      return {
+        result: { id: f.id, name: f.name, url, folderId: folderId ?? null },
+        asset: { assetType: "drive", googleId: f.id, title: f.name, url, action: "create", detail: { folderId, folderPath: a.folderPath } },
+      };
     },
   },
   {

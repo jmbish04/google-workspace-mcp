@@ -28,6 +28,8 @@ import { clientErrorRouter } from "./routes/client-error";
 import { adminRouter, configRouter } from "./routes/config";
 import { docsRouter } from "./routes/docs";
 import { gmailRouter } from "./routes/gmail";
+import { toolsRouter } from "./routes/tools";
+import { driveRouter } from "./routes/drive";
 import { schemaRouter } from "./routes/schema";
 import { appscriptRouter } from "./routes/appscript";
 import { renderRouter } from "./routes/render";
@@ -141,7 +143,11 @@ app.use("/api/admin/*", authMiddleware);
 // Gate BOTH the base path and sub-paths — Hono's `/x/*` matches `/x/y` but not
 // the bare `/x`, so the collection endpoints (e.g. GET /api/threads) need an
 // explicit base-path guard too, or they'd stay wide open.
-for (const base of ["/api/threads", "/api/catalog", "/api/agent-tasks", "/api/accounts", "/api/gsuite-health"]) {
+// `/api/tools/*` (generic MCP-tool bridge) and `/api/drive/*` (Drive upload +
+// folders) drive real Google Workspace actions, so they carry the same
+// credential as the agent surfaces — the `gsuite_session` cookie OR
+// `Authorization: Bearer <WORKER_API_KEY>`.
+for (const base of ["/api/threads", "/api/catalog", "/api/agent-tasks", "/api/accounts", "/api/gsuite-health", "/api/tools", "/api/drive"]) {
   app.use(base, agentAuthMiddleware);
   app.use(`${base}/*`, agentAuthMiddleware);
 }
@@ -155,6 +161,10 @@ app.route("/api/health", healthRouter);
 app.route("/api/config", configRouter);
 app.route("/api/admin", adminRouter);
 app.route("/api/docs", docsRouter);
+
+// MCP-tool parity bridge + first-class Drive endpoints (auth-gated above).
+app.route("/api/tools", toolsRouter);
+app.route("/api/drive", driveRouter);
 
 // Feature APIs (open — see auth note above)
 app.route("/api/gmail", gmailRouter);
