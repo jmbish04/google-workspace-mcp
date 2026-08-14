@@ -29,6 +29,9 @@ try {
   templates = [];
 }
 
+/** Only allow http(s) hrefs — Astro escapes attribute text but does NOT strip a `javascript:` scheme. */
+const safeHref = (url: string): string => (/^https?:\/\//i.test(url) ? url : "#");
+
 const ICONS: Record<string, string> = { doc: "📄", sheet: "📊", slide: "📽️", form: "📝", drive: "📁" };
 const ORDER = ["doc", "sheet", "slide", "form", "drive"];
 const groups = ORDER.map((type) => ({ type, items: templates.filter((t) => t.templateType === type) })).filter((g) => g.items.length > 0);
@@ -67,7 +70,7 @@ if (other.length) groups.push({ type: "other", items: other });
             <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {g.items.map((t) => (
                 <a
-                  href={t.driveUrl}
+                  href={safeHref(t.driveUrl)}
                   target="_blank"
                   rel="noopener noreferrer"
                   class="group flex flex-col rounded-xl bg-card p-4 ring-1 ring-border/40 transition hover:ring-primary/50"
