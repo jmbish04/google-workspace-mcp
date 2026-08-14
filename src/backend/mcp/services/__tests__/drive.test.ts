@@ -183,6 +183,19 @@ describe("DriveService.resolveFolderPath", () => {
     expect(JSON.parse(posts[2][1].body as string).parents).toEqual(["id-B"]);
   });
 
+  it("escapes backslash and quote in a segment name so the Drive q can't be broken", async () => {
+    fetchSpy.mockImplementation(async () =>
+      new Response(JSON.stringify({ files: [{ id: "x", name: "n", mimeType: "application/vnd.google-apps.folder" }] }), { status: 200 }),
+    );
+    fetchSpy.mockClear();
+    const svc = new DriveService({} as any, "s1");
+    await svc.resolveFolderPath("a\\' and '1'='1");
+    const searchUrl = decodeURIComponent(fetchSpy.mock.calls[0][0] as string);
+    // backslash escaped to \\, quote escaped to \' — the injected `and '1'='1`
+    // stays inside the quoted literal.
+    expect(searchUrl).toContain("name='a\\\\\\' and \\'1\\'=\\'1'");
+  });
+
   it("reuses an existing folder when search finds one — no create", async () => {
     fetchSpy.mockImplementation(async () =>
       new Response(JSON.stringify({ files: [{ id: "existing", name: "X", mimeType: "application/vnd.google-apps.folder" }] }), { status: 200 }),

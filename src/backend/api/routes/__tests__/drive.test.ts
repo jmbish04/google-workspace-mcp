@@ -25,6 +25,16 @@ describe("POST /api/drive/upload", () => {
     expect(res.status).toBe(400);
   });
 
+  it("413s a file over the size cap without calling Drive", async () => {
+    fetchSpy.mockImplementation(async () => new Response("{}", { status: 200 }));
+    const big = new Uint8Array(16 * 1024 * 1024); // > 15 MiB cap
+    const form = new FormData();
+    form.set("file", new File([big], "big.bin", { type: "application/octet-stream" }));
+    const res = await driveRouter.request("/upload", { method: "POST", body: form }, env);
+    expect(res.status).toBe(413);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("uploads the file into a folderId and returns driveId + driveUrl", async () => {
     fetchSpy.mockImplementation(async (_url: string, init?: RequestInit) =>
       init?.method === "PATCH"

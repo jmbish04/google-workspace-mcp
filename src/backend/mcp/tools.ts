@@ -44,6 +44,7 @@ import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
 import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
 import { rasterizePdf, storeRender } from "@/backend/docs/browser-render";
 import { DriveService } from "./services/drive";
+import { extractGoogleId } from "@/backend/google/core/ids";
 import { DocsService } from "./services/docs";
 import { SheetsService } from "./services/sheets";
 import { GmailService } from "./services/gmail";
@@ -202,6 +203,9 @@ async function insertBrailleRows(
   }
 }
 
+/** Cap for in-memory Drive uploads (simple `uploadType=media` buffers the whole body). */
+export const MAX_DRIVE_UPLOAD_BYTES = 15 * 1024 * 1024;
+
 /** Decode standard or url-safe base64 to bytes (for binary Drive uploads). */
 export function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
@@ -301,9 +305,14 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
+      const bytes = base64ToBytes(a.contentBase64);
+      if (bytes.length > MAX_DRIVE_UPLOAD_BYTES) {
+        throw new Error(`File too large (${bytes.length} bytes); max ${MAX_DRIVE_UPLOAD_BYTES}.`);
+      }
       const drive = new DriveService(env, acct(sub, a));
-      const folderId = a.folderId ?? (a.folderPath ? await drive.resolveFolderPath(a.folderPath) : undefined);
-      const f = await drive.uploadBinary(a.name, a.mimeType, base64ToBytes(a.contentBase64), folderId);
+      // Accept a pasted Drive folder URL as well as a bare id.
+      const folderId = a.folderId ? extractGoogleId(a.folderId) : a.folderPath ? await drive.resolveFolderPath(a.folderPath) : undefined;
+      const f = await drive.uploadBinary(a.name, a.mimeType, bytes, folderId);
       const url = f.webViewLink ?? `https://drive.google.com/file/d/${f.id}/view`;
       return {
         result: { id: f.id, name: f.name, url, folderId: folderId ?? null },

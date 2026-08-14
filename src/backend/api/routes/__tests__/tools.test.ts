@@ -85,25 +85,47 @@ describe("POST /api/tools/:name", () => {
     expect(logAssetTouch).toHaveBeenCalledWith(env, expect.objectContaining({ userSub: "sub-a", googleId: "g1" }));
   });
 
-  it("uses as_user for the sub sentinel when provided", async () => {
+  it("resolves as_user to the matching active account's ref and strips it from the args", async () => {
+    accounts = [
+      { email: "a@x.com", ref: "sub-a" },
+      { email: "b@x.com", ref: "sub-b" },
+    ];
     const res = await toolsRouter.request(
       "/drive_create_folder",
       { method: "POST", body: JSON.stringify({ name: "Reports", as_user: "b@x.com" }), headers: { "content-type": "application/json" } },
       env,
     );
     expect(res.status).toBe(200);
-    const [, ctx] = runTool.mock.calls[0] as any[];
-    expect(ctx.sub).toBe("api:b@x.com"); // as_user present → sentinel; acct() inside the tool uses the email
+    const [, ctx, args] = runTool.mock.calls[0] as any[];
+    expect(ctx.sub).toBe("sub-b"); // real ref, not a fake sentinel → asset keys correctly
+    expect(args).not.toHaveProperty("as_user"); // dropped so the tool uses ctx.sub directly
   });
 
-  it("errors clearly when no account is signed in and no as_user given", async () => {
+  it("rejects an as_user that is not a signed-in account (no impersonation)", async () => {
+    const res = await toolsRouter.request(
+      "/drive_create_folder",
+      { method: "POST", body: JSON.stringify({ name: "Reports", as_user: "stranger@evil.com" }), headers: { "content-type": "application/json" } },
+      env,
+    );
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(runTool).not.toHaveBeenCalled();
+  });
+
+  it("errors when no account is signed in and no as_user given", async () => {
     accounts = [];
     const res = await toolsRouter.request(
       "/drive_create_folder",
       { method: "POST", body: JSON.stringify({ name: "Reports" }), headers: { "content-type": "application/json" } },
       env,
     );
-    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.status).toBeGreaterThanOrEqual(400);
     expect(runTool).not.toHaveBeenCalled();
+  });
+
+  it("allows a call with an empty body when all args are optional", async () => {
+    // search_files has only optional args; an empty body must dispatch, not 400.
+    const res = await toolsRouter.request("/search_files", { method: "POST" }, env);
+    expect(res.status).toBe(200);
+    expect(runTool).toHaveBeenCalledTimes(1);
   });
 });

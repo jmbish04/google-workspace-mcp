@@ -17,22 +17,23 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 
 import { DriveService } from "@/backend/mcp/services/drive";
-import { acct } from "@/backend/mcp/tools";
-import { listCaptureAccounts } from "@/backend/gmail/sync-service";
+import { GoogleApiError } from "@/backend/mcp/googleClient";
+import { extractGoogleId } from "@/backend/google/core/ids";
 
+import { resolveActingRef } from "../lib/acting-account";
 import type { AppBindings } from "../index";
 
 export const driveRouter = new OpenAPIHono<AppBindings>();
 
-/** Acting Drive account ref: `dwd:email` for an explicit `as_user`, else the first active account. */
-async function actingRef(env: Env, asUser?: string): Promise<string> {
-  if (asUser) return acct("", { as_user: asUser });
-  const accounts = await listCaptureAccounts(env);
-  if (!accounts.length) {
-    throw new Error("No signed-in Google account. Sign in at /api/auth/google/oauth/start, or pass `as_user`.");
-  }
-  return accounts[0].ref;
+/** Simple `uploadType=media` buffers the whole body in memory — cap it. */
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+/** A form field's value only when it's a non-empty string (multipart parts can be Files). */
+function formStr(v: FormDataEntryValue | null): string | undefined {
+  return typeof v === "string" && v ? v : undefined;
 }
+
+const errorBody = z.object({ error: z.string() });
 
 const uploadResult = z.object({
   driveId: z.string(),
@@ -68,7 +69,9 @@ driveRouter.openapi(
     },
     responses: {
       200: { description: "Uploaded", content: { "application/json": { schema: uploadResult } } },
-      400: { description: "Missing file", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+      400: { description: "Missing file / unknown as_user", content: { "application/json": { schema: errorBody } } },
+      413: { description: "File too large", content: { "application/json": { schema: errorBody } } },
+      502: { description: "Upstream Google API error", content: { "application/json": { schema: errorBody } } },
     },
   }),
   async (c) => {
@@ -77,20 +80,33 @@ driveRouter.openapi(
     const form = await c.req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) return c.json({ error: "Missing `file` (multipart/form-data)." }, 400);
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return c.json({ error: `File too large (${file.size} bytes); max ${MAX_UPLOAD_BYTES}.` }, 413);
+    }
 
-    const asUser = (form.get("as_user") as string) || undefined;
-    const folderIdIn = (form.get("folderId") as string) || undefined;
-    const folderPath = (form.get("folderPath") as string) || undefined;
-    const name = ((form.get("name") as string) || file.name || "upload").toString();
+    const asUser = formStr(form.get("as_user"));
+    const folderIdIn = formStr(form.get("folderId"));
+    const folderPath = formStr(form.get("folderPath"));
+    const name = formStr(form.get("name")) ?? file.name ?? "upload";
     const mimeType = file.type || "application/octet-stream";
 
-    const drive = new DriveService(c.env, await actingRef(c.env, asUser));
-    const folderId = folderIdIn ?? (folderPath ? await drive.resolveFolderPath(folderPath) : undefined);
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const f = await drive.uploadBinary(name, mimeType, bytes, folderId);
-    const driveUrl = f.webViewLink ?? `https://drive.google.com/file/d/${f.id}/view`;
-
-    return c.json({ driveId: f.id, driveUrl, name: f.name, mimeType, folderId: folderId ?? null }, 200);
+    try {
+      const drive = new DriveService(c.env, await resolveActingRef(c.env, asUser));
+      // Accept a pasted Drive folder URL as well as a bare id (AGENTS rule 18).
+      const folderId = folderIdIn
+        ? extractGoogleId(folderIdIn)
+        : folderPath
+          ? await drive.resolveFolderPath(folderPath)
+          : undefined;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const f = await drive.uploadBinary(name, mimeType, bytes, folderId);
+      const driveUrl = f.webViewLink ?? `https://drive.google.com/file/d/${f.id}/view`;
+      return c.json({ driveId: f.id, driveUrl, name: f.name, mimeType, folderId: folderId ?? null }, 200);
+    } catch (err) {
+      // Never mirror an upstream Google status/body onto our response.
+      if (err instanceof GoogleApiError) return c.json({ error: `Upstream Google API error (${err.status}).` }, 502);
+      throw err;
+    }
   },
 );
 
@@ -116,12 +132,19 @@ driveRouter.openapi(
         description: "Folder resolved",
         content: { "application/json": { schema: z.object({ folderId: z.string(), folderUrl: z.string() }) } },
       },
+      400: { description: "Unknown as_user", content: { "application/json": { schema: errorBody } } },
+      502: { description: "Upstream Google API error", content: { "application/json": { schema: errorBody } } },
     },
   }),
   async (c) => {
     const { folderPath, as_user } = c.req.valid("json");
-    const drive = new DriveService(c.env, await actingRef(c.env, as_user));
-    const folderId = await drive.resolveFolderPath(folderPath);
-    return c.json({ folderId, folderUrl: `https://drive.google.com/drive/folders/${folderId}` }, 200);
+    try {
+      const drive = new DriveService(c.env, await resolveActingRef(c.env, as_user));
+      const folderId = await drive.resolveFolderPath(folderPath);
+      return c.json({ folderId, folderUrl: `https://drive.google.com/drive/folders/${folderId}` }, 200);
+    } catch (err) {
+      if (err instanceof GoogleApiError) return c.json({ error: `Upstream Google API error (${err.status}).` }, 502);
+      throw err;
+    }
   },
 );
