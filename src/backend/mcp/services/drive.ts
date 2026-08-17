@@ -30,7 +30,7 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
  * (reachable from user-supplied folder-path segments) produces a malformed or
  * attacker-shaped query.
  */
-function escapeDriveQuery(value: string): string {
+export function escapeDriveQuery(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
@@ -300,6 +300,14 @@ export class DriveService {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`, {
       method: "PATCH",
       body: JSON.stringify(opts.name !== undefined ? { name: opts.name } : {}),
+    });
+  }
+
+  /** Move a file/folder to the trash (reversible; `trashed=false` restores it). */
+  async trashFile(fileId: string, trashed = true): Promise<DriveFile> {
+    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?fields=id,name,trashed`, {
+      method: "PATCH",
+      body: JSON.stringify({ trashed }),
     });
   }
 

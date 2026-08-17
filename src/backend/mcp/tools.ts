@@ -43,7 +43,7 @@ import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render
 import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
 import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
 import { rasterizePdf, storeRender } from "@/backend/docs/browser-render";
-import { DriveService } from "./services/drive";
+import { DriveService, FOLDER_MIME, escapeDriveQuery, type DriveFile } from "./services/drive";
 import { extractGoogleId } from "@/backend/google/core/ids";
 import { DocsService } from "./services/docs";
 import { SheetsService } from "./services/sheets";
@@ -212,6 +212,47 @@ export function base64ToBytes(b64: string): Uint8Array {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
+/**
+ * Gmail's compose box renders body text in Arial 11pt, color #222222. A Doc
+ * styled this way copy-pastes into Gmail without the font being remapped — the
+ * reason gmail_draft_doc exists. rgb 0.13333334 == #222222.
+ */
+const GMAIL_BODY_TEXT_STYLE = {
+  weightedFontFamily: { fontFamily: "Arial", weight: 400 },
+  fontSize: { magnitude: 11, unit: "PT" },
+  foregroundColor: { color: { rgbColor: { red: 0.13333334, green: 0.13333334, blue: 0.13333334 } } },
+  bold: false,
+  italic: false,
+  underline: false,
+  strikethrough: false,
+};
+const GMAIL_BODY_STYLE_FIELDS = "weightedFontFamily,fontSize,foregroundColor,bold,italic,underline,strikethrough";
+
+/**
+ * Place a freshly-created Doc: move it into `folderRaw` if given, else — when a
+ * `keyword` is supplied but no id — leave it in root and return the folders whose
+ * name matches (scoped to type:folder) so the caller can pick one and move_file.
+ * Shared by docs_create and gmail_draft_doc.
+ */
+async function placeNewDoc(
+  drive: DriveService,
+  documentId: string,
+  folderRaw: string | undefined,
+  keyword: string | undefined,
+): Promise<{ folderId: string | null; folderMatches: DriveFile[] | null }> {
+  const folderId = folderRaw ? extractGoogleId(folderRaw) : null;
+  if (folderId) {
+    await drive.moveFile(documentId, folderId);
+    return { folderId, folderMatches: null };
+  }
+  if (keyword?.trim()) {
+    const kw = escapeDriveQuery(keyword.trim());
+    const q = `name contains '${kw}' and mimeType='${FOLDER_MIME}' and trashed=false`;
+    return { folderId: null, folderMatches: (await drive.search(q, 20)).files };
+  }
+  return { folderId: null, folderMatches: null };
+}
+
 export const TOOLS: ToolDef[] = [
   // ---- Drive -------------------------------------------------------------
   {
@@ -364,11 +405,31 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "move_file",
-    description: "Move a Drive file or folder into a target folder (detaches it from its current parents).",
-    inputSchema: z.object({ fileId: z.string(), targetFolderId: z.string(), ...asUser }),
+    description: "Move a Drive file or folder into a target folder (detaches it from its current parents). Give the destination as `targetFolderId` (aliases: `folderId`, `parentFolderId`).",
+    inputSchema: z
+      .object({
+        fileId: z.string(),
+        targetFolderId: z.string().optional(),
+        folderId: z.string().optional().describe("Alias for targetFolderId."),
+        parentFolderId: z.string().optional().describe("Alias for targetFolderId."),
+        ...asUser,
+      })
+      .refine((v) => Boolean(v.targetFolderId ?? v.folderId ?? v.parentFolderId), {
+        message: "Provide a destination folder (targetFolderId, folderId, or parentFolderId).",
+      }),
     async run({ env, sub }, a) {
-      const f = await new DriveService(env, acct(sub, a)).moveFile(a.fileId, a.targetFolderId);
-      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { movedTo: a.targetFolderId } } };
+      const dest = (a.targetFolderId ?? a.folderId ?? a.parentFolderId)!;
+      const f = await new DriveService(env, acct(sub, a)).moveFile(a.fileId, dest);
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { movedTo: dest } } };
+    },
+  },
+  {
+    name: "trash_file",
+    description: "Move a Drive file or folder to the trash (reversible). Pass `restore:true` to un-trash instead. This is NOT a permanent delete — items stay recoverable in Drive trash.",
+    inputSchema: z.object({ fileId: z.string(), restore: z.boolean().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const f = await new DriveService(env, acct(sub, a)).trashFile(a.fileId, !a.restore);
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { trashed: !a.restore } } };
     },
   },
   {
@@ -460,11 +521,67 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "docs_create",
-    description: "Create a Google Doc with a title.",
-    inputSchema: z.object({ title: z.string(), ...asUser }),
+    description:
+      "Create a Google Doc with a title. Folder placement is OPTIONAL: " +
+      "(1) pass `folderId` (alias `parentFolderId`) to place it — the Docs API always creates in My Drive root, so the doc is created then re-parented into that folder in one step; " +
+      "(2) pass `folderKeyword` when you know the folder by name but not its id — the doc is created (left in root) and the tool returns `folderMatches`, the folders whose name contains the keyword (search is scoped to type:folder), so you can then move_file the doc into the one you want; " +
+      "(3) pass neither to just create in root. The acting account (see `as_user`) must have write access to the destination folder. Returns { documentId, title, folderId, folderMatches }.",
+    inputSchema: z.object({
+      title: z.string(),
+      folderId: z.string().optional().describe("Destination folder id (or URL). The new doc is moved here after creation."),
+      parentFolderId: z.string().optional().describe("Alias for folderId."),
+      folderKeyword: z
+        .string()
+        .optional()
+        .describe("Folder name keyword. When set (and no folderId), the doc is left in root and matching folders (type:folder) are returned as `folderMatches` for a follow-up move_file."),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const d = await new DocsService(env, acct(sub, a)).create(a.title);
-      return { result: d, asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "create" } };
+      const account = acct(sub, a);
+      const drive = new DriveService(env, account);
+      const d = await new DocsService(env, account).create(a.title);
+      const { folderId, folderMatches } = await placeNewDoc(drive, d.documentId, a.folderId ?? a.parentFolderId, a.folderKeyword);
+      return {
+        result: { ...d, folderId, folderMatches },
+        asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "create", detail: { folderId } },
+      };
+    },
+  },
+  {
+    name: "gmail_draft_doc",
+    description:
+      "Create a Gmail message DRAFT as a Google Doc, pre-styled in Gmail's standard body format (Arial 11pt, color #222222) so it copy-pastes into the Gmail compose window without the font being remapped. Pass the message text as `body` (plain text; blank lines separate paragraphs) — it is inserted and styled in one step. Folder placement is optional and works exactly like docs_create: `folderId`/`parentFolderId` to place it, or `folderKeyword` to get back matching folders (type:folder) for a follow-up move_file, or neither to leave it in My Drive root. Acts as `as_user` (must have write access to any target folder). Returns { documentId, title, url, folderId, folderMatches }.",
+    inputSchema: z.object({
+      title: z.string().describe("Doc title (e.g. the email subject)."),
+      body: z.string().optional().describe("Message text. Inserted at the top and styled Gmail-standard. Use blank lines between paragraphs."),
+      folderId: z.string().optional().describe("Destination folder id (or URL). The draft is moved here after creation."),
+      parentFolderId: z.string().optional().describe("Alias for folderId."),
+      folderKeyword: z
+        .string()
+        .optional()
+        .describe("Folder name keyword. When set (and no folderId), the draft is left in root and matching folders are returned as `folderMatches` for a follow-up move_file."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const account = acct(sub, a);
+      const docs = new DocsService(env, account);
+      const drive = new DriveService(env, account);
+      const d = await docs.create(a.title);
+
+      const body = a.body ?? "";
+      if (body) {
+        // Insert the text then style the exact range it occupies — one atomic batch.
+        await docs.batchUpdate(d.documentId, [
+          { insertText: { location: { index: 1 }, text: body } },
+          { updateTextStyle: { range: { startIndex: 1, endIndex: 1 + body.length }, textStyle: GMAIL_BODY_TEXT_STYLE, fields: GMAIL_BODY_STYLE_FIELDS } },
+        ]);
+      }
+
+      const { folderId, folderMatches } = await placeNewDoc(drive, d.documentId, a.folderId ?? a.parentFolderId, a.folderKeyword);
+      return {
+        result: { ...d, url: `https://docs.google.com/document/d/${d.documentId}/edit`, folderId, folderMatches },
+        asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "create", detail: { folderId, gmailStyled: Boolean(body) } },
+      };
     },
   },
   {
