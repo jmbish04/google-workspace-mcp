@@ -303,6 +303,14 @@ export class DriveService {
     });
   }
 
+  /** Move a file/folder to the trash (reversible; `trashed=false` restores it). */
+  async trashFile(fileId: string, trashed = true): Promise<DriveFile> {
+    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?fields=id,name,trashed`, {
+      method: "PATCH",
+      body: JSON.stringify({ trashed }),
+    });
+  }
+
   /** Move a file/folder into `targetFolderId`, detaching it from its current parents. */
   async moveFile(fileId: string, targetFolderId: string): Promise<DriveFile> {
     const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?fields=parents`);

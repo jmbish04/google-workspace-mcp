@@ -424,6 +424,15 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "trash_file",
+    description: "Move a Drive file or folder to the trash (reversible). Pass `restore:true` to un-trash instead. This is NOT a permanent delete — items stay recoverable in Drive trash.",
+    inputSchema: z.object({ fileId: z.string(), restore: z.boolean().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const f = await new DriveService(env, acct(sub, a)).trashFile(a.fileId, !a.restore);
+      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { trashed: !a.restore } } };
+    },
+  },
+  {
     name: "list_folder_children",
     description: "List the direct children (files + folders) of a Drive folder. Paginated via pageToken.",
     inputSchema: z.object({ folderId: z.string(), pageToken: z.string().optional(), pageSize: z.number().int().min(1).max(1000).optional(), ...asUser }),
