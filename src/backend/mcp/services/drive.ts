@@ -30,7 +30,7 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
  * (reachable from user-supplied folder-path segments) produces a malformed or
  * attacker-shaped query.
  */
-function escapeDriveQuery(value: string): string {
+export function escapeDriveQuery(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 

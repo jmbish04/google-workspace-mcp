@@ -43,7 +43,7 @@ import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render
 import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
 import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
 import { rasterizePdf, storeRender } from "@/backend/docs/browser-render";
-import { DriveService, FOLDER_MIME, type DriveFile } from "./services/drive";
+import { DriveService, FOLDER_MIME, escapeDriveQuery, type DriveFile } from "./services/drive";
 import { extractGoogleId } from "@/backend/google/core/ids";
 import { DocsService } from "./services/docs";
 import { SheetsService } from "./services/sheets";
@@ -246,7 +246,7 @@ async function placeNewDoc(
     return { folderId, folderMatches: null };
   }
   if (keyword?.trim()) {
-    const kw = keyword.trim().replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const kw = escapeDriveQuery(keyword.trim());
     const q = `name contains '${kw}' and mimeType='${FOLDER_MIME}' and trashed=false`;
     return { folderId: null, folderMatches: (await drive.search(q, 20)).files };
   }
