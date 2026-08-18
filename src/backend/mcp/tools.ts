@@ -30,6 +30,7 @@ import { searchGmail } from "@/backend/gmail/search-service";
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { attachmentManifest } from "@/backend/gmail/attachments";
 import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
+import { buildFolderTree } from "@/backend/drive/folder-tree";
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
 import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
 import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
@@ -476,6 +477,25 @@ export const TOOLS: ToolDef[] = [
       const drive = new DriveService(env, acct(sub, a));
       const { nodes, truncated } = await walkFolder(drive, a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
       return { result: auditSharing(a.folderId, nodes, truncated, a.auditEmails ?? []), asset: { assetType: "drive", googleId: a.folderId, action: "read", detail: { audited: nodes.length } } };
+    },
+  },
+  {
+    name: "drive_folder_tree",
+    description:
+      "Recursively list every file and folder under a Drive folder — the standard folder/search report. Each entry has: id, name, mimeType, path (relative to the root folder), hash (md5Checksum, null for folders/native docs), size (bytes), quotaBytesUsed, createdTime, modifiedTime, viewedByMeTime, sharedWithMeTime, owners, sharingUser, permissions (full ACL as JSON), trashed, starred, explicitlyTrashed, parents, parentId, webViewLink, webContentLink, downloadUrl (webContentLink for binaries, an export URL for native docs, null for folders), isFolder. Accepts a folder id or URL. Bounded by maxNodes (default 2000; result carries truncated:true when the cap is hit). Defaults to the signed-in account; as_user overrides.",
+    inputSchema: z.object({
+      folderId: z.string(),
+      maxNodes: z.number().int().min(1).max(5000).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const rootId = extractGoogleId(a.folderId);
+      const drive = new DriveService(env, acct(sub, a));
+      const { nodes, truncated } = await walkFolder(drive, rootId, a.maxNodes ?? DEFAULT_MAX_NODES);
+      return {
+        result: buildFolderTree(rootId, nodes, truncated),
+        asset: { assetType: "drive", googleId: rootId, action: "read", detail: { listed: nodes.length } },
+      };
     },
   },
   {
