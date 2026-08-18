@@ -56,30 +56,49 @@ function fnName(tool: string): string {
   return `run_${camel.charAt(0).toUpperCase()}${camel.slice(1)}`;
 }
 
+/** Options that affect generation but aren't tool args. */
+export interface SnippetOptions {
+  /** Save the response `result` to this local path (curl `-o`, file write in Python/TS). */
+  outputPath?: string;
+}
+
 /**
  * Generate all language snippets for a script.
  *
  * @param baseUrl - origin of this deployment (e.g. https://gws.example.com)
+ * @param options - non-arg options (e.g. an output file path)
  */
 export function generateSnippets(
   spec: ScriptSpec,
   values: Record<string, string>,
   baseUrl: string,
+  options: SnippetOptions = {},
 ): GeneratedSnippet[] {
   const url = `${baseUrl.replace(/\/$/, "")}/api/tools/${spec.tool}`;
   const body = buildBody(spec, values);
   const json = JSON.stringify(body, null, 2);
   const jsonCompact = JSON.stringify(body);
   const fn = fnName(spec.tool);
+  const out = options.outputPath?.trim() || undefined;
 
-  const curl = [
-    `curl -X POST ${shellSingleQuote(url)} \\`,
-    `  -H "Authorization: Bearer $WORKER_API_KEY" \\`,
-    `  -H "Content-Type: application/json" \\`,
+  const curlLines = [
+    `curl -X POST ${shellSingleQuote(url)}`,
+    `  -H "Authorization: Bearer $WORKER_API_KEY"`,
+    `  -H "Content-Type: application/json"`,
     `  -d ${shellSingleQuote(jsonCompact)}`,
-    "",
-  ].join("\n");
+  ];
+  if (out) curlLines.push(`  -o ${shellSingleQuote(out)}`);
+  const curl = curlLines.join(" \\\n") + "\n";
 
+  const pythonTail = out
+    ? [
+        `result = resp.json()["result"]`,
+        `out_path = os.path.expanduser(${JSON.stringify(out)})`,
+        `with open(out_path, "w") as f:`,
+        `    json.dump(result, f, indent=2)`,
+        `print(f"Wrote {out_path}")`,
+      ]
+    : [`result = resp.json()["result"]`, `print(json.dumps(result, indent=2))`];
   const python = [
     `import json`,
     `import os`,
@@ -98,12 +117,21 @@ export function generateSnippets(
     `    json=body,`,
     `)`,
     `resp.raise_for_status()`,
-    `result = resp.json()["result"]`,
-    `print(json.dumps(result, indent=2))`,
+    ...pythonTail,
     ``,
   ].join("\n");
 
+  const tsImports = out ? [`import { writeFile } from "node:fs/promises";`, `import { homedir } from "node:os";`, ``] : [];
+  const tsTail = out
+    ? [
+        `const { result } = await res.json();`,
+        `const outPath = ${JSON.stringify(out)}.replace(/^~/, homedir());`,
+        `await writeFile(outPath, JSON.stringify(result, null, 2));`,
+        `console.log(\`Wrote \${outPath}\`);`,
+      ]
+    : [`const { result } = await res.json();`, `console.log(result);`];
   const typescript = [
+    ...tsImports,
     `const BASE = process.env.WORKER_BASE_URL ?? ${JSON.stringify(baseUrl)};`,
     `const TOKEN = process.env.WORKER_API_KEY!;`,
     ``,
@@ -118,8 +146,7 @@ export function generateSnippets(
     `  body: JSON.stringify(body),`,
     `});`,
     `if (!res.ok) throw new Error(\`HTTP \${res.status}: \${await res.text()}\`);`,
-    `const { result } = await res.json();`,
-    `console.log(result);`,
+    ...tsTail,
     ``,
   ].join("\n");
 

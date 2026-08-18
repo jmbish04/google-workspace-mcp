@@ -54,3 +54,26 @@ describe("generateSnippets", () => {
     expect(files[1].code).toContain("script.external_request");
   });
 });
+
+describe("generateSnippets with an output path", () => {
+  const snips = generateSnippets(spec, { folderId: "abc" }, "https://gws.example.com", {
+    outputPath: "~/Downloads/report.json",
+  });
+  const byId = Object.fromEntries(snips.map((s) => [s.id, s]));
+
+  it("adds curl -o with the path", () => {
+    expect(byId.curl.files[0].code).toContain("-o '~/Downloads/report.json'");
+  });
+
+  it("writes the file in Python and TypeScript", () => {
+    expect(byId.python.files[0].code).toContain("json.dump(result, f");
+    expect(byId.python.files[0].code).toContain("os.path.expanduser");
+    expect(byId.typescript.files[0].code).toContain("writeFile(outPath");
+  });
+
+  it("omits the file write when no path is given", () => {
+    const plain = generateSnippets(spec, { folderId: "abc" }, "https://gws.example.com");
+    expect(plain.find((s) => s.id === "curl")!.files[0].code).not.toContain("-o ");
+    expect(plain.find((s) => s.id === "python")!.files[0].code).toContain("print(json.dumps");
+  });
+});

@@ -40,8 +40,12 @@ export function ScriptStudio({ spec }: { spec: ScriptSpec }): React.ReactElement
   const [values, setValues] = React.useState<Record<string, string>>(() =>
     Object.fromEntries(spec.params.map((p) => [p.name, p.default ?? ""])),
   );
+  const [outputPath, setOutputPath] = React.useState(spec.defaultOutput ?? `~/Downloads/${spec.tool}.json`);
 
-  const snippets = React.useMemo(() => generateSnippets(spec, values, baseUrl), [spec, values, baseUrl]);
+  const snippets = React.useMemo(
+    () => generateSnippets(spec, values, baseUrl, { outputPath }),
+    [spec, values, baseUrl, outputPath],
+  );
 
   const setValue = (name: string, v: string): void => setValues((prev) => ({ ...prev, [name]: v }));
 
@@ -73,6 +77,24 @@ export function ScriptStudio({ spec }: { spec: ScriptSpec }): React.ReactElement
               {p.help ? <p className="text-xs text-muted-foreground">{p.help}</p> : null}
             </div>
           ))}
+
+          {/* Client-only: where curl/Python/TypeScript save the response. */}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="__outputPath" className="text-sm">
+              Save response to
+              <span className="ml-2 font-mono text-[11px] text-muted-foreground/60">output file</span>
+            </Label>
+            <Input
+              id="__outputPath"
+              value={outputPath}
+              placeholder="~/Downloads/report.json"
+              onChange={(e) => setOutputPath(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Local path for the downloaded JSON — curl <code className="font-mono">-o</code>, or a file write in
+              Python/TS. Clear it to just print the result. (Not used by Apps Script.)
+            </p>
+          </div>
         </div>
       </section>
 

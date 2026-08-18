@@ -37,6 +37,7 @@ export const SCRIPTS: ScriptSpec[] = [
       },
     ],
     resultNote: "Returns { rootId, count, files, folders, truncated, entries[] } — one entry per file/folder.",
+    defaultOutput: "~/Downloads/drive_folder_report.json",
   },
 ];
 
