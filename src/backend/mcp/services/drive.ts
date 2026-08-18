@@ -11,6 +11,9 @@ export type DrivePermission = {
   /** For `type: "anyone"` / `"domain"`: false ⇒ link-only (not searchable). */
   allowFileDiscovery?: boolean;
 };
+/** A Drive user/owner profile (subset of the People-ish shape Drive returns). */
+export type DriveUser = { displayName?: string; emailAddress?: string; photoLink?: string };
+
 /** A node (file or folder) returned by a listing, optionally carrying its permissions. */
 export type DriveNode = {
   id: string;
@@ -20,6 +23,25 @@ export type DriveNode = {
   parents?: string[];
   shared?: boolean;
   permissions?: DrivePermission[];
+  /** md5 hash — present only for binary files (not folders / Google-native docs). */
+  md5Checksum?: string;
+  /** Byte size as a string — absent for folders / Google-native docs. */
+  size?: string;
+  /** Direct-download link — present only for binary files (not folders / Google-native docs). */
+  webContentLink?: string;
+  createdTime?: string;
+  modifiedTime?: string;
+  viewedByMeTime?: string;
+  sharedWithMeTime?: string;
+  /** Storage quota this file consumes, as a string of bytes. */
+  quotaBytesUsed?: string;
+  owners?: DriveUser[];
+  /** The user who explicitly shared the file (present on shared-with-me items). */
+  sharingUser?: DriveUser;
+  trashed?: boolean;
+  starred?: boolean;
+  /** True when this file itself was trashed (vs inheriting trash from a parent). */
+  explicitlyTrashed?: boolean;
 };
 
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -262,7 +284,11 @@ export class DriveService {
     folderId: string,
     opts: { pageToken?: string; pageSize?: number } = {},
   ): Promise<{ files: DriveNode[]; nextPageToken?: string }> {
-    const fields = `nextPageToken,files(id,name,mimeType,webViewLink,parents,shared,permissions(${PERMISSION_FIELDS}))`;
+    const fields =
+      `nextPageToken,files(id,name,mimeType,webViewLink,webContentLink,parents,shared,starred,trashed,explicitlyTrashed,` +
+      `md5Checksum,size,quotaBytesUsed,createdTime,modifiedTime,viewedByMeTime,sharedWithMeTime,` +
+      `owners(displayName,emailAddress,photoLink),sharingUser(displayName,emailAddress,photoLink),` +
+      `permissions(${PERMISSION_FIELDS}))`;
     const params = new URLSearchParams({
       q: `'${folderId}' in parents and trashed=false`,
       fields,
