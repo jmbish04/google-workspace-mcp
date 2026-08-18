@@ -40,4 +40,6 @@ export interface ScriptSpec {
   params: ScriptParam[];
   /** Optional note about what the tool returns. */
   resultNote?: string;
+  /** Default local path to save the response to (curl `-o`, file write in Python/TS). */
+  defaultOutput?: string;
 }
