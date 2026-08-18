@@ -616,7 +616,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_style_text",
     description:
-      "Style EXISTING text in a Google Doc by matching the literal string — NO index math. Finds `find` (the nth `instance`, default 1), resolves its real UTF-16 range, and applies character styles (bold/italic/underline/strikethrough/color/backgroundColor/fontSize/fontFamily/link) and/or a paragraph `namedStyleType` (HEADING_1..6/TITLE/SUBTITLE/NORMAL_TEXT). This is the reliable way to 'bold this sentence' / 'color that phrase' / 'make this a heading' — use it instead of hand-authoring docs_batch_update indices (which drift as edits apply). Throws if the text isn't found. Defaults to the SA identity; as_user overrides.",
+      "Style EXISTING text in a Google Doc by matching the literal string — NO index math. Finds `find` (the nth `instance`, default 1), resolves its real UTF-16 range, and applies character styles (bold/italic/underline/strikethrough/color/backgroundColor/fontSize/fontFamily/link) and/or a paragraph `namedStyleType` (HEADING_1..6/TITLE/SUBTITLE/NORMAL_TEXT). This is the reliable way to 'bold this sentence' / 'color that phrase' / 'make this a heading' — use it instead of hand-authoring docs_batch_update indices (which drift as edits apply). Throws if the text isn't found. Defaults to the signed-in account; as_user overrides.",
     inputSchema: z.object({
       documentId: z.string(),
       find: z.string().min(1),
@@ -646,8 +646,10 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
-      const docs = new GoogleDocsClient(env, account);
+      // GoogleDocsClient auth routes through auth/provider, which does NOT
+      // understand the mcp "sa" selector — use the signed-in account (or as_user),
+      // same as the other GoogleDocsClient consumer (reviewDoc).
+      const docs = new GoogleDocsClient(env, acct(sub, a));
       const range = await docs.findElement(a.documentId, a.find, a.instance ?? 1);
       if (!range) {
         throw new Error(`Text not found: ${JSON.stringify(a.find)}${a.instance ? ` (instance ${a.instance})` : ""}`);
