@@ -1,0 +1,53 @@
+---
+/**
+ * `/docs/scripts` — the downloadable scripts suite. Lists every script in the
+ * registry; each links to its own generator page. Add scripts in
+ * `lib/scripts/registry.ts` and they show up here automatically.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+import { SCRIPTS } from "@/lib/scripts/registry";
+---
+
+<BaseLayout
+  title="Scripts"
+  description="Downloadable, ready-to-run scripts for common Google Workspace tasks — cURL, Python, TypeScript, and Apps Script."
+>
+  <div class="container mx-auto max-w-5xl px-4 py-16">
+    <section class="mb-12">
+      <Badge variant="outline" class="mb-4 font-mono text-[11px]">Docs · Scripts</Badge>
+      <h1 class="text-balance text-4xl font-bold tracking-tight sm:text-5xl">Scripts</h1>
+      <p class="mt-5 max-w-3xl text-lg leading-relaxed text-muted-foreground">
+        Ready-to-run scripts for common Workspace jobs. Fill in a few parameters and copy or download
+        the snippet as <span class="font-medium text-foreground">cURL</span>,
+        <span class="font-medium text-foreground">Python</span>,
+        <span class="font-medium text-foreground">TypeScript</span>, or an
+        <span class="font-medium text-foreground">Apps Script</span> project. Every script calls this
+        server's REST bridge (<code class="rounded bg-muted px-1 py-0.5 font-mono text-xs">POST /api/tools/&lt;tool&gt;</code>).
+      </p>
+    </section>
+
+    <section>
+      <div class="grid gap-4 sm:grid-cols-2">
+        {SCRIPTS.map((s) => (
+          <a
+            href={`/docs/scripts/${s.slug}`}
+            class="group flex flex-col rounded-xl bg-card p-5 ring-1 ring-border/40 transition-colors hover:ring-border/70"
+          >
+            <div class="mb-1 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <span class="text-xl">{s.emoji}</span>
+                <h3 class="font-semibold group-hover:underline">{s.title}</h3>
+              </div>
+              <Badge variant="outline" class="text-[11px]">{s.tag}</Badge>
+            </div>
+            <p class="mt-1 text-sm text-muted-foreground">{s.summary}</p>
+            <span aria-hidden class="mt-3 text-sm text-primary transition-transform group-hover:translate-x-0.5">
+              Open →
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
+  </div>
+</BaseLayout>
