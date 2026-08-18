@@ -47,6 +47,11 @@ export function apiGuide(): string {
     "- `return` your final value (JSON-serializable). Use `console.log(...)` for debug output.",
     "- The sandbox has NO network access and NO secrets — only `tools.*` reaches the outside world.",
     "- Errors thrown (including tool errors) are returned as `{ ok:false, error }`.",
+    "",
+    "## Markdown → Google Docs (two SEPARATE methods)",
+    "- `docs_create_from_markdown({ name, markdown })` — Method 1: Drive's native importer turns a WHOLE Markdown string into a NEW doc (high fidelity: tables, lists, links). New doc only.",
+    "- `docs_append_markdown({ documentId, markdown })` — Method 2: our own Markdown→batchUpdate mapping APPENDS to an EXISTING doc (headings/bold/italic/code/lists; no tables/images).",
+    "  Pick by intent: creating a doc from Markdown → method 1; adding Markdown into a doc that already exists → method 2.",
   ].join("\n");
 }
 

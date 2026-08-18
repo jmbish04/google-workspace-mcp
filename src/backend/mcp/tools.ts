@@ -33,6 +33,8 @@ import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table
 import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
 import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/schema";
 import { htmlToRequests } from "@/backend/docs/html-to-braille";
+import { markdownToRequests } from "@/backend/docs/markdown-to-requests";
+import { docBodyContent } from "@/backend/docs/locate";
 import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
 import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
 import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
@@ -373,6 +375,65 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       await new DocsService(env, acct(sub, a)).insertImage(a.documentId, a.uri, a.index);
       return { result: { ok: true }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { image: true } } };
+    },
+  },
+  {
+    name: "docs_style_text",
+    description:
+      "Style EXISTING text in a Google Doc by matching the literal string — NO index math. Finds `find` (the nth `instance`, default 1), resolves its real UTF-16 range, and applies character styles (bold/italic/underline/strikethrough/color/backgroundColor/fontSize/fontFamily/link) and/or a paragraph `namedStyleType` (HEADING_1..6/TITLE/SUBTITLE/NORMAL_TEXT). This is the reliable way to 'bold this sentence' / 'color that phrase' / 'make this a heading' — use it instead of hand-authoring docs_batch_update indices (which drift as edits apply). Throws if the text isn't found. Defaults to the SA identity; as_user overrides.",
+    inputSchema: z.object({
+      documentId: z.string(),
+      find: z.string().min(1),
+      instance: z.number().int().min(1).optional(),
+      bold: z.boolean().optional(),
+      italic: z.boolean().optional(),
+      underline: z.boolean().optional(),
+      strikethrough: z.boolean().optional(),
+      fontSize: z.number().positive().optional().describe("Points."),
+      fontFamily: z.string().optional(),
+      color: z.string().optional().describe("Foreground hex, #RRGGBB or #RGB."),
+      backgroundColor: z.string().optional().describe("Highlight hex, #RRGGBB or #RGB."),
+      linkUrl: z.string().url().optional(),
+      namedStyleType: z
+        .enum([
+          "NORMAL_TEXT",
+          "TITLE",
+          "SUBTITLE",
+          "HEADING_1",
+          "HEADING_2",
+          "HEADING_3",
+          "HEADING_4",
+          "HEADING_5",
+          "HEADING_6",
+        ])
+        .optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const account = a.as_user ? acct(sub, a) : "sa";
+      const docs = new GoogleDocsClient(env, account);
+      const range = await docs.findElement(a.documentId, a.find, a.instance ?? 1);
+      if (!range) {
+        throw new Error(`Text not found: ${JSON.stringify(a.find)}${a.instance ? ` (instance ${a.instance})` : ""}`);
+      }
+      await docs.applyTextStyle(a.documentId, range.startIndex, range.endIndex, {
+        bold: a.bold,
+        italic: a.italic,
+        underline: a.underline,
+        strikethrough: a.strikethrough,
+        fontSize: a.fontSize,
+        fontFamily: a.fontFamily,
+        foregroundColor: a.color,
+        backgroundColor: a.backgroundColor,
+        linkUrl: a.linkUrl,
+      });
+      if (a.namedStyleType) {
+        await docs.applyParagraphStyle(a.documentId, range.startIndex, range.endIndex, { namedStyleType: a.namedStyleType });
+      }
+      return {
+        result: { documentId: a.documentId, range },
+        asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { styledText: a.find.slice(0, 40) } },
+      };
     },
   },
   // ---- Sheets ------------------------------------------------------------
@@ -1525,6 +1586,34 @@ export const TOOLS: ToolDef[] = [
       if (!requests.length) throw new Error("No renderable content parsed from the HTML.");
       await new DocsService(env, account).batchUpdate(a.documentId, requests);
       return { result: { documentId: a.documentId, blocks: requests.length }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { htmlImport: true } } };
+    },
+  },
+  {
+    name: "docs_create_from_markdown",
+    description:
+      "METHOD 1 (whole new doc): Convert an ENTIRE Markdown string into a NEW native Google Doc using Drive's own Markdown importer. High fidelity — Google maps headings, tables, lists, links, code. Returns the new doc id + url. Use this when the Markdown IS the whole document. To add Markdown to an EXISTING doc, use docs_append_markdown instead. Defaults to the SA identity; as_user overrides.",
+    inputSchema: z.object({ name: z.string(), markdown: z.string(), parentId: z.string().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const account = a.as_user ? acct(sub, a) : "sa";
+      const f = await new DriveService(env, account).createDocFromMarkdown(a.name, a.markdown, a.parentId);
+      return { result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink }, asset: { assetType: "doc", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { markdownImport: true } } };
+    },
+  },
+  {
+    name: "docs_append_markdown",
+    description:
+      "METHOD 2 (append to existing doc): Convert a Markdown string into native Docs batchUpdate requests and append them to the END of an EXISTING Google Doc — headings become HEADING_n paragraphs, **bold**/*italic*/`code`/bullets/numbered lists are styled. Differs from docs_create_from_markdown, which uses Drive's importer to make a NEW doc. Tables/images are not mapped here (use table_factory / native importer). Pass tabId to append into a specific tab. Defaults to the SA identity; as_user overrides.",
+    inputSchema: z.object({ documentId: z.string(), markdown: z.string(), tabId: z.string().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      const account = a.as_user ? acct(sub, a) : "sa";
+      const docs = new DocsService(env, account);
+      const content = docBodyContent(await docs.getRaw(a.documentId), a.tabId);
+      // Insert before the final segment newline (the index after the last element is endIndex-1).
+      const endIndex = Math.max(1, (content.at(-1)?.endIndex ?? 1) - 1);
+      const requests = markdownToRequests(a.markdown, endIndex, a.tabId);
+      if (!requests.length) throw new Error("No renderable content parsed from the Markdown.");
+      await docs.batchUpdate(a.documentId, requests);
+      return { result: { documentId: a.documentId, blocks: requests.length, at: endIndex }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { markdownAppend: true } } };
     },
   },
   {

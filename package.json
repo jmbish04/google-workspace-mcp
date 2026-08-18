@@ -67,6 +67,7 @@
     "jose": "^6.2.4",
     "js-md5": "^0.9.2",
     "lucide-react": "^0.575.0",
+    "marked": "^18.0.10",
     "mind-elixir": "5.13.0",
     "mustache": "^4.2.0",
     "node-html-parser": "^9.0.1",

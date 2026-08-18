@@ -1,4 +1,5 @@
 import { googleJson } from "../googleClient";
+import { extractGoogleId } from "@/backend/google/core/ids";
 
 export type GoogleDoc = { documentId: string; title: string };
 
@@ -8,21 +9,22 @@ export class DocsService {
   constructor(private env: Env, private sub: string) {}
 
   async get(documentId: string): Promise<GoogleDoc> {
-    return googleJson<GoogleDoc>(this.env, this.sub, `${BASE}/${documentId}`);
+    return googleJson<GoogleDoc>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}`);
   }
 
   /**
    * Fetch the full raw Docs JSON ("braille"), tab-aware. Hardcodes
    * `includeTabsContent=true` so every tab is visible — otherwise the API
-   * returns only the first tab in the legacy root `body`.
+   * returns only the first tab in the legacy root `body`. Accepts a bare doc ID
+   * or any Docs URL (normalized via {@link extractGoogleId}).
    */
   async getRaw<T = unknown>(documentId: string): Promise<T> {
-    return googleJson<T>(this.env, this.sub, `${BASE}/${documentId}?includeTabsContent=true`);
+    return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}?includeTabsContent=true`);
   }
 
   /** Run an arbitrary array of Docs API requests atomically (the full grammar). */
   async batchUpdate<T = unknown>(documentId: string, requests: unknown[]): Promise<T> {
-    return googleJson<T>(this.env, this.sub, `${BASE}/${documentId}:batchUpdate`, {
+    return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {
       method: "POST",
       body: JSON.stringify({ requests }),
     });
@@ -36,7 +38,7 @@ export class DocsService {
   }
 
   async insertText(documentId: string, text: string, index = 1): Promise<void> {
-    await googleJson(this.env, this.sub, `${BASE}/${documentId}:batchUpdate`, {
+    await googleJson(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {
       method: "POST",
       body: JSON.stringify({
         requests: [{ insertText: { location: { index }, text } }],
@@ -45,7 +47,7 @@ export class DocsService {
   }
 
   async replaceText(documentId: string, find: string, replace: string, matchCase = false): Promise<void> {
-    await googleJson(this.env, this.sub, `${BASE}/${documentId}:batchUpdate`, {
+    await googleJson(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {
       method: "POST",
       body: JSON.stringify({
         requests: [{ replaceAllText: { containsText: { text: find, matchCase }, replaceText: replace } }],
@@ -54,7 +56,7 @@ export class DocsService {
   }
 
   async insertImage(documentId: string, uri: string, index = 1): Promise<void> {
-    await googleJson(this.env, this.sub, `${BASE}/${documentId}:batchUpdate`, {
+    await googleJson(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {
       method: "POST",
       body: JSON.stringify({
         requests: [{ insertInlineImage: { uri, location: { index } } }],
