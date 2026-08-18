@@ -26,7 +26,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Type check
-        run: pnpm exec tsc --noEmit
+        # tools.ts is a very large single-file tool catalog; the type checker
+        # needs a bigger V8 stack than the default to walk it without a
+        # RangeError (stack overflow). Routed through the `typecheck` script so
+        # local and CI use the same stack size.
+        run: pnpm run typecheck
 
       - name: Tests
         run: pnpm exec vitest run

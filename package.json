@@ -17,6 +17,7 @@
     "preview": "wrangler dev",
     "start": "astro dev",
     "test": "vitest run",
+    "typecheck": "node --stack-size=8000 node_modules/typescript/lib/tsc.js --noEmit",
     "fmt": "oxfmt",
     "lint": "oxlint",
     "check": "oxlint && oxfmt",

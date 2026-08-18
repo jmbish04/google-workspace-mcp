@@ -177,6 +177,30 @@ export class DriveService {
     return meta;
   }
 
+  /**
+   * Import a Markdown string as a NEW native Google Doc via Drive's own
+   * converter (metadata mimeType = Google Doc, media = text/markdown). High
+   * fidelity — Google handles headings, tables, lists, etc. Creates a new file
+   * only; to append Markdown into an existing doc use the Docs batchUpdate path.
+   */
+  async createDocFromMarkdown(name: string, markdown: string, parentId?: string): Promise<DriveFile> {
+    const boundary = "-------314159265358979323846";
+    const metadata = { name, mimeType: "application/vnd.google-apps.document", parents: parentId ? [parentId] : undefined };
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Type: text/markdown; charset=UTF-8\r\n\r\n` +
+      `${markdown}\r\n` +
+      `--${boundary}--`;
+    return googleJson<DriveFile>(this.env, this.sub, `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink`, {
+      method: "POST",
+      headers: { "content-type": `multipart/related; boundary=${boundary}` },
+      body,
+    });
+  }
+
   async copy(fileId: string, name: string, parentId?: string): Promise<DriveFile> {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`, {
       method: "POST",
