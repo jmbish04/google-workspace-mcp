@@ -112,7 +112,7 @@ export function TemplateLandingPage({ currentPath }: TemplateLandingPageProps) {
             <CardDescription className="max-w-3xl text-base">
               Replace this landing page with your project's real frontend, keep the shared header
               visible on all pages, and preserve the dynamic docs endpoints at{" "}
-              <code>/openapi.json</code>, <code>/swagger</code>, and <code>/scaler</code>.
+              <code>/openapi.json</code>, <code>/swagger</code>, and <code>/scalar</code>.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
@@ -161,7 +161,7 @@ export function TemplateLandingPage({ currentPath }: TemplateLandingPageProps) {
               description: "Interactive docs rendered from the same live OpenAPI definition.",
             },
             {
-              href: "/scaler",
+              href: "/scalar",
               label: "Scaler Docs",
               description: "Friendly docs route kept as a dynamic pointer for generated repos.",
             },
@@ -199,7 +199,7 @@ export function TemplateLandingPage({ currentPath }: TemplateLandingPageProps) {
               /openapi.json
             </span>
             <span className="rounded-md border border-border bg-muted/40 px-3 py-1">/swagger</span>
-            <span className="rounded-md border border-border bg-muted/40 px-3 py-1">/scaler</span>
+            <span className="rounded-md border border-border bg-muted/40 px-3 py-1">/scalar</span>
           </CardContent>
           <CardFooter className="border-t pt-4">
             <Button type="button" variant="ghost" onClick={() => void openLinkSafely("/")}>

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { extractAttachmentParts, isJunkAttachment, keepableAttachments } from "../attachments";
+import { extractAttachmentParts, isJunkAttachment, keepableAttachments, attachmentManifest } from "../attachments";
 
 const att = (over: Partial<ReturnType<typeof extractAttachmentParts>[number]>) => ({
   attachmentId: "a",
@@ -42,5 +42,20 @@ describe("extractAttachmentParts + keepableAttachments", () => {
     expect(extractAttachmentParts(payload)).toHaveLength(2);
     const kept = keepableAttachments(payload);
     expect(kept.map((k) => k.filename)).toEqual(["invoice.pdf"]);
+  });
+
+  it("builds a metadata-only manifest (count + real attachments)", () => {
+    const m = attachmentManifest(payload);
+    expect(m.count).toBe(1);
+    expect(m.attachments).toEqual([
+      { filename: "invoice.pdf", mimeType: "application/pdf", size: 120000, attachmentId: "att2" },
+    ]);
+  });
+
+  it("returns an empty manifest for a message with no attachments", () => {
+    expect(attachmentManifest({ parts: [{ mimeType: "text/plain", body: { data: "x" } }] })).toEqual({
+      count: 0,
+      attachments: [],
+    });
   });
 });

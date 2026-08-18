@@ -1,0 +1,100 @@
+---
+/**
+ * `/gws/template-gallery` — a visual chooser for the reusable Drive templates the
+ * agent can instantiate (doc / sheet / slide / form). SSR-fetched from the same
+ * `GET /api/gws/templates` registry as `/gws/templates`, but presented as a
+ * grouped, pick-a-template gallery. Agents instantiate a pick with
+ * `instantiate_from_template` (inside code_mode_run).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+
+type Template = {
+  id: string;
+  name: string;
+  description: string | null;
+  templateType: string;
+  driveId: string;
+  driveUrl: string;
+  tags: string[] | null;
+};
+
+let templates: Template[] = [];
+try {
+  const res = await fetch(new URL("/api/gws/templates", Astro.url), {
+    headers: { cookie: Astro.request.headers.get("cookie") ?? "" },
+  });
+  if (res.ok) ({ templates } = (await res.json()) as { templates: Template[] });
+} catch {
+  templates = [];
+}
+
+/** Only allow http(s) hrefs — Astro escapes attribute text but does NOT strip a `javascript:` scheme. */
+const safeHref = (url: string): string => (/^https?:\/\//i.test(url) ? url : "#");
+
+const ICONS: Record<string, string> = { doc: "📄", sheet: "📊", slide: "📽️", form: "📝", drive: "📁" };
+const ORDER = ["doc", "sheet", "slide", "form", "drive"];
+const groups = ORDER.map((type) => ({ type, items: templates.filter((t) => t.templateType === type) })).filter((g) => g.items.length > 0);
+// Any unknown types not in ORDER.
+const other = templates.filter((t) => !ORDER.includes(t.templateType));
+if (other.length) groups.push({ type: "other", items: other });
+---
+
+<BaseLayout
+  title="Template Gallery"
+  description="Pick a reusable Drive template to instantiate — documents, sheets, slides, and forms."
+>
+  <div class="container mx-auto max-w-5xl px-4 py-16">
+    <section class="mb-10 space-y-4">
+      <Badge variant="outline" class="font-mono text-[11px]">{templates.length} templates</Badge>
+      <h1 class="text-balance text-4xl font-bold tracking-tight">Template Gallery</h1>
+      <p class="max-w-2xl text-base text-muted-foreground">
+        Reusable Google Drive templates, grouped by type. Open one to inspect it, or have the agent
+        instantiate a copy with <code class="text-primary">instantiate_from_template</code>.
+      </p>
+    </section>
+
+    {groups.length === 0 ? (
+      <p class="rounded-xl bg-card p-8 text-center text-sm text-muted-foreground ring-1 ring-border/40">
+        No templates registered yet. Register one with <code class="text-primary">get_template</code> /
+        the template tools, or <a href="/auth/google" class="text-primary hover:underline">sign in</a> to view yours.
+      </p>
+    ) : (
+      <div class="space-y-10">
+        {groups.map((g) => (
+          <section>
+            <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              <span class="text-base">{ICONS[g.type] ?? "📁"}</span>{g.type}
+              <span class="font-mono text-[11px] text-muted-foreground/70">({g.items.length})</span>
+            </h2>
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {g.items.map((t) => (
+                <a
+                  href={safeHref(t.driveUrl)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="group flex flex-col rounded-xl bg-card p-4 ring-1 ring-border/40 transition hover:ring-primary/50"
+                >
+                  <div class="mb-2 flex items-start justify-between gap-2">
+                    <span class="text-2xl">{ICONS[t.templateType] ?? "📁"}</span>
+                    <Badge variant="secondary" class="text-[10px] capitalize">{t.templateType}</Badge>
+                  </div>
+                  <div class="font-semibold leading-tight group-hover:text-primary">{t.name}</div>
+                  {t.description && <p class="mt-1 line-clamp-3 text-sm text-muted-foreground">{t.description}</p>}
+                  {t.tags && t.tags.length > 0 && (
+                    <div class="mt-3 flex flex-wrap gap-1">
+                      {t.tags.map((tag) => (
+                        <Badge variant="outline" class="text-[10px]">{tag}</Badge>
+                      ))}
+                    </div>
+                  )}
+                  <div class="mt-3 font-mono text-[10px] text-muted-foreground/70">{t.driveId}</div>
+                </a>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    )}
+  </div>
+</BaseLayout>

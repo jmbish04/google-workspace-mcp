@@ -39,3 +39,29 @@ export function extractGoogleId(input: string): string {
   const match = trimmed.match(GOOGLE_ID_REGEX);
   return match ? match[1] : trimmed;
 }
+
+/**
+ * Normalize a single Drive ref or an array of refs (ids and/or full urls, freely
+ * mixed) into `{ requested, id }` pairs — each element run through
+ * {@link extractGoogleId}. Blanks and non-strings are dropped; ids are
+ * de-duplicated within the call. `requested` preserves the caller's original
+ * string for reporting.
+ *
+ * Use this ANY time a tool accepts Drive ids as params, so a url slipped into an
+ * element still resolves — most Google APIs key off the bare id, not the url.
+ */
+export function parseDriveRefs(input: string | string[]): { requested: string; id: string }[] {
+  const list = Array.isArray(input) ? input : [input];
+  const out: { requested: string; id: string }[] = [];
+  const seen = new Set<string>();
+  for (const raw of list) {
+    if (typeof raw !== "string") continue;
+    const requested = raw.trim();
+    if (!requested) continue;
+    const id = extractGoogleId(requested);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ requested, id });
+  }
+  return out;
+}

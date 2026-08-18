@@ -58,7 +58,7 @@ describe("GET /api/gws/tools", () => {
     expect(res.status).toBe(200);
     const json: any = await res.json();
     const names = json.tools.map((t: any) => t.name);
-    expect(names).toEqual(["code_mode_api", "code_mode_run"]);
+    expect(names).toEqual(["code_mode_search", "code_mode_run"]);
 
     const codeModeRun = json.tools.find((t: any) => t.name === "code_mode_run");
     expect(typeof codeModeRun.description).toBe("string");

@@ -9,12 +9,16 @@ presentations, emails, chat, and calendar events without leaving your terminal.
 ## Cloudflare Worker MCP
 
 This repo also ships a self-hostable **remote MCP server** on Cloudflare Workers.
-As of August 10, 2026, the public `/mcp` surface is **code-mode-first**: clients
-discover `code_mode_api`, then use `code_mode_run` to orchestrate the internal
-Google Workspace tool catalog with a much smaller token footprint than exposing
-every native tool directly. The Worker still provides stateless JSON-RPC over
-`/mcp`, single-Worker deployment, D1-backed operation/asset logging, and
-per-user Google OAuth (multi-user, keyed by Google account). See
+The public `/mcp` surface is **code-mode-first** (search + execute — the entire
+toolset in ~1k tokens regardless of tool count): clients discover with
+`code_mode_search` (which filters the catalog inside a sandbox and returns only
+the subset needed), then use `code_mode_run` to orchestrate the internal Google
+Workspace tools (`await tools.<name>(args)`) — a far smaller token footprint
+than advertising every native tool directly (per Cloudflare's
+[Code Mode](https://developers.cloudflare.com/agents/model-context-protocol/codemode/)).
+The Worker still provides stateless JSON-RPC over `/mcp`, single-Worker
+deployment, D1-backed operation/asset logging, and per-user Google OAuth
+(multi-user, keyed by Google account). See
 [`/gws/setup`](src/frontend/pages/gws/setup.astro) (served at `/gws/setup` once
 deployed) for the full setup and deploy walkthrough: OAuth client creation,
 `wrangler secret put`, KV/D1 bindings, `pnpm run migrate:remote`, `pnpm run

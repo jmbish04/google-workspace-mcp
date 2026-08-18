@@ -30,10 +30,11 @@ try {
       <Badge variant="outline" class="font-mono text-[11px]">{tools.length} tools</Badge>
       <h1 class="text-balance text-4xl font-bold tracking-tight">MCP Tools</h1>
       <p class="max-w-2xl text-base text-muted-foreground">
-        The public MCP surface is intentionally code-mode-only: discover the catalog with
-        <code class="text-primary">code_mode_api</code>, then orchestrate Workspace actions through
-        <code class="text-primary">code_mode_run</code>. Loaded live from
-        <code class="text-primary">GET /api/gws/tools</code>.
+        The public MCP surface is intentionally code-mode-only (~1k tokens regardless of tool count):
+        <code class="text-primary">code_mode_search</code> filters the catalog inside a sandbox and returns only
+        what you need, then <code class="text-primary">code_mode_run</code> executes it
+        (<code class="text-primary">await tools.&lt;name&gt;(args)</code>).
+        Loaded live from <code class="text-primary">GET /api/gws/tools</code>.
       </p>
     </section>
 
@@ -52,16 +53,7 @@ try {
               </div>
               <span aria-hidden class="shrink-0 text-muted-foreground transition-transform group-open:rotate-180">▾</span>
             </summary>
-            <div class="grid gap-px border-t border-border/40 bg-border/40 md:grid-cols-2">
-              <div class="bg-muted/30">
-                <div class="px-5 py-3 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Input schema</div>
-                <pre class="overflow-x-auto px-5 py-4 font-mono text-xs leading-relaxed text-foreground/90">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
-              </div>
-              <div class="bg-muted/20">
-                <div class="px-5 py-3 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Output schema</div>
-                <pre class="overflow-x-auto px-5 py-4 font-mono text-xs leading-relaxed text-foreground/90">{JSON.stringify(tool.outputSchema ?? {}, null, 2)}</pre>
-              </div>
-            </div>
+            <pre class="overflow-x-auto border-t border-border/40 bg-muted/30 px-5 py-4 font-mono text-xs leading-relaxed text-foreground/90">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
           </details>
         ))}
       </div>

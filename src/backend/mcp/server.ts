@@ -17,6 +17,7 @@ import { verifySessionCookie } from "@/backend/lib/cookies";
 import { logOperation, logAssetTouch } from "./logging";
 import { resolveAccessToken, oauthBaseUrl } from "./oauth";
 import { MCP_EXPOSED_TOOLS } from "./tools";
+import { runTool } from "./tool-runner";
 
 type JsonRpcRequest = { jsonrpc?: string; id?: string | number | null; method: string; params?: any };
 type JsonRpcResponse = { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } };
@@ -138,7 +139,7 @@ async function dispatch(req: JsonRpcRequest, env: Env, sub: string | null): Prom
 
       const started = Date.now();
       try {
-        const { result, asset } = await tool.run({ env, sub }, parsedArgs);
+        const { result, asset } = await runTool(tool, { env, sub }, parsedArgs);
         // ponytail: mcp_logs is served by public-ish /api/gws/operations to any
         // signed-in user — never persist raw arg values or response bodies
         // (gmail_send body, gmail_list contents, etc). Key names are enough for

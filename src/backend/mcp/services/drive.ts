@@ -24,6 +24,16 @@ export type DriveNode = {
 
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
+/**
+ * Escape a value for use inside a Drive `q` string literal. Backslash MUST be
+ * escaped before the quote, otherwise a segment like `a\` or `a\' and '1'='1`
+ * (reachable from user-supplied folder-path segments) produces a malformed or
+ * attacker-shaped query.
+ */
+export function escapeDriveQuery(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 const BASE = "https://www.googleapis.com/drive/v3";
 const UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
 const FIELDS = "files(id,name,mimeType,webViewLink),nextPageToken";
@@ -57,8 +67,43 @@ export class DriveService {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
   }
 
+  /** Parent folder ids of a file (empty when the file lives in My Drive root). */
+  async getParents(fileId: string): Promise<string[]> {
+    const params = new URLSearchParams({ fields: "parents", supportsAllDrives: "true" });
+    const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
+    return meta.parents ?? [];
+  }
+
+  /** Name / mimeType / byte size / view link — for deciding attach-vs-link. */
+  async getContentMeta(fileId: string): Promise<{ id: string; name: string; mimeType: string; size: number; webViewLink?: string }> {
+    const params = new URLSearchParams({ fields: "id,name,mimeType,size,webViewLink", supportsAllDrives: "true" });
+    const m = await googleJson<{ id: string; name: string; mimeType: string; size?: string; webViewLink?: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?${params}`,
+    );
+    return { id: m.id, name: m.name, mimeType: m.mimeType, size: Number(m.size ?? 0), webViewLink: m.webViewLink };
+  }
+
+  /** Download a file's raw bytes (alt=media). For binary attachments. */
+  async downloadBytes(fileId: string): Promise<Uint8Array> {
+    const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?alt=media&supportsAllDrives=true`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /** Parents + last-modified time in one call (for export provenance). */
+  async getLocationInfo(fileId: string): Promise<{ parents: string[]; modifiedTime?: string }> {
+    const params = new URLSearchParams({ fields: "parents,modifiedTime", supportsAllDrives: "true" });
+    const meta = await googleJson<{ parents?: string[]; modifiedTime?: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?${params}`,
+    );
+    return { parents: meta.parents ?? [], modifiedTime: meta.modifiedTime };
+  }
+
   async createFolder(name: string, parentId?: string): Promise<DriveFile> {
-    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,mimeType,webViewLink`, {
+    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,mimeType,webViewLink&supportsAllDrives=true`, {
       method: "POST",
       body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: parentId ? [parentId] : undefined }),
     });
@@ -78,7 +123,7 @@ export class DriveService {
 
   /** Find a top-level folder by name, or create it. Returns its id. */
   async findOrCreateFolder(name: string): Promise<string> {
-    const q = `name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    const q = `name='${escapeDriveQuery(name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
     const { files } = await this.search(q, 1);
     if (files[0]) return files[0].id;
     return (await this.createFolder(name)).id;
@@ -106,17 +151,29 @@ export class DriveService {
     });
   }
 
-  /** Upload raw bytes as a Drive file (metadata create + media PATCH). */
+  /**
+   * Upload raw bytes as a Drive file (metadata create + media PATCH).
+   *
+   * ponytail: simple `uploadType=media` buffers the whole body in memory — fine
+   * for the modest cap the callers enforce; switch to a resumable upload if
+   * large files are ever needed. If the media PATCH fails we delete the 0-byte
+   * metadata file so a failed upload never leaves an orphan behind.
+   */
   async uploadBinary(name: string, mimeType: string, bytes: Uint8Array, parentId?: string): Promise<DriveFile> {
-    const meta = await googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,webViewLink`, {
+    const meta = await googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,webViewLink&supportsAllDrives=true`, {
       method: "POST",
       body: JSON.stringify({ name, mimeType, parents: parentId ? [parentId] : undefined }),
     });
-    await googleFetch(this.env, this.sub, `${UPLOAD_BASE}/files/${meta.id}?uploadType=media`, {
-      method: "PATCH",
-      headers: { "content-type": mimeType },
-      body: bytes as unknown as BodyInit,
-    });
+    try {
+      await googleFetch(this.env, this.sub, `${UPLOAD_BASE}/files/${meta.id}?uploadType=media&supportsAllDrives=true`, {
+        method: "PATCH",
+        headers: { "content-type": mimeType },
+        body: bytes as unknown as BodyInit,
+      });
+    } catch (e) {
+      await googleFetch(this.env, this.sub, `${BASE}/files/${meta.id}?supportsAllDrives=true`, { method: "DELETE" }).catch(() => {});
+      throw e;
+    }
     return meta;
   }
 
@@ -223,10 +280,24 @@ export class DriveService {
 
   /** Find a child folder by exact name under a parent, or create it. Returns its id. */
   async findOrCreateChildFolder(name: string, parentId: string): Promise<string> {
-    const q = `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`;
+    const q = `name='${escapeDriveQuery(name)}' and '${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`;
     const { files } = await this.search(q, 1);
     if (files[0]) return files[0].id;
     return (await this.createFolder(name, parentId)).id;
+  }
+
+  /**
+   * Resolve a `/`-separated folder path (e.g. `"Clients/Acme/2026"`) under
+   * `rootId` (default My Drive root), creating any missing segment. Returns the
+   * id of the deepest folder — the target parent for an upload. Each level is
+   * find-or-create so repeat calls converge on the same tree.
+   */
+  async resolveFolderPath(path: string, rootId = "root"): Promise<string> {
+    let parent = rootId;
+    for (const seg of path.split("/").map((s) => s.trim()).filter(Boolean)) {
+      parent = await this.findOrCreateChildFolder(seg, parent);
+    }
+    return parent;
   }
 
   async share(
@@ -253,6 +324,14 @@ export class DriveService {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`, {
       method: "PATCH",
       body: JSON.stringify(opts.name !== undefined ? { name: opts.name } : {}),
+    });
+  }
+
+  /** Move a file/folder to the trash (reversible; `trashed=false` restores it). */
+  async trashFile(fileId: string, trashed = true): Promise<DriveFile> {
+    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?fields=id,name,trashed`, {
+      method: "PATCH",
+      body: JSON.stringify({ trashed }),
     });
   }
 

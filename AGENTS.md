@@ -38,7 +38,54 @@ This repository relies heavily on AI agents for rapid prototyping and feature ge
 17. **Production Deploys:** Deploys are **not** automatic. When a deploy is needed — especially after a merge to `main` — trigger the manual **Deploy** workflow (`.github/workflows/deploy.yml`) via GitHub Actions → Deploy → *Run workflow*, or `gh workflow run deploy.yml`. It runs `pnpm run deploy` (astro build → remote D1 migrations → `wrangler deploy`). Requires the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets. Nothing reaches production until this runs.
     - **Migrate-only:** if only the D1 schema changed and the Worker doesn't need redeploying, run the **Migrate D1** workflow (`.github/workflows/migrate.yml`, `gh workflow run migrate.yml`) — it applies remote migrations (`pnpm run migrate:remote`) without a full deploy.
     - **Inspecting failures:** to debug a failed run, `gh run list --workflow=deploy.yml` (or `ci.yml` / `migrate.yml`) to find the run id, then `gh run view <id> --log-failed` for just the failing step's log (full log: `gh run view <id> --log`). Fix, then re-trigger the workflow.
-18. **Shared Data Toolkit:** This template ships an isomorphic data/array/object utility toolkit built on [Remeda](https://github.com/remeda/remeda). Reach for it before hand-rolling array/object plumbing. Import from `@/backend/utils/data` on the Worker side and `@/lib/data` on the frontend — both re-export the same isomorphic core at `@/shared/data-utils`. It exposes curated Remeda re-exports (`pipe`, `groupBy`, `unique`, `sortBy`, `pick`, `difference`, …), the full Remeda surface as `R`, and template helpers Remeda doesn't ship (`diffArrays`, `findWhere`, `toggleInArray`, `moveItem`, `keyBy`, `compact`, `ensureArray`, `deal`, `truncate`, `tryParseJson`). Add genuinely-shared helpers to the shared core (never duplicate per-surface). Live demo + docs at `/showcase/utilities`. See `.agent/rules/data-utilities.md`.
+18. **Drive IDs, never URLs:** Google APIs key off the bare Drive **id**, not the url. Whenever a tool/utility accepts Drive ids as params — especially arrays — normalize every element first: use `extractGoogleId(input)` (single) or `parseDriveRefs(input: string | string[])` (array → `{ requested, id }[]`, deduped, blanks dropped) from `@/backend/google/core/ids`. This means a caller can pass a full Docs/Sheets/Drive **url** in any element and it still resolves. `sheet-export.ts` and `doc-export.ts` are the reference consumers. Never pass a raw url straight to a Google API call.
+19. **Shared Data Toolkit:** This template ships an isomorphic data/array/object utility toolkit built on [Remeda](https://github.com/remeda/remeda). Reach for it before hand-rolling array/object plumbing. Import from `@/backend/utils/data` on the Worker side and `@/lib/data` on the frontend — both re-export the same isomorphic core at `@/shared/data-utils`. It exposes curated Remeda re-exports (`pipe`, `groupBy`, `unique`, `sortBy`, `pick`, `difference`, …), the full Remeda surface as `R`, and template helpers Remeda doesn't ship (`diffArrays`, `findWhere`, `toggleInArray`, `moveItem`, `keyBy`, `compact`, `ensureArray`, `deal`, `truncate`, `tryParseJson`). Add genuinely-shared helpers to the shared core (never duplicate per-surface). Live demo + docs at `/showcase/utilities`. See `.agent/rules/data-utilities.md`.
+
+## Google Workspace MCP — Feature Map (this worker's real surface)
+
+The `/mcp` surface is **code-mode-only** (Cloudflare search+execute pattern) to keep
+the client tool-catalog under ~1k tokens. Only two tools are advertised; the full
+`TOOLS` catalog stays internal.
+
+- **Code-mode surface** (`mcp/server.ts` + `mcp/tools.ts#MCP_EXPOSED_TOOLS`): only
+  `code_mode_search` (writes JS filtering `codemode.tools()` **inside the sandbox**,
+  returns just the subset — never dumps the catalog) and `code_mode_run` (`await
+  tools.<name>(args)`) are exposed; both carry an `outputSchema`. Sandbox in
+  `mcp/code-mode.ts`. Add new tools to `TOOLS`; they're reachable in-sandbox, not
+  advertised. Never remove the two from `MCP_EXPOSED_TOOLS`.
+- **Central tool-runner** (`mcp/tool-runner.ts`): every tool call (server + code-mode)
+  routes through `runTool` → **input sanitization** (`mcp/text-sanitize.ts`: mojibake
+  + HTML-entity repair on content-key fields; `code` is deliberately NOT a content key)
+  + **mandatory cross-account shadow search** for read-only tools in `SHADOW_TOOLS`.
+- **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
+  `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
+  Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,
+  mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`): cumulative encoded
+  25 MiB budget, per-item Drive-link overflow (anyone-with-link) + per-attachment report.
+  MIME in `mime.ts`; orchestration in `build-outgoing.ts`.
+- **Scheduled email** (`backend/gmail/scheduled-email.ts`, table `scheduled_emails`):
+  `schedule_email(send_at ISO-8601 UTC)` persists the full spec — Gmail has NO native
+  scheduled-send API. Sweep runs on the `*/5` cron, claims each due row **atomically**
+  (`scheduled/error → sending` conditional update → no double-send), sends via the
+  gmail_send path, marks sent/error (retryable). `list_scheduled_emails` /
+  `cancel_scheduled_email`. (Older draft+cron `gmail_schedule_send` → `scheduled_sends`,
+  hourly cron, still present.)
+- **Email preview + templates**: `email_preview_host` renders a draft and stores it
+  (`email_previews`) for a sandboxed-iframe preview at `/gws/email-preview/<id>`.
+  `email_templates_list/get/add` + built-in Gmail-safe templates (`backend/gmail/
+  email-templates.ts`, table `email_templates`, seeded idempotently) + `/gws/email-templates`
+  gallery.
+- **Exports**: `sheets_export_json` (`google/sheet-export.ts`, table `sheet_export_jobs`)
+  and `docs_export` (`google/doc-export.ts`, table `doc_export_jobs`) — array of id/urls
+  (via `parseDriveRefs`), cross-account fallback, per-element error items, D1 tracking
+  with `requestId` + content hash + source `modifiedTime`. Docs support tab scope
+  (single-tab is markdown-only).
+- **Accounts**: consumer `@gmail.com`/`@googlemail.com` are OAuth-only (never DWD) —
+  `mcp/tokenProvider.ts#isConsumerGoogleAccount`; a missing token → actionable "log in"
+  error, not a confusing DWD failure.
+- **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/scheduled-sends`
+  (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),
+  `/gws/email-preview/[id]` (sandboxed iframe).
 
 ## Template App Surface (reference implementation)
 

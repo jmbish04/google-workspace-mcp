@@ -1,0 +1,81 @@
+---
+/**
+ * `/gws/themes` — theme / design-package showcase. Each package is demoed
+ * Figma-style: heading + body type specimens in the package's own fonts/colours,
+ * a palette swatch row, and a sample surface + accent control — all rendered with
+ * the package's real colours so you can see the system at a glance.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+import { THEME_PACKAGES } from "@/lib/showcase-themes";
+---
+
+<BaseLayout
+  title="Theme Packages"
+  description="Design packages the agent can apply to generated Docs, Slides, and Sheets — type pairings, colour systems, and sample blocks."
+>
+  <div class="container mx-auto max-w-5xl px-4 py-16">
+    <section class="mb-10 space-y-4">
+      <Badge variant="outline" class="font-mono text-[11px]">{THEME_PACKAGES.length} packages</Badge>
+      <h1 class="text-balance text-4xl font-bold tracking-tight">Theme Packages</h1>
+      <p class="max-w-2xl text-base text-muted-foreground">
+        Reusable design systems for generated documents — a heading/body type pairing plus a
+        colour system. Each is previewed below in its own fonts and colours, like a design package.
+      </p>
+    </section>
+
+    <div class="space-y-8">
+      {THEME_PACKAGES.map((t) => (
+        <div class="overflow-hidden rounded-2xl ring-1 ring-border/40">
+          {/* Header strip (app theme) */}
+          <div class="flex flex-wrap items-center justify-between gap-2 bg-card px-6 py-4">
+            <div>
+              <div class="flex items-center gap-2">
+                <h2 class="text-xl font-semibold tracking-tight">{t.name}</h2>
+                <Badge variant="secondary" class="text-[10px]">{t.mode}</Badge>
+              </div>
+              <p class="mt-0.5 text-sm text-muted-foreground">{t.description}</p>
+            </div>
+            <div class="flex gap-1">
+              {t.palette.map((c) => (
+                <span title={c} style={`display:inline-block;width:20px;height:20px;border-radius:6px;background:${c};box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);`}></span>
+              ))}
+            </div>
+          </div>
+
+          {/* Live specimen rendered IN the package's own colours + fonts */}
+          <div style={`background:${t.colors.bg};color:${t.colors.text};font-family:${t.bodyFont};padding:28px 32px;`}>
+            <div class="grid gap-6 md:grid-cols-[1.4fr_1fr]">
+              <div>
+                <div style={`font-family:${t.headingFont};color:${t.colors.heading};font-weight:700;font-size:30px;line-height:1.15;`}>Heading One</div>
+                <div style={`font-family:${t.headingFont};color:${t.colors.heading};font-weight:700;font-size:21px;line-height:1.2;margin-top:14px;`}>Heading Two</div>
+                <div style={`font-family:${t.headingFont};color:${t.colors.heading};font-weight:700;font-size:16px;margin-top:12px;`}>Heading Three</div>
+                <p style={`font-size:15px;line-height:1.65;margin-top:14px;max-width:52ch;`}>
+                  Body copy sets the tone of the document. This paragraph is rendered in the package's
+                  body font and text colour. Links use the <a href="#" style={`color:${t.colors.accent};text-decoration:underline;`}>accent colour</a>,
+                  and secondary notes use the <span style={`color:${t.colors.muted};`}>muted colour</span>.
+                </p>
+                <div style="margin-top:18px;display:flex;gap:10px;align-items:center;">
+                  <span style={`display:inline-block;background:${t.colors.accent};color:${t.colors.accentText};font-family:${t.headingFont};font-weight:600;font-size:14px;padding:9px 16px;border-radius:8px;`}>Primary action</span>
+                  <span style={`display:inline-block;color:${t.colors.accent};font-weight:600;font-size:14px;`}>Secondary</span>
+                </div>
+              </div>
+
+              {/* Sample surface card + type/colour spec */}
+              <div style={`background:${t.colors.surface};border:1px solid ${t.colors.border};border-radius:12px;padding:16px 18px;`}>
+                <div style={`font-family:${t.headingFont};color:${t.colors.heading};font-weight:700;font-size:15px;`}>Surface card</div>
+                <p style={`font-size:13px;line-height:1.55;color:${t.colors.text};margin-top:6px;`}>Cards, callouts, and table headers use the surface colour over the page background.</p>
+                <dl style={`margin-top:14px;font-size:12px;color:${t.colors.muted};display:grid;grid-template-columns:auto 1fr;gap:4px 10px;`}>
+                  <dt>Heading</dt><dd style={`color:${t.colors.text};`}>{t.headingLabel}</dd>
+                  <dt>Body</dt><dd style={`color:${t.colors.text};`}>{t.bodyLabel}</dd>
+                  <dt>Accent</dt><dd style={`color:${t.colors.text};`}><code>{t.colors.accent}</code></dd>
+                  <dt>Heading</dt><dd style={`color:${t.colors.text};`}><code>{t.colors.heading}</code></dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+</BaseLayout>

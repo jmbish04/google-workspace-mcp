@@ -69,3 +69,35 @@ export function isJunkAttachment(a: AttachmentPart): boolean {
 export function keepableAttachments(payload: any): AttachmentPart[] {
   return extractAttachmentParts(payload).filter((a) => junkReason(a) === null);
 }
+
+/** Lightweight, network-free attachment metadata for a message. */
+export interface AttachmentManifestEntry {
+  filename: string;
+  mimeType: string;
+  size: number;
+  attachmentId: string;
+}
+
+/**
+ * Build the mandatory attachment manifest for a raw Gmail payload — count plus
+ * per-attachment { filename, mimeType, size, attachmentId }. Junk (signature
+ * images / logos) is dropped so the model sees only real attachments. Cheap:
+ * pure payload walk, no Drive writes and no attachment-byte fetches. Returned
+ * on every message even when full attachment fetching is skipped, so the model
+ * always knows attachments exist and can decide whether to pull them.
+ */
+export function attachmentManifest(payload: unknown): {
+  count: number;
+  attachments: AttachmentManifestEntry[];
+} {
+  const parts = keepableAttachments(payload);
+  return {
+    count: parts.length,
+    attachments: parts.map((p) => ({
+      filename: p.filename,
+      mimeType: p.mimeType,
+      size: p.size,
+      attachmentId: p.attachmentId,
+    })),
+  };
+}

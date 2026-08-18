@@ -78,7 +78,7 @@ describe("handleMcpRequest", () => {
     expect(res.status).toBe(200);
     const body = await rpcJson(res);
     const names = body.result.tools.map((t: any) => t.name);
-    expect(names).toEqual(["code_mode_api", "code_mode_run"]);
+    expect(names).toEqual(["code_mode_search", "code_mode_run"]);
     for (const t of body.result.tools) {
       expect(typeof t.inputSchema).toBe("object");
       expect(t.inputSchema).not.toBeNull();
@@ -100,7 +100,7 @@ describe("handleMcpRequest", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("tools/call with auth but invalid arguments returns -32602 and never hits the network", async () => {
+  it("tools/call for a non-exposed tool (gmail_send) returns -32602 — code-mode surface only", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const res = await handleMcpRequest(
       await authed({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "gmail_send", arguments: {} } }),
