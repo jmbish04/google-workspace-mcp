@@ -37,6 +37,8 @@ import { runCodeMode, runCodeModeSearch } from "./code-mode";
 import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
 import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
 import { resolveGasScript, setGasScript } from "@/backend/appscript/gas-projects";
+import { listTags, createTag, applyTags, findByTags } from "@/backend/drive/tags";
+import { findEmailRecords } from "@/backend/gmail/tracking";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -1119,6 +1121,115 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ ...asUser }),
     async run({ env, sub }, a) {
       return { result: await new CalendarService(env, acct(sub, a)).listCalendars() };
+    },
+  },
+  // ---- Outgoing-email log (recall) --------------------------------------
+  {
+    name: "email_records_search",
+    description:
+      "Search the worker's log of outgoing emails (every draft/reply/send is recorded with a UUID that's also hidden in the message body). Use it to (a) recall the exact Gmail thread you touched earlier — filter by `subject`/`recipient`/date and get back the `threadId`+`messageId` to feed gmail_get_thread, cheaper than re-reading mail; or (b) disambiguate near-duplicate drafts by their `uuid`. Filters: uuid, subject (substring), recipient (substring), since/until (ISO-8601), limit (default 25).",
+    inputSchema: z.object({
+      uuid: z.string().optional(),
+      subject: z.string().optional(),
+      recipient: z.string().optional(),
+      since: z.string().optional().describe("ISO-8601 lower bound on created time."),
+      until: z.string().optional().describe("ISO-8601 upper bound on created time."),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    async run({ env }, a) {
+      const rows = await findEmailRecords(env, {
+        uuid: a.uuid,
+        subject: a.subject,
+        recipient: a.recipient,
+        since: a.since ? new Date(a.since) : undefined,
+        until: a.until ? new Date(a.until) : undefined,
+        limit: a.limit,
+      });
+      return {
+        result: {
+          count: rows.length,
+          records: rows.map((r) => ({
+            uuid: r.uuid, action: r.action, account: r.account, subject: r.subject,
+            recipients: r.recipients, threadId: r.threadId, messageId: r.messageId,
+            createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,
+          })),
+        },
+      };
+    },
+  },
+  // ---- Drive descriptions + tags ----------------------------------------
+  {
+    name: "drive_get_description",
+    description: "Read a Drive file/folder's `description` field (free-text notes; also where tags live as #UPPER_SNAKE tokens).",
+    inputSchema: z.object({ fileId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      return { result: { fileId: a.fileId, description: await new DriveService(env, acct(sub, a)).getDescription(a.fileId) } };
+    },
+  },
+  {
+    name: "drive_set_description",
+    description: "Set (overwrite) a Drive file/folder's `description` field. To ADD tags without clobbering existing notes/tags, prefer drive_tag_apply.",
+    inputSchema: z.object({ fileId: z.string(), description: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      await new DriveService(env, acct(sub, a)).setDescription(a.fileId, a.description);
+      return { result: { fileId: a.fileId, ok: true }, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { description: true } } };
+    },
+  },
+  {
+    name: "drive_tags_list",
+    description:
+      "List the existing Drive tag registry (D1). ALWAYS call this BEFORE creating a tag so you REUSE an existing one instead of making a near-duplicate. Filter by `category` (e.g. project/scenario/topic) and/or a `search` substring over tag name + description. Returns [{ id, name, description, category }]. Tag names are canonical UPPER_SNAKE.",
+    inputSchema: z.object({
+      category: z.string().optional().describe("Filter to this category (project | scenario | topic | …)."),
+      search: z.string().optional().describe("Case-insensitive substring over tag name + description."),
+    }),
+    async run({ env }, a) {
+      const tags = await listTags(env, { category: a.category, search: a.search });
+      return { result: { count: tags.length, tags: tags.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category })) } };
+    },
+  },
+  {
+    name: "drive_tag_create",
+    description:
+      "Create a Drive tag in the registry (deduplicated: if the canonical UPPER_SNAKE name already exists, the existing tag is returned, never a duplicate). Check drive_tags_list first. `category` should be a coarse bucket (project | scenario | topic) so tags stay filterable. Returns { tag, created }.",
+    inputSchema: z.object({
+      name: z.string().describe("Tag label; normalized to UPPER_SNAKE (e.g. 'Roof Warranty' → ROOF_WARRANTY)."),
+      description: z.string().optional().describe("What this tag means — helps future agents decide to reuse it."),
+      category: z.string().optional().describe("project | scenario | topic (or your own bucket)."),
+    }),
+    async run({ env, sub }, a) {
+      const { tag, created } = await createTag(env, { name: a.name, description: a.description, category: a.category, sub });
+      return { result: { created, tag: { id: tag.id, name: tag.name, description: tag.description, category: tag.category } } };
+    },
+  },
+  {
+    name: "drive_tag_apply",
+    description:
+      "Tag a Drive file or folder with one or more tags: adds the tag→drive mapping in D1 AND appends the `#UPPER_SNAKE` token(s) into the file's Drive description (so it's later findable via Drive full-text search too). Unknown tag names are auto-created (canonical + deduped) — but prefer creating/checking via drive_tags_list/drive_tag_create first. Idempotent. Returns the applied canonical names.",
+    inputSchema: z.object({
+      fileId: z.string().describe("Drive file OR folder id."),
+      tags: z.array(z.string()).min(1).describe("Tag names (any casing; normalized to UPPER_SNAKE)."),
+      driveType: z.enum(["file", "folder"]).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      const out = await applyTags(env, drive, a.fileId, a.tags, { driveType: a.driveType, sub });
+      return { result: out, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { tags: out.applied } } };
+    },
+  },
+  {
+    name: "drive_tag_find",
+    description:
+      "Find Drive files/folders carrying the given tag(s). `mode`: 'd1' (default; the mapping table — fast/exact), 'drive' (Drive full-text search for the #TAG token in descriptions — catches items tagged outside this worker), or 'both'. Returns { d1: [driveIds], drive: [driveIds] }.",
+    inputSchema: z.object({
+      tags: z.array(z.string()).min(1),
+      mode: z.enum(["d1", "drive", "both"]).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      return { result: await findByTags(env, drive, a.tags, { mode: a.mode }) };
     },
   },
   // ---- Gmail -------------------------------------------------------------

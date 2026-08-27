@@ -89,6 +89,22 @@ export class DriveService {
     return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
   }
 
+  /** Read a file's `description` field (empty string when unset). */
+  async getDescription(fileId: string): Promise<string> {
+    const params = new URLSearchParams({ fields: "description", supportsAllDrives: "true" });
+    const m = await googleJson<{ description?: string }>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
+    return m.description ?? "";
+  }
+
+  /** Overwrite a file's `description` field. */
+  async setDescription(fileId: string, description: string): Promise<void> {
+    const params = new URLSearchParams({ fields: "id", supportsAllDrives: "true" });
+    await googleJson(this.env, this.sub, `${BASE}/files/${fileId}?${params}`, {
+      method: "PATCH",
+      body: JSON.stringify({ description }),
+    });
+  }
+
   /** Parent folder ids of a file (empty when the file lives in My Drive root). */
   async getParents(fileId: string): Promise<string[]> {
     const params = new URLSearchParams({ fields: "parents", supportsAllDrives: "true" });
