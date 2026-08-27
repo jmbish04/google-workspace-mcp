@@ -9,29 +9,22 @@
  * the legacy aliases `"workspace"` / `"personal"`).
  *
  * {@link getGoogleAccessToken} is the single seam where account resolution
- * happens. Routing rules (in order):
+ * happens. OAuth-ONLY (DWD and the service account were removed):
  *
- *  1. `"workspace"` (default) → DWD impersonating `GOOGLE_USER_TO_IMPERSONATE`.
- *  2. `"personal"`            → resolves to `GOOGLE_PERSONAL_ACCOUNT_EMAIL`,
- *                               then falls through the email rules below.
- *  3. an email in the delegated Workspace domain (`@126colby.com`) with NO
- *     stored OAuth refresh token → DWD impersonating that email (`sub`).
- *  4. any other email → OAuth2 access token for that email.
+ *  1. empty / `"workspace"` / `"justin"` → the Workspace OAuth account
+ *     (`GOOGLE_WORKSPACE_ACCOUNT_EMAIL`, default justin@126colby.com).
+ *  2. `"personal"` / `"jmbish04"`        → the consumer OAuth account
+ *     (`GOOGLE_PERSONAL_ACCOUNT_EMAIL`, default jmbish04@gmail.com).
+ *  3. any other value                    → treated as a literal email.
  *
- * Clients and agents stay account-agnostic — they accept `account?: GoogleAccount`
- * (now `string`) and call {@link getGoogleAccessToken}.
+ * Every account resolves to a stored OAuth refresh token; if none exists the
+ * call throws an actionable "log in" error. Clients and agents stay
+ * account-agnostic — they accept `account?: string` and call this seam.
  *
- * SECURITY (C2, 2026-07-25 audit): there is NO caller-trust check on the
- * `account` selector here — any authorized caller (anyone holding a valid
- * `gsuite_session` cookie or the `WORKER_API_KEY`, per the `agentAuthMiddleware`
- * gate on `/api/agent-tasks`, `/api/threads`, etc., and the `/agents/*` DO gate)
- * may impersonate ANY user in the Workspace domain via DWD — rule 3 above
- * honors an arbitrary `sub` with no per-caller allow-list. That is acceptable
- * for a single-tenant deployment (one trusted operator, one domain) but is
- * NOT safe for multi-tenant use: before serving more than one principal,
- * restrict which `account`/`sub` values a given caller may request (e.g. bind
- * it to the caller's own authenticated identity) in this shared function, so
- * both this REST path and the MCP `as_user` path are covered by one guard.
+ * SECURITY: this deployment is single-tenant (one trusted operator, two of the
+ * operator's own OAuth accounts). Before serving more than one principal,
+ * restrict which `account` values a caller may request (bind it to the caller's
+ * authenticated identity) in this shared function.
  */
 
 import { getDb } from "@/backend/db";
@@ -48,26 +41,22 @@ import { getOAuthAccessToken, hasOAuthRefreshToken } from "./oauth-google";
 export type GoogleAccount = string;
 
 /**
- * NO default account. Callers must name one. Kept as an (empty) export so
- * existing `account = DEFAULT_ACCOUNT` signatures still compile — but an
- * unspecified account now throws at resolve time rather than silently
- * impersonating a Workspace primary.
+ * Default account when a caller does not specify one — the `"workspace"` alias,
+ * which now resolves to a real OAuth account (justin@126colby.com), NOT a service
+ * account or DWD impersonation. Background agents (orchestrator, RPC) rely on
+ * this default; it is just another OAuth identity.
  */
-export const DEFAULT_ACCOUNT: GoogleAccount = "";
+export const DEFAULT_ACCOUNT: GoogleAccount = "workspace";
 
 /**
- * Resolve an account selector to a concrete email. Aliases map to the two real
- * accounts; anything empty is an error (no hidden default).
+ * Resolve an account selector to a concrete email. Empty/`"workspace"`/`"justin"`
+ * → the Workspace OAuth account; `"personal"`/`"jmbish04"` → the consumer OAuth
+ * account; any other value is treated as a literal email. No DWD, no service
+ * account — every result is an OAuth identity.
  */
 export function resolveAccount(env: Env, input?: string): GoogleAccount {
   const v = (input ?? "").trim().toLowerCase();
-  if (!v) {
-    throw new Error(
-      "No Google account specified — pass justin@126colby.com or jmbish04@gmail.com " +
-        "(there is no default; DWD and the service account were removed).",
-    );
-  }
-  if (v === "workspace" || v === "justin") {
+  if (!v || v === "workspace" || v === "justin") {
     return (env.GOOGLE_WORKSPACE_ACCOUNT_EMAIL ?? "justin@126colby.com").toLowerCase();
   }
   if (v === "personal" || v === "jmbish04") {

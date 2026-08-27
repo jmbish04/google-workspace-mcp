@@ -167,7 +167,7 @@ const richBody = {
     .describe("Legacy shorthand for attachments: inline base64 files (same size/link fallback as `attachments`)."),
 };
 
-/** Resolve the account ref for a call: DWD impersonation, or the OAuth caller. */
+/** Resolve the account ref for a call: the as_user email, else the signed-in sub (OAuth-only). */
 export function acct(sub: string, a: { as_user?: string }): string {
   return a.as_user ? a.as_user.trim().toLowerCase() : sub;
 }
@@ -2178,8 +2178,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      // Default to the service account's own identity (it's shared on the target
-      // files); `as_user` overrides to DWD impersonation.
+      // Defaults to the signed-in account (as_user overrides).
       const account = acct(sub, a);
       const meta = await new DriveService(env, account).get(a.fileId);
       const surface: BrailleSurface | null = a.surface ?? detectSurface(meta.mimeType ?? "");
@@ -2269,8 +2268,7 @@ export const TOOLS: ToolDef[] = [
       "Sweep a Drive folder and deconstruct every Google Doc, Slides deck, and Sheet inside it into the braille registry in one call. Other file types are skipped. Accepts a folder id or a Drive folder URL.",
     inputSchema: z.object({ folderId: z.string(), tags: z.array(z.string()).optional(), ...asUser }),
     async run({ env, sub }, a) {
-      // Default to the service account's own identity (it's shared on the folder);
-      // `as_user` overrides to DWD impersonation.
+      // Defaults to the signed-in account (as_user overrides).
       const account = acct(sub, a);
       const folderId = (a.folderId.match(/[-\w]{25,}/) ?? [a.folderId])[0];
       const drive = new DriveService(env, account);

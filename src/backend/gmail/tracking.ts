@@ -87,18 +87,15 @@ export async function findEmailRecords(
   const conds = [];
   if (q.uuid) conds.push(eq(emailRecords.uuid, q.uuid));
   if (q.subject) conds.push(like(emailRecords.subject, `%${q.subject}%`));
+  // Recipient spans the JSON blob; match in SQL so the limit is applied AFTER
+  // the filter (SQLite LIKE is case-insensitive for ASCII).
+  if (q.recipient) conds.push(like(emailRecords.recipients, `%${q.recipient}%`));
   if (q.since) conds.push(gte(emailRecords.createdAt, q.since));
   if (q.until) conds.push(lte(emailRecords.createdAt, q.until));
-  let rows = await getDb(env)
+  return getDb(env)
     .select()
     .from(emailRecords)
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(emailRecords.createdAt))
     .limit(Math.min(q.limit ?? 25, 100));
-  // Recipient match spans the JSON blob — filter in JS (small result set).
-  if (q.recipient) {
-    const needle = q.recipient.toLowerCase();
-    rows = rows.filter((r) => JSON.stringify(r.recipients ?? {}).toLowerCase().includes(needle));
-  }
-  return rows;
 }
