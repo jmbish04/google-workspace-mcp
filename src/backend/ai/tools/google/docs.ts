@@ -3,7 +3,7 @@
  * service account. Provides document creation from templates, reading,
  * appending, commenting, and replying.
  *
- * Auth: Uses `getServiceAccountAccessToken` from `lib/google-auth.ts`
+ * Auth: OAuth via getGoogleAccessToken(env, account) — account is required.
  * (KV-cached, production-tested). All public methods apply `extractGoogleId`
  * for agent-safe ID handling.
  *
@@ -13,7 +13,7 @@
  */
 
 import { extractGoogleId } from "@/backend/ai/tools/google/utils";
-import { getServiceAccountAccessToken } from "@/backend/lib/google-auth";
+import { getGoogleAccessToken } from "@/backend/auth/provider";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const DOCS_SCOPE = "https://www.googleapis.com/auth/documents";
@@ -25,7 +25,7 @@ export type CreatedGoogleDoc = {
 };
 
 export class GoogleDocsClient {
-  constructor(private readonly env: Env) {}
+  constructor(private readonly env: Env, private readonly account: string) {}
 
   /**
    * @deprecated Use `GoogleDriveClient.createFolder()` from `./google/drive.ts` instead.
@@ -164,7 +164,7 @@ export class GoogleDocsClient {
     scopes: string[],
     init: RequestInit,
   ): Promise<T> {
-    const token = await getServiceAccountAccessToken(this.env, scopes);
+    const token = await getGoogleAccessToken(this.env, this.account, scopes);
     const headers = new Headers(init.headers);
     headers.set("authorization", `Bearer ${token}`);
 
