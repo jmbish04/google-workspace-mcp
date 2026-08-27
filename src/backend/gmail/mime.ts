@@ -37,6 +37,12 @@ export interface MimeAttachment {
   filename: string;
   mimeType: string;
   bytes: Uint8Array;
+  /**
+   * When set, the part is embedded INLINE (multipart/related, `Content-Disposition:
+   * inline`, `Content-ID: <contentId>`) so the HTML body can render it via
+   * `<img src="cid:contentId">`. Otherwise it's a regular file attachment.
+   */
+  contentId?: string;
 }
 
 export interface BuildMessageOptions {
@@ -85,23 +91,54 @@ function bodyBlock(o: BuildMessageOptions, boundary: string): { contentType: str
 
 /**
  * Build the RFC822 message and base64url-encode it for Gmail's `raw` field.
- * Structure: multipart/mixed[ alternative(text,html) | text , ...attachments ]
- * when attachments exist; otherwise the alternative/plain body directly.
+ *
+ * Nesting (only the layers that are needed appear):
+ *   multipart/mixed[                       ← present iff there are file attachments
+ *     multipart/related[                   ← present iff there are inline images
+ *       multipart/alternative(text, html)  ← or a bare text part when no html
+ *       ...inline image parts (Content-ID, inline)
+ *     ]
+ *     ...file attachment parts
+ *   ]
+ *
+ * `Content-ID` inline parts let the HTML render `<img src="cid:contentId">`.
  */
 export function buildRawMessage(o: BuildMessageOptions): string {
   const headers = headerLines(o);
   const altBoundary = `alt_${crypto.randomUUID()}`;
+  const atts = o.attachments ?? [];
+  const inlineImgs = atts.filter((a) => a.contentId);
+  const files = atts.filter((a) => !a.contentId);
 
-  if (o.attachments && o.attachments.length > 0) {
+  const body = bodyBlock(o, altBoundary);
+
+  // Content root = the body, wrapped in multipart/related when inline images exist.
+  let rootContentType = body.contentType;
+  let rootBody = body.body;
+  if (inlineImgs.length > 0) {
+    const rel = `rel_${crypto.randomUUID()}`;
+    const parts: string[] = [`--${rel}`, `Content-Type: ${body.contentType}`, "", body.body];
+    for (const img of inlineImgs) {
+      parts.push(
+        `--${rel}`,
+        `Content-Type: ${img.mimeType}; name="${img.filename}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-ID: <${img.contentId}>`,
+        `Content-Disposition: inline; filename="${img.filename}"`,
+        "",
+        wrap76(bytesToBase64(img.bytes)),
+      );
+    }
+    parts.push(`--${rel}--`);
+    rootContentType = `multipart/related; boundary="${rel}"`;
+    rootBody = parts.join("\r\n");
+  }
+
+  // Wrap in multipart/mixed when there are regular file attachments.
+  if (files.length > 0) {
     const mixed = `mixed_${crypto.randomUUID()}`;
-    const inner = bodyBlock(o, altBoundary);
-    const parts: string[] = [
-      `--${mixed}`,
-      `Content-Type: ${inner.contentType}`,
-      "",
-      inner.body,
-    ];
-    for (const att of o.attachments) {
+    const parts: string[] = [`--${mixed}`, `Content-Type: ${rootContentType}`, "", rootBody];
+    for (const att of files) {
       parts.push(
         `--${mixed}`,
         `Content-Type: ${att.mimeType}; name="${att.filename}"`,
@@ -116,7 +153,6 @@ export function buildRawMessage(o: BuildMessageOptions): string {
     return toBase64Url(mime);
   }
 
-  const inner = bodyBlock(o, altBoundary);
-  const mime = [...headers, `Content-Type: ${inner.contentType}`, "", inner.body].join("\r\n");
+  const mime = [...headers, `Content-Type: ${rootContentType}`, "", rootBody].join("\r\n");
   return toBase64Url(mime);
 }

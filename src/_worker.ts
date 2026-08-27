@@ -35,6 +35,7 @@ import { handleMcpRequest } from "./backend/mcp/server"; // added in Task 14
 import { syncLabelsForAllAccounts } from "./backend/gmail/sync-service";
 import { captureAllAccounts } from "./backend/gmail/capture-service";
 import { purgeOldRenders } from "./backend/docs/browser-render";
+import { purgeExpiredPreviews } from "./backend/docs/preview-store";
 import { sweepComments } from "./backend/docs/comment-collab";
 import { sweepScheduledSends } from "./backend/gmail/scheduled-send";
 import { sweepScheduledEmails } from "./backend/gmail/scheduled-email";
@@ -259,6 +260,7 @@ function makeHandler(): ExportedHandler<Env> {
           await syncLabelsForAllAccounts(env);
           await captureAllAccounts(env);
           await purgeOldRenders(env); // drop QC screenshots older than 90 days
+          await purgeExpiredPreviews(env); // drop doc-preview PNG/PDFs older than 48h
         })(),
       );
     },

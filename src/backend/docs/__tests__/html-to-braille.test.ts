@@ -33,4 +33,10 @@ describe("htmlToRequests", () => {
   it("returns nothing for empty html", () => {
     expect(htmlToRequests("<div></div>")).toEqual([]);
   });
+
+  it("decodes HTML entities in injected text (no literal &quot;/&#39;/&amp;)", () => {
+    const reqs = htmlToRequests('<p>He said &quot;hi&quot; &amp; it&#39;s fine</p>');
+    const insert = reqs[0] as any;
+    expect(insert.insertText.text).toBe('He said "hi" & it\'s fine\n');
+  });
 });

@@ -6,6 +6,10 @@ export type GmailMessage = { id: string; snippet: string; payload?: unknown };
 
 /** Rich body + attachments accepted by send / draft helpers. */
 export interface RichContent {
+  /** Cc recipients (comma-separated). Honored on drafts and sends alike. */
+  cc?: string;
+  /** Bcc recipients (comma-separated). Honored on drafts and sends alike. */
+  bcc?: string;
   /** Raw HTML body (sanitized + CSS-inlined for Gmail by the worker). */
   html?: string;
   /** Markdown body (rendered + inlined for Gmail by the worker). */
@@ -66,6 +70,12 @@ export class GmailService {
     return googleJson<Record<string, unknown>>(this.env, this.sub, `${BASE}/messages/${id}?format=full`);
   }
 
+  /** Fetch the whole RFC822 message as a base64url string (`format=raw`). */
+  async getMessageRfc(id: string): Promise<string> {
+    const out = await googleJson<{ raw?: string }>(this.env, this.sub, `${BASE}/messages/${id}?format=raw`);
+    return out.raw ?? "";
+  }
+
   /** Fetch attachment bytes (base64url `data`) for a message part. */
   async getAttachment(messageId: string, attachmentId: string): Promise<{ data: string; size: number }> {
     return googleJson<{ data: string; size: number }>(
@@ -115,6 +125,8 @@ export class GmailService {
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
       from: opts?.from,
+      cc: opts?.cc,
+      bcc: opts?.bcc,
       subject: finalSubject,
       inReplyTo,
       references,
@@ -141,6 +153,8 @@ export class GmailService {
   ): Promise<{ id: string; message?: { id: string }; attachments: AttachmentReportItem[] }> {
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
+      cc: opts?.cc,
+      bcc: opts?.bcc,
       subject,
       text: body,
       html: opts?.html,
@@ -214,6 +228,8 @@ export class GmailService {
 
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to: recipients.join(", "),
+      cc: opts?.cc,
+      bcc: opts?.bcc,
       subject,
       inReplyTo: messageIdHeader || undefined,
       references: references || undefined,

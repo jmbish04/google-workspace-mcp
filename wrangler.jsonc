@@ -221,5 +221,14 @@
       "binding": "R2_FILES_BUCKET",
       "remote": true,
     },
+    {
+      // Short-lived doc previews (PDF + per-page PNGs), served at /api/preview/:id.
+      // 48h TTL is guaranteed by the hourly cron (purgeExpiredPreviews). A bucket
+      // lifecycle rule "expire-48h" (2 days) is set as a belt — but that's manual
+      // R2 config (dashboard / `wrangler r2 bucket lifecycle`), NOT declared here.
+      "bucket_name": "google-workspace-mcp-previews",
+      "binding": "R2_PREVIEWS_BUCKET",
+      "remote": true,
+    },
   ],
 }

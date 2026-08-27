@@ -123,6 +123,8 @@ export async function sweepScheduledEmails(env: Env, now: number = Date.now()): 
     async send(row) {
       const s = row.spec;
       const res = await new GmailService(env, row.accountRef).send(s.to, s.subject, s.body ?? "", {
+        cc: s.cc,
+        bcc: s.bcc,
         html: s.html,
         markdown: s.markdown,
         attachments: s.attachments as never,
