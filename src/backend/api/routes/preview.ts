@@ -1,8 +1,8 @@
 /**
  * @fileoverview Serve short-lived doc previews from R2. Mount at `/api/preview`.
  *   GET /:id  → the PNG or PDF (gated by session cookie OR worker key).
- * The id is self-describing (`{uuid}-p1.png`, `{uuid}.pdf`); the R2 key is
- * `previews/{id}`. Objects are purged after 48h by the hourly cron.
+ * The id is self-describing (`{uuid}-p1.png`, `{uuid}.pdf`) and IS the R2 object
+ * key (dedicated previews bucket, no prefix). Objects are purged after 48h.
  */
 import { Hono } from "hono";
 

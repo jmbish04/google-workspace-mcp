@@ -75,25 +75,29 @@ export async function buildDocPreview(
   }
   const count = Math.min(total, maxPages);
 
-  const pages: Record<string, PagePreview> = {};
-  for (let p = 1; p <= count; p++) {
-    // Guard the whole per-page pipeline (rasterize, R2 put, critique): one bad
-    // page must never break the rest of the preview or the create above it.
-    try {
-      const png = await rasterizePdfPage(env, pdf, p);
-      if (!png) continue; // Browser Rendering unavailable / page failed — skip it.
-
-      const imageUrl = await putPreview(env, `${runId}-p${p}.png`, png, "image/png");
-      const entry: PagePreview = { image_url: imageUrl };
-      if (critique) {
-        const notes = await critiquePageImage(env, png);
-        if (notes) entry.vision_ai_notes = notes;
+  // Render pages CONCURRENTLY — each page is an independent Browser-Rendering
+  // call (+ upload + optional critique); sequential would stack their latencies.
+  // Each page's pipeline is fully guarded so one bad page never breaks the rest
+  // or the create above it.
+  const rendered = await Promise.all(
+    Array.from({ length: count }, (_, i) => i + 1).map(async (p): Promise<[number, PagePreview] | null> => {
+      try {
+        const png = await rasterizePdfPage(env, pdf, p);
+        if (!png) return null; // Browser Rendering unavailable / page failed — skip it.
+        const imageUrl = await putPreview(env, `${runId}-p${p}.png`, png, "image/png");
+        const entry: PagePreview = { image_url: imageUrl };
+        if (critique) {
+          const notes = await critiquePageImage(env, png);
+          if (notes) entry.vision_ai_notes = notes;
+        }
+        return [p, entry];
+      } catch {
+        return null;
       }
-      pages[`pg_${p}`] = entry;
-    } catch {
-      continue; // skip this page, keep going
-    }
-  }
+    }),
+  );
+  const pages: Record<string, PagePreview> = {};
+  for (const r of rendered) if (r) pages[`pg_${r[0]}`] = r[1];
 
   return {
     pdf_url: pdfUrl,

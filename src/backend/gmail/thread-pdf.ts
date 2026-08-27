@@ -73,13 +73,28 @@ function headerValue(headers: any[], name: string): string {
   return headers?.find((h) => h?.name?.toLowerCase() === name)?.value ?? "";
 }
 
-/** Strip active/remote-danger tags from a message body; keep the rest as-is. */
+/**
+ * Strip active-content tags + handlers from a message body before it's rendered
+ * to PDF by Browser Rendering. Removes script/iframe/object/embed/link/meta/style,
+ * `on*` handlers, and `javascript:`/`vbscript:` URLs.
+ *
+ * ponytail: remote `<img src="https://…">` and CSS `url(…)` are left intact so the
+ * PDF matches the real email (inline logos etc). The headless render therefore
+ * fetches those URLs — same effect as opening the email (tracking pixels fire,
+ * outbound GETs originate from the render env). Acceptable: the user is rendering
+ * their OWN mail. Upgrade path if that matters: block remote fetches via a CSP on
+ * the rendered doc, or rewrite remote src to data: after fetching server-side.
+ */
 function sanitizeBody(html: string): string {
   const root = parse(html, { comment: false });
   root.querySelectorAll("script,iframe,object,embed,link,meta,style").forEach((n) => n.remove());
   for (const el of root.querySelectorAll("*")) {
     for (const attr of Object.keys(el.attributes)) {
       if (/^on/i.test(attr)) el.removeAttribute(attr);
+    }
+    for (const urlAttr of ["href", "src", "xlink:href", "action", "formaction", "background"]) {
+      const v = el.getAttribute(urlAttr);
+      if (v && /^\s*(javascript|vbscript):/i.test(v)) el.removeAttribute(urlAttr);
     }
   }
   return root.toString();
