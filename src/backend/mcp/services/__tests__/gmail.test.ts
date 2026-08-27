@@ -33,6 +33,24 @@ describe("GmailService", () => {
     expect(typeof body.message.raw).toBe("string");
   });
 
+  it("createDraft threads Cc and Bcc into the raw MIME headers", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ id: "draft1" }), { status: 200 }));
+    await new GmailService({} as any, "s1").createDraft("a@b.com", "Hi", "Body", { cc: "c@x.com", bcc: "d@y.com" });
+    const body = JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string);
+    const mime = decodeURIComponent(escape(atob((body.message.raw as string).replace(/-/g, "+").replace(/_/g, "/"))));
+    expect(mime).toContain("Cc: c@x.com");
+    expect(mime).toContain("Bcc: d@y.com");
+  });
+
+  it("createDraft supports multiple To recipients (comma-separated)", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ id: "draft1" }), { status: 200 }));
+    await new GmailService({} as any, "s1").createDraft("a@b.com, c@d.com", "Hi", "Body", { cc: "e@f.com" });
+    const body = JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string);
+    const mime = decodeURIComponent(escape(atob((body.message.raw as string).replace(/-/g, "+").replace(/_/g, "/"))));
+    expect(mime).toContain("To: a@b.com, c@d.com");
+    expect(mime).toContain("Cc: e@f.com");
+  });
+
   function mockHeadersAndProfile(spy: ReturnType<typeof vi.spyOn>) {
     spy.mockImplementation(async (url: any) => {
       const u = String(url);

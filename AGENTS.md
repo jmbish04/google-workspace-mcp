@@ -40,6 +40,7 @@ This repository relies heavily on AI agents for rapid prototyping and feature ge
     - **Inspecting failures:** to debug a failed run, `gh run list --workflow=deploy.yml` (or `ci.yml` / `migrate.yml`) to find the run id, then `gh run view <id> --log-failed` for just the failing step's log (full log: `gh run view <id> --log`). Fix, then re-trigger the workflow.
 18. **Drive IDs, never URLs:** Google APIs key off the bare Drive **id**, not the url. Whenever a tool/utility accepts Drive ids as params — especially arrays — normalize every element first: use `extractGoogleId(input)` (single) or `parseDriveRefs(input: string | string[])` (array → `{ requested, id }[]`, deduped, blanks dropped) from `@/backend/google/core/ids`. This means a caller can pass a full Docs/Sheets/Drive **url** in any element and it still resolves. `sheet-export.ts` and `doc-export.ts` are the reference consumers. Never pass a raw url straight to a Google API call.
 19. **Shared Data Toolkit:** This template ships an isomorphic data/array/object utility toolkit built on [Remeda](https://github.com/remeda/remeda). Reach for it before hand-rolling array/object plumbing. Import from `@/backend/utils/data` on the Worker side and `@/lib/data` on the frontend — both re-export the same isomorphic core at `@/shared/data-utils`. It exposes curated Remeda re-exports (`pipe`, `groupBy`, `unique`, `sortBy`, `pick`, `difference`, …), the full Remeda surface as `R`, and template helpers Remeda doesn't ship (`diffArrays`, `findWhere`, `toggleInArray`, `moveItem`, `keyBy`, `compact`, `ensureArray`, `deal`, `truncate`, `tryParseJson`). Add genuinely-shared helpers to the shared core (never duplicate per-surface). Live demo + docs at `/showcase/utilities`. See `.agent/rules/data-utilities.md`.
+20. **Linked GAS submodule (`gas/` → core-template-gas):** Standalone Apps Script projects the worker RUNS via `scripts.run` (currently `email-to-pdf`) live in the separate [`core-template-gas`](https://github.com/jmbish04/core-template-gas) repo, linked here as the **`gas/` git submodule**; their source is at `gas/projects/<name>/`. This worker does **not** build or deploy them — the submodule is excluded from the worker toolchain (not a pnpm package; outside `tsconfig` `include`; ignored by vitest/oxlint). The worker only (a) stores each project's per-account `scriptId` in `backend/appscript/gas-projects.ts` (override at runtime via `set_gas_script` / `global_config` key `gas_script:<project>:<account>`), and (b) invokes it (`gmail_to_pdf` with `via:"appscript"` → `scripts.run`). **Commits made inside `gas/` belong to core-template-gas, not this repo** — commit + push them to core-template-gas, then `git add gas` here to bump the recorded pointer. **Before editing anything under `gas/`, READ AND FOLLOW `gas/AGENTS.md`** — that repo has its own conventions (Deno/esbuild TS→GAS build, per-project `project.json` + root `projects.json` registry, deploy-affected CI, per-project `accounts[]` for multi-account deploy). Fresh clones must run `git submodule update --init` to populate `gas/`; after a core-template-gas merge, repoint with `git -C gas checkout master && git -C gas pull && git add gas`.
 
 ## Google Workspace MCP — Feature Map (this worker's real surface)
 
@@ -75,6 +76,21 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   `email_templates_list/get/add` + built-in Gmail-safe templates (`backend/gmail/
   email-templates.ts`, table `email_templates`, seeded idempotently) + `/gws/email-templates`
   gallery.
+- **Email → PDF** (`backend/gmail/thread-pdf.ts`): `gmail_to_pdf` prints a thread /
+  message / message-subset. `via:"render"` (default) → Browser Rendering REST `/pdf`
+  (`docs/browser-render.ts#renderHtmlToPdf`) into a worker-served `pdf_url` (previews
+  bucket, 48h) and supports `highlights` ([{term,color}] → colored `<mark>`, tag-safe).
+  `via:"appscript"` → the account's `email-to-pdf` GAS project (see directive #20) via
+  `scripts.run`, saving a native-fidelity PDF to the user's Drive (`drive_url`).
+- **Email read** (`backend/gmail/body-extract.ts`): `gmail_get_message` returns body in
+  `bodyFormat` `text`(default)|`html`|`rfc`, ALWAYS with `urls:[{label,href}]`;
+  `gmail_get_thread` carries per-message `body`+`urls`. `cc`/`bcc` supported on all
+  compose tools (drafts included).
+- **Doc/Sheet/PDF preview** (`docs/doc-preview.ts`): `preview_file` (+ `docs_create_from_markdown`
+  by default) exports to PDF, rasterizes EACH page to a PNG in the previews R2 bucket
+  (48h TTL via bucket lifecycle + hourly `purgeExpiredPreviews`, served `/api/preview/:id`),
+  and optionally critiques each page via Ollama (`docs/vision-critique.ts` → `lib/guardian-ai.ts`,
+  auth `WORKER_API_KEY`). Returns `{ pdf_url, pages:{pg_N:{image_url, vision_ai_notes}} }`.
 - **Exports**: `sheets_export_json` (`google/sheet-export.ts`, table `sheet_export_jobs`)
   and `docs_export` (`google/doc-export.ts`, table `doc_export_jobs`) — array of id/urls
   (via `parseDriveRefs`), cross-account fallback, per-element error items, D1 tracking

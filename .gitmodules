@@ -1,0 +1,4 @@
+[submodule "gas"]
+	path = gas
+	url = https://github.com/jmbish04/core-template-gas.git
+	branch = master

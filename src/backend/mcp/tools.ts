@@ -29,11 +29,14 @@ import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-serv
 import { searchGmail } from "@/backend/gmail/search-service";
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { attachmentManifest } from "@/backend/gmail/attachments";
+import { extractBody, type BodyFormat } from "@/backend/gmail/body-extract";
+import { parseRawMessage } from "@/backend/gmail/parse-message";
 import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
 import { buildFolderTree } from "@/backend/drive/folder-tree";
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
 import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
 import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
+import { resolveGasScript, setGasScript } from "@/backend/appscript/gas-projects";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -45,7 +48,10 @@ import { docBodyContent } from "@/backend/docs/locate";
 import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
 import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
 import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
-import { rasterizePdf, storeRender } from "@/backend/docs/browser-render";
+import { rasterizePdf, storeRender, renderHtmlToPdf } from "@/backend/docs/browser-render";
+import { buildDocPreview, type DocPreview } from "@/backend/docs/doc-preview";
+import { putPreview } from "@/backend/docs/preview-store";
+import { buildThreadHtml, toRenderMessage } from "@/backend/gmail/thread-pdf";
 import { DriveService, FOLDER_MIME, escapeDriveQuery, type DriveFile } from "./services/drive";
 import { extractGoogleId } from "@/backend/google/core/ids";
 import { DocsService } from "./services/docs";
@@ -104,30 +110,50 @@ const asUser = {
 };
 
 /**
+ * One-or-more email recipients: a single/comma-separated string OR an array of
+ * addresses. Normalize with {@link addrList} before handing to the Gmail service
+ * (which builds the RFC 2822 To/Cc/Bcc header from a comma-separated string).
+ */
+const recipients = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+
+/** Normalize a recipients value (string | string[]) to a comma-separated header string. */
+function addrList(v: string | string[] | undefined): string | undefined {
+  if (v == null) return undefined;
+  const s = Array.isArray(v) ? v.filter(Boolean).join(", ") : v;
+  return s.trim() ? s : undefined;
+}
+
+/**
  * Rich-body + attachment fields mixed into the Gmail compose tools. The worker
  * owns formatting: it inlines CSS (Gmail ignores <style>/classes) and renders
  * markdown, so the model just supplies content. Attachments over Gmail's 25 MiB
  * ceiling auto-fall back to "anyone with link" Drive links (like Gmail).
  */
 const richBody = {
+  cc: recipients
+    .optional()
+    .describe("Cc recipients — one or more, as an array or a comma-separated string. Fully supported on drafts and sends — a Gmail draft carries To, Cc, AND Bcc, and they are preserved when the draft is later sent."),
+  bcc: recipients
+    .optional()
+    .describe("Bcc recipients — one or more, as an array or a comma-separated string. Fully supported on drafts too (not just To)."),
   html: z
     .string()
     .optional()
-    .describe("Rich HTML body. The worker inlines all CSS for Gmail — you do NOT need to write inline styles yourself. Takes precedence over `body`."),
+    .describe("Rich HTML body. The worker inlines all CSS for Gmail — you do NOT need to write inline styles yourself. Takes precedence over `body`. For links use `<a href=\"…\">`; for INLINE images use `<img src=\"cid:myimg\">` and pass the image in `attachments` with as:'inline', contentId:'myimg'."),
   markdown: z
     .string()
     .optional()
-    .describe("Markdown body. The worker renders it to Gmail-safe inline-styled HTML (headings, bold, lists, links, tables). Takes precedence over `body`."),
+    .describe("Markdown body. The worker renders it to Gmail-safe inline-styled HTML (headings, bold, lists, links, tables). Links via [text](url). Takes precedence over `body`."),
   attachments: z
     .array(
       z.union([
-        z.object({ driveFileId: z.string(), as: z.enum(["attach", "link"]).optional() }),
-        z.object({ blob: z.string().describe("base64"), filename: z.string(), mimeType: z.string().optional(), as: z.enum(["attach", "link"]).optional() }),
+        z.object({ driveFileId: z.string(), as: z.enum(["attach", "link", "inline"]).optional(), contentId: z.string().optional() }),
+        z.object({ blob: z.string().describe("base64"), filename: z.string(), mimeType: z.string().optional(), as: z.enum(["attach", "link", "inline"]).optional(), contentId: z.string().optional() }),
       ]),
     )
     .optional()
     .describe(
-      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), or { driveFileId, as:'link' } (force a shared Drive link instead of attaching). Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), the overflow files auto-fall back to 'anyone with link' Drive links added at the top of the email. The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
+      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
     ),
   driveIds: z
     .array(z.string())
@@ -208,6 +234,24 @@ async function insertBrailleRows(
 
 /** Cap for in-memory Drive uploads (simple `uploadType=media` buffers the whole body). */
 export const MAX_DRIVE_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Best-effort per-page visual preview of any Drive-exportable file (Doc/Sheet/
+ * Slides/PDF): the file is exported to PDF (stashed on R2), each page is
+ * rasterized to a PNG (R2, 48-hour TTL, served at /api/preview/:id), and —
+ * unless `critique:false` — critiqued by an Ollama vision model. Returns
+ * `{ pdf_url, pages: { pg_1: { image_url, vision_ai_notes }, ... }, meta }`, or
+ * undefined when the file can't even be exported to PDF. Never throws, so it can
+ * be attached to a create result without risking it.
+ */
+async function previewFile(
+  env: Env,
+  drive: DriveService,
+  fileId: string,
+  opts: { maxPages?: number; critique?: boolean; sub?: string } = {},
+): Promise<DocPreview | undefined> {
+  return (await buildDocPreview(env, drive, fileId, opts)) ?? undefined;
+}
 
 /** Decode standard or url-safe base64 to bytes (for binary Drive uploads). */
 export function base64ToBytes(b64: string): Uint8Array {
@@ -1089,17 +1133,20 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_draft",
     description:
-      "Create a Gmail DRAFT (not sent) so a human can review before sending. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`.",
-    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string().optional(), ...richBody, ...asUser }),
+      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
+    inputSchema: z.object({ to: recipients, subject: z.string(), body: z.string().optional(), ...richBody, ...asUser }),
     async run({ env, sub }, a) {
-      const d = await new GmailService(env, acct(sub, a)).createDraft(a.to, a.subject, a.body ?? "", {
+      const to = addrList(a.to)!;
+      const d = await new GmailService(env, acct(sub, a)).createDraft(to, a.subject, a.body ?? "", {
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
         html: a.html,
         markdown: a.markdown,
         attachments: a.attachments,
         driveIds: a.driveIds,
         blobs: a.blobs,
       });
-      return { result: d, asset: { assetType: "gmail", googleId: d.id, title: a.subject, action: "create", detail: { to: a.to, draft: true } } };
+      return { result: d, asset: { assetType: "gmail", googleId: d.id, title: a.subject, action: "create", detail: { to, draft: true } } };
     },
   },
   {
@@ -1118,6 +1165,8 @@ export const TOOLS: ToolDef[] = [
       const d = await new GmailService(env, acct(sub, a)).createReplyDraft(a.messageId, a.body ?? "", {
         to: a.to,
         replyAll: a.replyAll,
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
         html: a.html,
         markdown: a.markdown,
         attachments: a.attachments,
@@ -1130,9 +1179,9 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_send",
     description:
-      "Send an email immediately. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
+      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
     inputSchema: z.object({
-      to: z.string().email(),
+      to: recipients,
       subject: z.string(),
       body: z.string().optional(),
       replyToMessageId: z
@@ -1144,10 +1193,12 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const sent = await new GmailService(env, acct(sub, a)).send(a.to, a.subject, a.body ?? "", {
+      const sent = await new GmailService(env, acct(sub, a)).send(addrList(a.to)!, a.subject, a.body ?? "", {
         from: a.as_user,
         replyToMessageId: a.replyToMessageId,
         threadId: a.threadId,
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
         html: a.html,
         markdown: a.markdown,
         attachments: a.attachments,
@@ -1161,7 +1212,7 @@ export const TOOLS: ToolDef[] = [
           googleId: sent.id,
           title: a.subject,
           action: "create",
-          detail: { to: a.to, ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
+          detail: { to: addrList(a.to), ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
         },
       };
     },
@@ -1197,7 +1248,7 @@ export const TOOLS: ToolDef[] = [
     description:
       "Schedule an email to send at an absolute future time. IMPORTANT: Gmail has NO native scheduled-send API (its 'Schedule send' is UI-only) — this is a worker-side queue: the full message is persisted and a background sweep sends it at `send_at`, atomically (no double-send). Takes the SAME inputs as gmail_send (to, subject, body/html/markdown, attachments) PLUS `send_at`. YOU must resolve relative phrases ('Monday 9am') to a concrete ISO-8601 UTC instant before calling — this tool only accepts a timestamp. Prefer Drive file ids over large inline blobs (blobs are stored inline; keep them small, re-fetch big files via driveFileId at send time). Manage the queue with list_scheduled_emails / cancel_scheduled_email.",
     inputSchema: z.object({
-      to: z.string().email(),
+      to: recipients,
       subject: z.string(),
       body: z.string().optional(),
       send_at: z.string().describe("Absolute send time as ISO-8601 UTC (e.g. '2026-08-18T16:00:00Z'). Resolve relative phrases yourself first."),
@@ -1212,7 +1263,9 @@ export const TOOLS: ToolDef[] = [
       const ref = acct(sub, a);
       const email = await accountEmailFor(env, ref);
       const spec: ScheduledEmailSpec = {
-        to: a.to,
+        to: addrList(a.to)!,
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
         subject: a.subject,
         body: a.body,
         html: a.html,
@@ -1226,7 +1279,7 @@ export const TOOLS: ToolDef[] = [
         .values({ accountRef: ref, accountEmail: email, spec, sendAt: when, status: "scheduled" })
         .returning({ id: scheduledEmails.id });
       return {
-        result: { id: row.id, to: a.to, subject: a.subject, sendAt: when.toISOString(), account: email, status: "scheduled" },
+        result: { id: row.id, to: addrList(a.to), subject: a.subject, sendAt: when.toISOString(), account: email, status: "scheduled" },
       };
     },
   },
@@ -1375,19 +1428,57 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "gmail_get_message",
+    description:
+      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes).",
+    inputSchema: z.object({
+      id: z.string(),
+      bodyFormat: z.enum(["text", "html", "rfc"]).optional().describe("Body representation to return. Default 'text' (most efficient)."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const gmail = new GmailService(env, acct(sub, a));
+      const raw = await gmail.getRawMessage(a.id);
+      const format = (a.bodyFormat ?? "text") as BodyFormat;
+      const rfc = format === "rfc" ? await gmail.getMessageRfc(a.id) : undefined;
+      const parsed = parseRawMessage(raw);
+      const { body, bodyFormat, urls } = extractBody((raw as any).payload, format, rfc);
+      return {
+        result: {
+          id: parsed.id,
+          threadId: parsed.threadId,
+          subject: parsed.subject,
+          snippet: parsed.snippet,
+          internalDate: parsed.internalDate,
+          labelIds: parsed.labelIds,
+          contacts: parsed.contacts,
+          body,
+          bodyFormat,
+          urls,
+          attachments: attachmentManifest((raw as any).payload),
+        },
+      };
+    },
+  },
+  {
     name: "gmail_get_thread",
     description:
-      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. Every message ALWAYS carries an attachments[] manifest of { filename, mimeType, size, attachmentId } so the model knows attachments exist. By default each message's attachments are ALSO uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and the manifest is enriched with { driveId, doc_text, sha256_hash }. Pass includeAttachments:false to skip all Drive writes and return the raw thread with the metadata-only manifest.",
+      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. Every message carries a `body` (decoded plain text), a `urls` array of { label, href } extracted from that message, and an attachments[] manifest of { filename, mimeType, size, attachmentId }. By default each message's attachments are ALSO uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and the manifest is enriched with { driveId, doc_text, sha256_hash }. Pass includeAttachments:false to skip all Drive writes and return the metadata-only manifest. For a single message in a specific body format (html/rfc), use gmail_get_message.",
     inputSchema: z.object({ threadId: z.string(), includeAttachments: z.boolean().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const gmail = new GmailService(env, account);
       const thread = await gmail.getThread(a.threadId);
+      // Decoded plain-text body + extracted { label, href } links for a message.
+      const bodyOf = (m: (typeof thread.messages)[number]) => {
+        const { body, urls } = extractBody((m as any).payload, "text");
+        return { body, urls };
+      };
       if (a.includeAttachments === false) {
         // Still surface attachment metadata (count/filename/mimeType/size) for
         // every message — cheap payload walk, no Drive writes — so the model is
         // never blind to attachments just because byte-fetching was skipped.
-        const messages = thread.messages.map((m) => ({ ...m, attachments: attachmentManifest(m.payload) }));
+        const messages = thread.messages.map((m) => ({ ...m, ...bodyOf(m), attachments: attachmentManifest(m.payload) }));
         return { result: { ...thread, messages } };
       }
 
@@ -1406,9 +1497,78 @@ export const TOOLS: ToolDef[] = [
           gmail,
         });
         if (up.folderId) folderId = up.folderId;
-        messages.push({ ...m, attachments: up.attachments });
+        messages.push({ ...m, ...bodyOf(m), attachments: up.attachments });
       }
       return { result: { ...thread, messages, attachmentsFolderId: folderId ?? null } };
+    },
+  },
+  {
+    name: "gmail_to_pdf",
+    description:
+      "Print an email to PDF — a whole thread, a single message, or specific messages on a thread — rendered in a clean Gmail-style layout (sender, recipient, date, subject + body per message). Provide ONE of: `threadId` (all messages in the thread), `messageId` (one message), or `messageIds` (specific message ids, e.g. a subset of a thread). Two backends via `via`: 'render' (default) uses Browser Rendering and returns a worker-served `pdf_url` (R2, 48h) — supports `highlights` (color-highlight terms, e.g. [{term:'invoice',color:'#ffe600'}]); 'appscript' runs the account's installed gmail-to-pdf Apps Script (must be installed first via appsscript_install_gmail_pdf), which saves the PDF in the USER's Drive with native Gmail fidelity (inline images) and returns a permanent `drive_url` + `fileId`. Returns `filename`, `subject`, `messages` (count) either way.",
+    inputSchema: z.object({
+      threadId: z.string().optional().describe("Print every message in this thread."),
+      messageId: z.string().optional().describe("Print just this one message."),
+      messageIds: z.array(z.string()).optional().describe("Print these specific messages (e.g. a subset of a thread), in order."),
+      filename: z.string().optional().describe("Suggested download filename (defaults to the subject)."),
+      via: z.enum(["render", "appscript"]).optional().describe("'render' (default): Browser Rendering → worker pdf_url (supports highlights). 'appscript': native Apps Script → Drive URL (requires appsscript_install_gmail_pdf)."),
+      highlights: z
+        .array(z.object({ term: z.string().min(1), color: z.string().describe("Hex color, e.g. '#ffe600' or 'ffe600'.") }))
+        .optional()
+        .describe("render mode only: highlight these terms in the message bodies, each with its own hex color. Case-insensitive; only text is highlighted (never links/markup)."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      // Backend B: native Apps Script → PDF saved in the user's Drive, returns a Drive URL.
+      // The email-to-pdf GAS project is built + deployed (per account) from
+      // core-template-gas CI; the worker only runs it via scripts.run.
+      if (a.via === "appscript") {
+        const ref = acct(sub, a);
+        const email = (a.as_user ?? (await accountEmailFor(env, ref))).toLowerCase();
+        const gas = await resolveGasScript(env, "email-to-pdf", email);
+        if (!gas) {
+          throw new Error(
+            `email-to-pdf Apps Script not configured for ${email}. Deploy it from core-template-gas, then register its scriptId (set_gas_script or global_config gas_script:email-to-pdf:${email}).`,
+          );
+        }
+        const messageIds = a.messageIds ?? (a.messageId ? [a.messageId] : []);
+        const params = [a.threadId ?? null, messageIds, { filename: a.filename }];
+        const r = (await new AppsScriptService(env, ref).run(gas.scriptId, gas.entry, params, false)) as any;
+        const out = r?.response?.result;
+        if (!out?.url) {
+          const err = r?.error ? JSON.stringify(r.error.details ?? r.error) : "no result — is email-to-pdf deployed as an API Executable for this account?";
+          throw new Error(`Apps Script export failed: ${err}`);
+        }
+        return {
+          result: { via: "appscript", drive_url: out.url, fileId: out.fileId, filename: out.name, subject: out.subject, messages: out.messages },
+          asset: { assetType: "drive", googleId: out.fileId, title: out.name, url: out.url, action: "create", detail: { emailPdf: true } },
+        };
+      }
+
+      const gmail = new GmailService(env, acct(sub, a));
+
+      // Collect the raw messages to print, in order.
+      let raws: any[];
+      if (a.messageIds && a.messageIds.length) {
+        raws = await Promise.all(a.messageIds.map((id: string) => gmail.getRawMessage(id)));
+      } else if (a.messageId) {
+        raws = [await gmail.getRawMessage(a.messageId)];
+      } else if (a.threadId) {
+        raws = (await gmail.getThread(a.threadId)).messages;
+      } else {
+        throw new Error("Provide one of threadId, messageId, or messageIds.");
+      }
+      if (!raws.length) throw new Error("No messages found to print.");
+
+      const messages = raws.map(toRenderMessage);
+      const subject = messages.find((m) => m.subject)?.subject ?? "(no subject)";
+      const pdf = await renderHtmlToPdf(env, buildThreadHtml(subject, messages, a.highlights ?? []));
+      if (!pdf) throw new Error("PDF rendering failed (Browser Rendering not configured or unavailable).");
+
+      const safe = (a.filename ?? subject).replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "email";
+      const filename = safe.toLowerCase().endsWith(".pdf") ? safe : `${safe}.pdf`;
+      const pdfUrl = await putPreview(env, `${crypto.randomUUID()}.pdf`, pdf, "application/pdf");
+      return { result: { pdf_url: pdfUrl, filename, subject, messages: messages.length } };
     },
   },
   {
@@ -1538,6 +1698,20 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const r = await new AppsScriptService(env, acct(sub, a)).run(a.scriptId, a.functionName, a.parameters, a.devMode ?? true);
       return { result: r, asset: { assetType: "script", googleId: a.scriptId, action: "modify", detail: { function: a.functionName } } };
+    },
+  },
+  {
+    name: "set_gas_script",
+    description:
+      "Register the deployed Apps Script scriptId for a GAS project in a given account, so the worker can run it via scripts.run (e.g. after core-template-gas CI deploys 'email-to-pdf' to each account, register the two scriptIds here). Stored in global_config as gas_script:<project>:<account>; overrides the seeded default. Then gmail_to_pdf via:'appscript' works for that account.",
+    inputSchema: z.object({
+      project: z.string().describe("GAS project name, e.g. 'email-to-pdf'."),
+      account: z.string().email().describe("Account email the scriptId belongs to (e.g. jmbish04@gmail.com)."),
+      scriptId: z.string().describe("The deployed Apps Script scriptId (API Executable) for that account."),
+    }),
+    async run({ env }, a) {
+      await setGasScript(env, a.project, a.account, a.scriptId);
+      return { result: { project: a.project, account: a.account.toLowerCase(), scriptId: a.scriptId, ok: true } };
     },
   },
   {
@@ -2183,12 +2357,42 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_create_from_markdown",
     description:
-      "METHOD 1 (whole new doc): Convert an ENTIRE Markdown string into a NEW native Google Doc using Drive's own Markdown importer. High fidelity — Google maps headings, tables, lists, links, code. Returns the new doc id + url. Use this when the Markdown IS the whole document. To add Markdown to an EXISTING doc, use docs_append_markdown instead. Defaults to the SA identity; as_user overrides.",
-    inputSchema: z.object({ name: z.string(), markdown: z.string(), parentId: z.string().optional(), ...asUser }),
+      "METHOD 1 (whole new doc): Convert an ENTIRE Markdown string into a NEW native Google Doc using Drive's own Markdown importer. High fidelity — Google maps headings, tables, lists, links, code. Returns the new doc id + url, PLUS by default a `preview` = { pdf_url, pages: { pg_1: { image_url }, ... } }: the exported PDF and each page rendered to an image (stored on R2, served at /api/preview/:id, auto-expired after 48h) so you can SEE the result and catch mangled layout before handing it off. Pass preview:false to skip rendering, or critique:true to also get an Ollama formatting critique per page (`vision_ai_notes`). Use this when the Markdown IS the whole document. To add Markdown to an EXISTING doc, use docs_append_markdown instead. Defaults to the SA identity; as_user overrides.",
+    inputSchema: z.object({
+      name: z.string(),
+      markdown: z.string(),
+      parentId: z.string().optional(),
+      preview: z.boolean().optional().describe("Render per-page image previews of the created doc (default true). Set false to skip."),
+      critique: z.boolean().optional().describe("Also run the Ollama formatting critique per page (default false here to keep creates fast). Use preview_file for a full critique."),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const account = a.as_user ? acct(sub, a) : "sa";
-      const f = await new DriveService(env, account).createDocFromMarkdown(a.name, a.markdown, a.parentId);
-      return { result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink }, asset: { assetType: "doc", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { markdownImport: true } } };
+      const drive = new DriveService(env, account);
+      const f = await drive.createDocFromMarkdown(a.name, a.markdown, a.parentId);
+      const preview = a.preview === false ? undefined : await previewFile(env, drive, f.id, { sub, critique: a.critique === true });
+      return { result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink, ...(preview ? { preview } : {}) }, asset: { assetType: "doc", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { markdownImport: true } } };
+    },
+  },
+  {
+    name: "preview_file",
+    description:
+      "Render a Drive file (Google Doc, Sheet, Slides, or PDF) to per-page images so the model can SEE how it actually looks — the reliable way to catch mangled layout, overflow, or bad pagination after creating OR updating a document. Exports the PDF and rasterizes each page, stores them on R2 (served at /api/preview/:id, auto-expired after 48h), and by default critiques each page with an Ollama vision model for formatting/presentation (professional, fun, creative, etc). Returns `{ pdf_url, pages: { pg_1: { image_url, vision_ai_notes }, ... }, meta }`. Pass critique:false for images only, or maxPages to raise/lower the page cap (default 5). Best-effort: if Browser Rendering is unavailable, `pages` is empty (the pdf_url still works). Defaults to the SA identity; as_user overrides.",
+    inputSchema: z.object({
+      fileId: z.string(),
+      critique: z.boolean().optional().describe("Run the Ollama per-page formatting critique (default true)."),
+      maxPages: z.number().int().min(1).max(20).optional().describe("Max pages to render (default 5)."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const account = a.as_user ? acct(sub, a) : "sa";
+      const drive = new DriveService(env, account);
+      const preview = await previewFile(env, drive, a.fileId, { sub, critique: a.critique, maxPages: a.maxPages });
+      return {
+        result: preview
+          ? { fileId: a.fileId, ...preview }
+          : { fileId: a.fileId, pages: {}, note: "Preview unavailable (Browser Rendering not configured, or the file is too large / not PDF-exportable)." },
+      };
     },
   },
   {

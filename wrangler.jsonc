@@ -221,5 +221,13 @@
       "binding": "R2_FILES_BUCKET",
       "remote": true,
     },
+    {
+      // Short-lived doc previews (PDF + per-page PNGs). A bucket-wide lifecycle
+      // rule ("expire-48h") auto-deletes objects after 2 days, so previews are
+      // ephemeral by construction; served at /api/preview/:id.
+      "bucket_name": "google-workspace-mcp-previews",
+      "binding": "R2_PREVIEWS_BUCKET",
+      "remote": true,
+    },
   ],
 }
