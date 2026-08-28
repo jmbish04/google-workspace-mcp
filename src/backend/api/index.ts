@@ -34,6 +34,7 @@ import { schemaRouter } from "./routes/schema";
 import { appscriptRouter } from "./routes/appscript";
 import { renderRouter } from "./routes/render";
 import { previewRouter } from "./routes/preview";
+import { copilotRouter } from "./routes/copilot";
 import { healthRouter } from "./routes/health";
 import { activityRouter } from "./routes/activity";
 import { circuitRouter } from "./routes/circuit";
@@ -173,6 +174,7 @@ app.route("/api/schema", schemaRouter);
 app.route("/api/appscript", appscriptRouter);
 app.route("/api/render", renderRouter);
 app.route("/api/preview", previewRouter);
+app.route("/api/copilot", copilotRouter);
 app.route("/api/projects", projectsRouter);
 app.route("/api/tasks", tasksRouter);
 // Comments / Subtasks / Attachments for a single task — mounted alongside

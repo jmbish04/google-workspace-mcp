@@ -410,7 +410,7 @@ export async function reviewDoc(
 /** Map an authorized-account summary to the account ref the clients expect. */
 function accountRef(a: { email: string; kind: string }): string {
   if (a.email === "workspace") return "workspace";
-  return a.kind === "workspace_dwd" ? `dwd:${a.email}` : a.email;
+  return a.email; // OAuth-only: the email IS the ref
 }
 
 /**

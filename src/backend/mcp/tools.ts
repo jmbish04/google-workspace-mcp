@@ -37,6 +37,8 @@ import { runCodeMode, runCodeModeSearch } from "./code-mode";
 import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
 import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
 import { resolveGasScript, setGasScript } from "@/backend/appscript/gas-projects";
+import { listTags, createTag, applyTags, findByTags } from "@/backend/drive/tags";
+import { findEmailRecords } from "@/backend/gmail/tracking";
 import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
 import { findLastTable } from "@/backend/docs/locate";
 import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
@@ -165,9 +167,9 @@ const richBody = {
     .describe("Legacy shorthand for attachments: inline base64 files (same size/link fallback as `attachments`)."),
 };
 
-/** Resolve the account ref for a call: DWD impersonation, or the OAuth caller. */
+/** Resolve the account ref for a call: the as_user email, else the signed-in sub (OAuth-only). */
 export function acct(sub: string, a: { as_user?: string }): string {
-  return a.as_user ? `dwd:${a.as_user}` : sub;
+  return a.as_user ? a.as_user.trim().toLowerCase() : sub;
 }
 
 /**
@@ -1121,6 +1123,115 @@ export const TOOLS: ToolDef[] = [
       return { result: await new CalendarService(env, acct(sub, a)).listCalendars() };
     },
   },
+  // ---- Outgoing-email log (recall) --------------------------------------
+  {
+    name: "email_records_search",
+    description:
+      "Search the worker's log of outgoing emails (every draft/reply/send is recorded with a UUID that's also hidden in the message body). Use it to (a) recall the exact Gmail thread you touched earlier — filter by `subject`/`recipient`/date and get back the `threadId`+`messageId` to feed gmail_get_thread, cheaper than re-reading mail; or (b) disambiguate near-duplicate drafts by their `uuid`. Filters: uuid, subject (substring), recipient (substring), since/until (ISO-8601), limit (default 25).",
+    inputSchema: z.object({
+      uuid: z.string().optional(),
+      subject: z.string().optional(),
+      recipient: z.string().optional(),
+      since: z.string().optional().describe("ISO-8601 lower bound on created time."),
+      until: z.string().optional().describe("ISO-8601 upper bound on created time."),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    async run({ env }, a) {
+      const rows = await findEmailRecords(env, {
+        uuid: a.uuid,
+        subject: a.subject,
+        recipient: a.recipient,
+        since: a.since ? new Date(a.since) : undefined,
+        until: a.until ? new Date(a.until) : undefined,
+        limit: a.limit,
+      });
+      return {
+        result: {
+          count: rows.length,
+          records: rows.map((r) => ({
+            uuid: r.uuid, action: r.action, account: r.account, subject: r.subject,
+            recipients: r.recipients, threadId: r.threadId, messageId: r.messageId,
+            createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,
+          })),
+        },
+      };
+    },
+  },
+  // ---- Drive descriptions + tags ----------------------------------------
+  {
+    name: "drive_get_description",
+    description: "Read a Drive file/folder's `description` field (free-text notes; also where tags live as #UPPER_SNAKE tokens).",
+    inputSchema: z.object({ fileId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      return { result: { fileId: a.fileId, description: await new DriveService(env, acct(sub, a)).getDescription(a.fileId) } };
+    },
+  },
+  {
+    name: "drive_set_description",
+    description: "Set (overwrite) a Drive file/folder's `description` field. To ADD tags without clobbering existing notes/tags, prefer drive_tag_apply.",
+    inputSchema: z.object({ fileId: z.string(), description: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      await new DriveService(env, acct(sub, a)).setDescription(a.fileId, a.description);
+      return { result: { fileId: a.fileId, ok: true }, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { description: true } } };
+    },
+  },
+  {
+    name: "drive_tags_list",
+    description:
+      "List the existing Drive tag registry (D1). ALWAYS call this BEFORE creating a tag so you REUSE an existing one instead of making a near-duplicate. Filter by `category` (e.g. project/scenario/topic) and/or a `search` substring over tag name + description. Returns [{ id, name, description, category }]. Tag names are canonical UPPER_SNAKE.",
+    inputSchema: z.object({
+      category: z.string().optional().describe("Filter to this category (project | scenario | topic | …)."),
+      search: z.string().optional().describe("Case-insensitive substring over tag name + description."),
+    }),
+    async run({ env }, a) {
+      const tags = await listTags(env, { category: a.category, search: a.search });
+      return { result: { count: tags.length, tags: tags.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category })) } };
+    },
+  },
+  {
+    name: "drive_tag_create",
+    description:
+      "Create a Drive tag in the registry (deduplicated: if the canonical UPPER_SNAKE name already exists, the existing tag is returned, never a duplicate). Check drive_tags_list first. `category` should be a coarse bucket (project | scenario | topic) so tags stay filterable. Returns { tag, created }.",
+    inputSchema: z.object({
+      name: z.string().describe("Tag label; normalized to UPPER_SNAKE (e.g. 'Roof Warranty' → ROOF_WARRANTY)."),
+      description: z.string().optional().describe("What this tag means — helps future agents decide to reuse it."),
+      category: z.string().optional().describe("project | scenario | topic (or your own bucket)."),
+    }),
+    async run({ env, sub }, a) {
+      const { tag, created } = await createTag(env, { name: a.name, description: a.description, category: a.category, sub });
+      return { result: { created, tag: { id: tag.id, name: tag.name, description: tag.description, category: tag.category } } };
+    },
+  },
+  {
+    name: "drive_tag_apply",
+    description:
+      "Tag a Drive file or folder with one or more tags: adds the tag→drive mapping in D1 AND appends the `#UPPER_SNAKE` token(s) into the file's Drive description (so it's later findable via Drive full-text search too). Unknown tag names are auto-created (canonical + deduped) — but prefer creating/checking via drive_tags_list/drive_tag_create first. Idempotent. Returns the applied canonical names.",
+    inputSchema: z.object({
+      fileId: z.string().describe("Drive file OR folder id."),
+      tags: z.array(z.string()).min(1).describe("Tag names (any casing; normalized to UPPER_SNAKE)."),
+      driveType: z.enum(["file", "folder"]).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      const out = await applyTags(env, drive, a.fileId, a.tags, { driveType: a.driveType, sub });
+      return { result: out, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { tags: out.applied } } };
+    },
+  },
+  {
+    name: "drive_tag_find",
+    description:
+      "Find Drive files/folders carrying the given tag(s). `mode`: 'd1' (default; the mapping table — fast/exact), 'drive' (Drive full-text search for the #TAG token in descriptions — catches items tagged outside this worker), or 'both'. Returns { d1: [driveIds], drive: [driveIds] }.",
+    inputSchema: z.object({
+      tags: z.array(z.string()).min(1),
+      mode: z.enum(["d1", "drive", "both"]).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      return { result: await findByTags(env, drive, a.tags, { mode: a.mode }) };
+    },
+  },
   // ---- Gmail -------------------------------------------------------------
   {
     name: "gmail_list",
@@ -2067,9 +2178,8 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      // Default to the service account's own identity (it's shared on the target
-      // files); `as_user` overrides to DWD impersonation.
-      const account = a.as_user ? acct(sub, a) : "sa";
+      // Defaults to the signed-in account (as_user overrides).
+      const account = acct(sub, a);
       const meta = await new DriveService(env, account).get(a.fileId);
       const surface: BrailleSurface | null = a.surface ?? detectSurface(meta.mimeType ?? "");
       if (!surface) {
@@ -2158,9 +2268,8 @@ export const TOOLS: ToolDef[] = [
       "Sweep a Drive folder and deconstruct every Google Doc, Slides deck, and Sheet inside it into the braille registry in one call. Other file types are skipped. Accepts a folder id or a Drive folder URL.",
     inputSchema: z.object({ folderId: z.string(), tags: z.array(z.string()).optional(), ...asUser }),
     async run({ env, sub }, a) {
-      // Default to the service account's own identity (it's shared on the folder);
-      // `as_user` overrides to DWD impersonation.
-      const account = a.as_user ? acct(sub, a) : "sa";
+      // Defaults to the signed-in account (as_user overrides).
+      const account = acct(sub, a);
       const folderId = (a.folderId.match(/[-\w]{25,}/) ?? [a.folderId])[0];
       const drive = new DriveService(env, account);
       const { files } = await drive.search(`'${folderId}' in parents and trashed = false`, 100);
@@ -2206,7 +2315,7 @@ export const TOOLS: ToolDef[] = [
       "Return a Google Doc's raw structure JSON (the 'braille'), tab-aware (includeTabsContent=true). This is the exact shape docs_batch_update replays. Defaults to the service-account identity; as_user overrides.",
     inputSchema: z.object({ documentId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       return { result: await new DocsService(env, account).getRaw(a.documentId) };
     },
   },
@@ -2220,7 +2329,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const result = await new DocsService(env, account).batchUpdate(a.documentId, a.requests);
       return { result, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { requests: a.requests.length } } };
     },
@@ -2228,7 +2337,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "table_factory",
     description:
-      "Insert a themed table into a Google Doc from a 2D array (first row = header). Header row gets a dark-blue fill with white bold centered text; every cell gets a 1pt border. Handles the index math (fills bottom-up, styles after re-fetch). Defaults to the SA identity.",
+      "Insert a themed table into a Google Doc from a 2D array (first row = header). Header row gets a dark-blue fill with white bold centered text; every cell gets a 1pt border. Handles the index math (fills bottom-up, styles after re-fetch). Defaults to the signed-in account.",
     inputSchema: z.object({
       documentId: z.string(),
       data: z.array(z.array(z.string())),
@@ -2237,7 +2346,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const docs = new DocsService(env, account);
       const rows = a.data.length;
       const cols = Math.max(0, ...a.data.map((r: string[]) => r.length));
@@ -2257,7 +2366,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "code_block_factory",
     description:
-      "Insert a syntax-highlighted code block (shaded 1x1 container) into a Google Doc. Tokenizes by language (sql, javascript, typescript, python, bash…) and colors by theme (dracula | github). Defaults to the SA identity.",
+      "Insert a syntax-highlighted code block (shaded 1x1 container) into a Google Doc. Tokenizes by language (sql, javascript, typescript, python, bash…) and colors by theme (dracula | github). Defaults to the signed-in account.",
     inputSchema: z.object({
       documentId: z.string(),
       code: z.string(),
@@ -2267,7 +2376,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const docs = new DocsService(env, account);
       const theme = a.theme ?? "github";
 
@@ -2301,10 +2410,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_qc_check",
     description:
-      "Structural quality check on a Google Doc (from its braille): headings that will orphan (no keepWithNext), tables with no borders, empty paragraphs that render blank pages. Read-only — returns findings. Layout-only issues (table spilling two pages) need the vision QC pass. Defaults to the SA identity.",
+      "Structural quality check on a Google Doc (from its braille): headings that will orphan (no keepWithNext), tables with no borders, empty paragraphs that render blank pages. Read-only — returns findings. Layout-only issues (table spilling two pages) need the vision QC pass. Defaults to the signed-in account.",
     inputSchema: z.object({ documentId: z.string(), tabId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const raw = await new DocsService(env, account).getRaw(a.documentId);
       return { result: { findings: lintDoc(raw, a.tabId) } };
     },
@@ -2312,10 +2421,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_qc_fix",
     description:
-      "Apply the safe white-glove fixes to a Google Doc: keepWithNext on headings (no orphans) and 1pt borders on unstyled tables. Content untouched. Returns what was fixed + any remaining (report-only) findings. This is the polish/apply-style pass. Defaults to the SA identity.",
+      "Apply the safe white-glove fixes to a Google Doc: keepWithNext on headings (no orphans) and 1pt borders on unstyled tables. Content untouched. Returns what was fixed + any remaining (report-only) findings. This is the polish/apply-style pass. Defaults to the signed-in account.",
     inputSchema: z.object({ documentId: z.string(), tabId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const docs = new DocsService(env, account);
       const findings = lintDoc(await docs.getRaw(a.documentId), a.tabId);
       const requests = buildQcFixRequests(findings, a.tabId);
@@ -2344,10 +2453,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "html_to_doc",
     description:
-      "Convert an HTML string into a Google Doc via native batchUpdate (NOT Google's importer) — headings, bold/italic/underline/code, and bullet/numbered lists come out clean. WE control the mapping, so no <hr>-around-heading junk. Inserts at index 1 (use a fresh/scratch doc). Tables/images not yet mapped — use table_factory. Defaults to the SA identity.",
+      "Convert an HTML string into a Google Doc via native batchUpdate (NOT Google's importer) — headings, bold/italic/underline/code, and bullet/numbered lists come out clean. WE control the mapping, so no <hr>-around-heading junk. Inserts at index 1 (use a fresh/scratch doc). Tables/images not yet mapped — use table_factory. Defaults to the signed-in account.",
     inputSchema: z.object({ documentId: z.string(), html: z.string(), tabId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const requests = htmlToRequests(a.html, 1, a.tabId);
       if (!requests.length) throw new Error("No renderable content parsed from the HTML.");
       await new DocsService(env, account).batchUpdate(a.documentId, requests);
@@ -2357,7 +2466,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_create_from_markdown",
     description:
-      "METHOD 1 (whole new doc): Convert an ENTIRE Markdown string into a NEW native Google Doc using Drive's own Markdown importer. High fidelity — Google maps headings, tables, lists, links, code. Returns the new doc id + url, PLUS by default a `preview` = { pdf_url, pages: { pg_1: { image_url }, ... } }: the exported PDF and each page rendered to an image (stored on R2, served at /api/preview/:id, auto-expired after 48h) so you can SEE the result and catch mangled layout before handing it off. Pass preview:false to skip rendering, or critique:true to also get an Ollama formatting critique per page (`vision_ai_notes`). Use this when the Markdown IS the whole document. To add Markdown to an EXISTING doc, use docs_append_markdown instead. Defaults to the SA identity; as_user overrides.",
+      "METHOD 1 (whole new doc): Convert an ENTIRE Markdown string into a NEW native Google Doc using Drive's own Markdown importer. High fidelity — Google maps headings, tables, lists, links, code. Returns the new doc id + url, PLUS by default a `preview` = { pdf_url, pages: { pg_1: { image_url }, ... } }: the exported PDF and each page rendered to an image (stored on R2, served at /api/preview/:id, auto-expired after 48h) so you can SEE the result and catch mangled layout before handing it off. Pass preview:false to skip rendering, or critique:true to also get an Ollama formatting critique per page (`vision_ai_notes`). Use this when the Markdown IS the whole document. To add Markdown to an EXISTING doc, use docs_append_markdown instead. Defaults to the signed-in account; as_user overrides.",
     inputSchema: z.object({
       name: z.string(),
       markdown: z.string(),
@@ -2367,7 +2476,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const f = await drive.createDocFromMarkdown(a.name, a.markdown, a.parentId);
       const preview = a.preview === false ? undefined : await previewFile(env, drive, f.id, { sub, critique: a.critique === true });
@@ -2377,7 +2486,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "preview_file",
     description:
-      "Render a Drive file (Google Doc, Sheet, Slides, or PDF) to per-page images so the model can SEE how it actually looks — the reliable way to catch mangled layout, overflow, or bad pagination after creating OR updating a document. Exports the PDF and rasterizes each page, stores them on R2 (served at /api/preview/:id, auto-expired after 48h), and by default critiques each page with an Ollama vision model for formatting/presentation (professional, fun, creative, etc). Returns `{ pdf_url, pages: { pg_1: { image_url, vision_ai_notes }, ... }, meta }`. Pass critique:false for images only, or maxPages to raise/lower the page cap (default 5). Best-effort: if Browser Rendering is unavailable, `pages` is empty (the pdf_url still works). Defaults to the SA identity; as_user overrides.",
+      "Render a Drive file (Google Doc, Sheet, Slides, or PDF) to per-page images so the model can SEE how it actually looks — the reliable way to catch mangled layout, overflow, or bad pagination after creating OR updating a document. Exports the PDF and rasterizes each page, stores them on R2 (served at /api/preview/:id, auto-expired after 48h), and by default critiques each page with an Ollama vision model for formatting/presentation (professional, fun, creative, etc). Returns `{ pdf_url, pages: { pg_1: { image_url, vision_ai_notes }, ... }, meta }`. Pass critique:false for images only, or maxPages to raise/lower the page cap (default 5). Best-effort: if Browser Rendering is unavailable, `pages` is empty (the pdf_url still works). Defaults to the signed-in account; as_user overrides.",
     inputSchema: z.object({
       fileId: z.string(),
       critique: z.boolean().optional().describe("Run the Ollama per-page formatting critique (default true)."),
@@ -2385,7 +2494,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const preview = await previewFile(env, drive, a.fileId, { sub, critique: a.critique, maxPages: a.maxPages });
       return {
@@ -2398,10 +2507,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_append_markdown",
     description:
-      "METHOD 2 (append to existing doc): Convert a Markdown string into native Docs batchUpdate requests and append them to the END of an EXISTING Google Doc — headings become HEADING_n paragraphs, **bold**/*italic*/`code`/bullets/numbered lists are styled. Differs from docs_create_from_markdown, which uses Drive's importer to make a NEW doc. Tables/images are not mapped here (use table_factory / native importer). Pass tabId to append into a specific tab. Defaults to the SA identity; as_user overrides.",
+      "METHOD 2 (append to existing doc): Convert a Markdown string into native Docs batchUpdate requests and append them to the END of an EXISTING Google Doc — headings become HEADING_n paragraphs, **bold**/*italic*/`code`/bullets/numbered lists are styled. Differs from docs_create_from_markdown, which uses Drive's importer to make a NEW doc. Tables/images are not mapped here (use table_factory / native importer). Pass tabId to append into a specific tab. Defaults to the signed-in account; as_user overrides.",
     inputSchema: z.object({ documentId: z.string(), markdown: z.string(), tabId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const docs = new DocsService(env, account);
       const content = docBodyContent(await docs.getRaw(a.documentId), a.tabId);
       // Insert before the final segment newline (the index after the last element is endIndex-1).
@@ -2415,10 +2524,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "office_to_google",
     description:
-      "Convert an Office file already in Drive (.docx/.xlsx/.pptx) to its Google-native equivalent (Doc/Sheet/Slides) via Drive's converter — far higher fidelity than parsing OpenXML. Returns the new file id + url; then deconstruct_to_braille it. Defaults to the SA identity.",
+      "Convert an Office file already in Drive (.docx/.xlsx/.pptx) to its Google-native equivalent (Doc/Sheet/Slides) via Drive's converter — far higher fidelity than parsing OpenXML. Returns the new file id + url; then deconstruct_to_braille it. Defaults to the signed-in account.",
     inputSchema: z.object({ fileId: z.string(), name: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const f = await new DriveService(env, account).convertToGoogle(a.fileId, a.name);
       return { result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink }, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { convertedFrom: a.fileId } } };
     },
@@ -2426,10 +2535,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "render_qc",
     description:
-      "Render-level QC across ALL document types (Docs, Sheets, Slides): export the file to PDF, read the ACTUAL pagination, and flag layout issues the structural QC can't see — a heading stranded at a page bottom (orphan). Returns pageCount + findings. Defaults to the SA identity.",
+      "Render-level QC across ALL document types (Docs, Sheets, Slides): export the file to PDF, read the ACTUAL pagination, and flag layout issues the structural QC can't see — a heading stranded at a page bottom (orphan). Returns pageCount + findings. Defaults to the signed-in account.",
     inputSchema: z.object({ fileId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const pages = await pdfToPages(await drive.exportBinary(a.fileId, "application/pdf"));
 
@@ -2448,10 +2557,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "appsscript_deploy",
     description:
-      "Deploy an Apps Script project: snapshot an immutable version, then create a deployment (API-executable and/or web app, per its manifest). Returns deploymentId + any web-app URL. The web-app path is the headless-execution route (a service account can hit the URL); container-bound web apps let a Doc/Sheet call back into this worker. Defaults to the SA identity.",
+      "Deploy an Apps Script project: snapshot an immutable version, then create a deployment (API-executable and/or web app, per its manifest). Returns deploymentId + any web-app URL. The web-app path is the headless-execution route (a service account can hit the URL); container-bound web apps let a Doc/Sheet call back into this worker. Defaults to the signed-in account.",
     inputSchema: z.object({ scriptId: z.string(), description: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const svc = new AppsScriptService(env, a.as_user ? acct(sub, a) : "sa");
+      const svc = new AppsScriptService(env, acct(sub, a));
       const version = await svc.createVersion(a.scriptId, a.description);
       const dep = await svc.createDeployment(a.scriptId, version.versionNumber, a.description);
       const webAppUrl = ((dep.entryPoints as any[]) ?? []).map((e) => e?.webApp?.url).find(Boolean) ?? null;
@@ -2466,7 +2575,7 @@ export const TOOLS: ToolDef[] = [
     description: "List an Apps Script project's deployments (with entry points / web-app URLs).",
     inputSchema: z.object({ scriptId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new AppsScriptService(env, a.as_user ? acct(sub, a) : "sa").listDeployments(a.scriptId) };
+      return { result: await new AppsScriptService(env, acct(sub, a)).listDeployments(a.scriptId) };
     },
   },
   {
@@ -2558,11 +2667,11 @@ export const TOOLS: ToolDef[] = [
   {
     name: "appscript_scaffold",
     description:
-      "Overwrite an Apps Script project with a ready-to-use container-bound template: 'sidebar' (custom menu + sidebar shell) or 'chat-sidebar' (chat UI that calls the worker's /api/appscript/ai bridge). After: set Script Properties WORKER_URL + WORKER_KEY, then appsscript_deploy. Defaults to the SA identity.",
+      "Overwrite an Apps Script project with a ready-to-use container-bound template: 'sidebar' (custom menu + sidebar shell) or 'chat-sidebar' (chat UI that calls the worker's /api/appscript/ai bridge). After: set Script Properties WORKER_URL + WORKER_KEY, then appsscript_deploy. Defaults to the signed-in account.",
     inputSchema: z.object({ scriptId: z.string(), template: z.enum(["sidebar", "chat-sidebar"]), ...asUser }),
     async run({ env, sub }, a) {
       const files = SCRIPT_SCAFFOLDS[a.template];
-      await new AppsScriptService(env, a.as_user ? acct(sub, a) : "sa").updateContent(a.scriptId, files);
+      await new AppsScriptService(env, acct(sub, a)).updateContent(a.scriptId, files);
       return { result: { scriptId: a.scriptId, template: a.template, files: files.map((f) => f.name) } };
     },
   },
@@ -2571,7 +2680,7 @@ export const TOOLS: ToolDef[] = [
     description: "Save an Apps Script project's current files as a reusable 'roll' in the braille registry (surface=appscript) for replay into other projects.",
     inputSchema: z.object({ scriptId: z.string(), name: z.string(), tags: z.array(z.string()).optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const content = await new AppsScriptService(env, a.as_user ? acct(sub, a) : "sa").getContent(a.scriptId);
+      const content = await new AppsScriptService(env, acct(sub, a)).getContent(a.scriptId);
       const id = crypto.randomUUID();
       await getDb(env).insert(brailleArtifacts).values({
         id,
@@ -2598,17 +2707,17 @@ export const TOOLS: ToolDef[] = [
       if (!row) throw new Error(`No roll with id ${a.rollId}`);
       const files = (row.structure as { files?: unknown[] })?.files;
       if (!Array.isArray(files)) throw new Error("Roll has no files[] to apply.");
-      await new AppsScriptService(env, a.as_user ? acct(sub, a) : "sa").updateContent(a.scriptId, files);
+      await new AppsScriptService(env, acct(sub, a)).updateContent(a.scriptId, files);
       return { result: { scriptId: a.scriptId, applied: row.name, files: files.length } };
     },
   },
   {
     name: "vision_qc",
     description:
-      "Pixel-level QC. For Slides: render each slide to a thumbnail and ask a vision model to flag layout problems (overflow, crowding, tiny/low-contrast text, misalignment). For Docs/Sheets: pixel vision needs a rasterizer, so it falls back to render_qc pagination. Defaults to the SA identity.",
+      "Pixel-level QC. For Slides: render each slide to a thumbnail and ask a vision model to flag layout problems (overflow, crowding, tiny/low-contrast text, misalignment). For Docs/Sheets: pixel vision needs a rasterizer, so it falls back to render_qc pagination. Defaults to the signed-in account.",
     inputSchema: z.object({ fileId: z.string(), prompt: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const mime = (await drive.get(a.fileId)).mimeType ?? "";
 
@@ -2665,10 +2774,10 @@ export const TOOLS: ToolDef[] = [
   {
     name: "create_scratch_doc",
     description:
-      "Create a Google Doc in the dedicated 'MCP Scratch' folder, stamped as work-product/design-scratch, and return its link. A safe sandbox for building a sample for approval before producing the real document. Defaults to the SA identity.",
+      "Create a Google Doc in the dedicated 'MCP Scratch' folder, stamped as work-product/design-scratch, and return its link. A safe sandbox for building a sample for approval before producing the real document. Defaults to the signed-in account.",
     inputSchema: z.object({ title: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const folderId = await drive.findOrCreateFolder("MCP Scratch");
       const docs = new DocsService(env, account);
@@ -2681,10 +2790,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "create_scratch_sheet",
-    description: "Create a Google Sheet in the 'MCP Scratch' folder and return its link. Sandbox for sample spreadsheets. Defaults to the SA identity.",
+    description: "Create a Google Sheet in the 'MCP Scratch' folder and return its link. Sandbox for sample spreadsheets. Defaults to the signed-in account.",
     inputSchema: z.object({ title: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const folderId = await drive.findOrCreateFolder("MCP Scratch");
       const sheet = await new SheetsService(env, account).create(a.title ?? "Scratch Sheet");
@@ -2695,10 +2804,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "create_scratch_slides",
-    description: "Create a Google Slides deck in the 'MCP Scratch' folder and return its link. Sandbox for sample decks. Defaults to the SA identity.",
+    description: "Create a Google Slides deck in the 'MCP Scratch' folder and return its link. Sandbox for sample decks. Defaults to the signed-in account.",
     inputSchema: z.object({ title: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      const account = a.as_user ? acct(sub, a) : "sa";
+      const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const folderId = await drive.findOrCreateFolder("MCP Scratch");
       const deck = await new SlidesService(env, account).create(a.title ?? "Scratch Deck");

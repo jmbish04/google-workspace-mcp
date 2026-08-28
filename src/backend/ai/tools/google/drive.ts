@@ -3,18 +3,18 @@
  * service account. Provides folder management, file listing/deletion, and
  * HTML-to-native-Google-Doc conversion via multipart upload.
  *
- * Auth: Uses `getServiceAccountAccessToken` from `lib/google-auth.ts`
+ * Auth: OAuth via getGoogleAccessToken(env, account) — account is required.
  * (KV-cached, production-tested). All public methods apply `extractGoogleId`
  * for agent-safe ID handling.
  */
 
 import { extractGoogleId } from "@/backend/ai/tools/google/utils";
-import { getServiceAccountAccessToken } from "@/backend/lib/google-auth";
+import { getGoogleAccessToken } from "@/backend/auth/provider";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 
 export class GoogleDriveClient {
-  constructor(private readonly env: Env) {}
+  constructor(private readonly env: Env, private readonly account: string) {}
 
   /**
    * Create a folder inside a parent folder.
@@ -132,7 +132,7 @@ export class GoogleDriveClient {
       htmlContent +
       closeDelimiter;
 
-    const token = await getServiceAccountAccessToken(this.env, [DRIVE_SCOPE]);
+    const token = await getGoogleAccessToken(this.env, this.account, [DRIVE_SCOPE]);
 
     const response = await fetch(
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
@@ -164,7 +164,7 @@ export class GoogleDriveClient {
    * Handles auth injection, content-type defaults, and 204 (No Content) responses.
    */
   private async driveFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-    const token = await getServiceAccountAccessToken(this.env, [DRIVE_SCOPE]);
+    const token = await getGoogleAccessToken(this.env, this.account, [DRIVE_SCOPE]);
     const headers = new Headers(init.headers);
     headers.set("authorization", `Bearer ${token}`);
 
