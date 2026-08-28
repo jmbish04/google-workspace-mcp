@@ -25,8 +25,12 @@ function activeFile_() {
   return { id: '', hostType: '' };
 }
 
-/** Mint a short-lived copilot token from the worker (server-side; key stays in GAS). */
-function mintToken_(workerUrl, workerToken, file) {
+/**
+ * Ask the worker to start a session and return the COMPLETE iframe URL. The
+ * worker owns the whole URL (page choice, token, params) — GAS builds nothing.
+ * The raw WORKER_API_KEY stays server-side here (never in the returned URL).
+ */
+function startSession_(workerUrl, workerToken, file) {
   var res = UrlFetchApp.fetch(workerUrl + '/api/copilot/token', {
     method: 'post',
     contentType: 'application/json',
@@ -34,24 +38,19 @@ function mintToken_(workerUrl, workerToken, file) {
     payload: JSON.stringify({ account: 'workspace', fileId: file.id, hostType: file.hostType }),
     muteHttpExceptions: true,
   });
-  if (res.getResponseCode() !== 200) throw new Error('token mint failed: ' + res.getContentText());
-  return JSON.parse(res.getContentText()).token;
+  if (res.getResponseCode() !== 200) throw new Error('copilot session failed: ' + res.getContentText());
+  return JSON.parse(res.getContentText()).url; // authoritative, server-decided iframe URL
 }
 
 function showCopilotSidebar() {
   var props = PropertiesService.getScriptProperties();
   var workerUrl = (props.getProperty('WORKER_URL') || '').replace(/\/+$/, '');
   var workerToken = props.getProperty('WORKER_TOKEN') || '';
-  var file = activeFile_();
-  var token = mintToken_(workerUrl, workerToken, file);
-
-  var src = workerUrl + '/api/copilot/page?token=' + encodeURIComponent(token) +
-            '&fileId=' + encodeURIComponent(file.id) +
-            '&hostType=' + encodeURIComponent(file.hostType);
+  var url = startSession_(workerUrl, workerToken, activeFile_());
 
   var html = HtmlService.createHtmlOutput(
     '<style>html,body{height:100%;margin:0}iframe{border:0;width:100%;height:100vh;display:block}</style>' +
-    '<iframe src="' + src + '" allow="clipboard-write"></iframe>'
+    '<iframe src="' + url + '" allow="clipboard-write"></iframe>'
   ).setTitle('AI Copilot').setWidth(360);
 
   DocumentApp.getUi().showSidebar(html);

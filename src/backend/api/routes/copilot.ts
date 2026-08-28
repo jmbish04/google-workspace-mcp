@@ -40,6 +40,36 @@ interface CopilotContext {
   account?: string;
   fileId?: string;
   hostType?: string;
+  /** Optional task hint (e.g. "review", "draft") — lets the server route to a
+   * task-specific iframe page. */
+  task?: string;
+}
+
+/** The worker's base URL — where the iframe pages are served from. */
+function workerBase(c: { env: Env; req: { url: string; header: (k: string) => string | undefined } }): string {
+  const configured = c.env.PUBLIC_BASE_URL;
+  if (configured) return configured.replace(/\/+$/, "");
+  try {
+    return new URL(c.req.url).origin;
+  } catch {
+    const host = c.req.header("host") ?? "";
+    return host ? `https://${host}` : "";
+  }
+}
+
+/**
+ * The SINGLE server-side control point for what the sidebar iframe loads. The
+ * worker owns the whole URL: which page, the token, and the query. Route to a
+ * different source page per host type / task here as the copilot grows.
+ */
+function iframeUrl(base: string, token: string, ctx: CopilotContext): string {
+  // (extend: pick a page path by ctx.hostType / ctx.task here)
+  const page = "/api/copilot/page";
+  const q = new URLSearchParams({ token });
+  if (ctx.fileId) q.set("fileId", ctx.fileId);
+  if (ctx.hostType) q.set("hostType", ctx.hostType);
+  if (ctx.task) q.set("task", ctx.task);
+  return `${base}${page}?${q.toString()}`;
 }
 
 const SYSTEM_BASE = `You are the Copilot for a Google Workspace automation platform, acting on behalf of the user across Gmail, Docs, Sheets, Slides, Drive, Apps Script, and Calendar — right inside the editor.
@@ -83,16 +113,18 @@ export const copilotRouter = new Hono<{ Bindings: Env }>();
 copilotRouter.options("/chat", () => new Response(null, { headers: CORS }));
 copilotRouter.options("/token", () => new Response(null, { headers: CORS }));
 
-// Mint a short-lived token scoped to an account + (optionally) the active file.
+// Start a copilot session: mint a short-lived token AND return the COMPLETE
+// iframe URL the sidebar should load. The server decides the page — GAS just
+// drops `url` into the iframe src (no URL building on the GAS side).
 copilotRouter.post("/token", async (c) => {
   const key = await getWorkerApiKey(c.env);
   const provided = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
   if (!key || !provided || !constantTimeEqual(provided, key)) return c.json({ error: "unauthorized" }, 401, CORS);
   const body = (await c.req.json().catch(() => ({}))) as CopilotContext;
   const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-  const ctx: CopilotContext = { account: body.account, fileId: body.fileId, hostType: body.hostType };
+  const ctx: CopilotContext = { account: body.account, fileId: body.fileId, hostType: body.hostType, task: body.task };
   await c.env.SESSIONS.put(TOKEN_PREFIX + token, JSON.stringify(ctx), { expirationTtl: TOKEN_TTL });
-  return c.json({ token, expiresIn: TOKEN_TTL }, 200, CORS);
+  return c.json({ url: iframeUrl(workerBase(c), token, ctx), token, expiresIn: TOKEN_TTL }, 200, CORS);
 });
 
 copilotRouter.post("/chat", async (c) => {

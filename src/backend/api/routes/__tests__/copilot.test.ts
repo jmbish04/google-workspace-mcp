@@ -39,18 +39,27 @@ describe("POST /api/copilot/token", () => {
     const res = await copilotRouter.request("/token", { method: "POST", body: "{}" }, env);
     expect(res.status).toBe(401);
   });
-  it("issues a token (KV-backed) with the worker key", async () => {
+  it("issues a token + the complete server-decided iframe URL", async () => {
     const store = new Map<string, string>();
-    const kvEnv: any = { WORKER_API_KEY: "tok", SESSIONS: { put: async (k: string, v: string) => void store.set(k, v), get: async (k: string) => store.get(k) ?? null } };
+    const kvEnv: any = {
+      WORKER_API_KEY: "tok",
+      PUBLIC_BASE_URL: "https://w.example.dev",
+      SESSIONS: { put: async (k: string, v: string) => void store.set(k, v), get: async (k: string) => store.get(k) ?? null },
+    };
     const res = await copilotRouter.request(
       "/token",
       { method: "POST", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: JSON.stringify({ account: "workspace", fileId: "1ABC", hostType: "doc" }) },
       kvEnv,
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { token: string };
+    const body = (await res.json()) as { token: string; url: string };
     expect(body.token.length).toBeGreaterThan(20);
     expect(store.has("copilottok:" + body.token)).toBe(true);
+    // The worker owns the whole URL: base + page + token + context.
+    expect(body.url).toContain("https://w.example.dev/api/copilot/page?");
+    expect(body.url).toContain("token=" + body.token);
+    expect(body.url).toContain("fileId=1ABC");
+    expect(body.url).toContain("hostType=doc");
   });
 });
 
