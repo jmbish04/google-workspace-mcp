@@ -1,34 +1,44 @@
-# Copilot sidebar (Apps Script)
+# Copilot sidebar (Apps Script) — iframe model
 
-A chat copilot that runs in the Google editor sidebar (Docs/Sheets/Slides/Gmail)
-and drives the `google-workspace-mcp` worker's orchestrator — the domain-authority
-agents across Gmail/Docs/Sheets/Slides/Drive/Apps Script/Calendar.
+The editor sidebar is a **thin iframe** that embeds the worker's copilot page. The
+worker serves the whole UI (and can be upgraded to the built shadcn page); GAS
+just wraps it and passes context.
 
-## Files
-- `Code.gs` — adds the **Copilot** menu, opens the sidebar, injects the worker URL + token from Script Properties.
-- `Sidebar.html` — CDN React + Tailwind chat UI (no build step). POSTs `{ messages }` to the worker and renders `{ reply }`.
+## Flow
+1. User opens **Copilot → Open Chat** in Docs/Sheets/Slides.
+2. `Code.gs` reads the **active file id + host type**, mints a **short-lived token**
+   from the worker (`POST /api/copilot/token`, server-side with `WORKER_API_KEY`),
+   and shows a sidebar containing:
+   `<iframe src="{WORKER_URL}/api/copilot/page?token=…&fileId=…&hostType=doc">`
+3. The worker page (`GET /api/copilot/page`) chats via `POST /api/copilot/chat`
+   (same-origin, bearer = the short token). Because the token + `fileId` are
+   passed in, the copilot is **aware of the exact document** the sidebar is on —
+   "edit this doc" targets that file.
+
+## Why a token (not the API key) in the URL
+`Code.gs` mints a **short-lived, KV-backed token** (1h TTL) scoped to the account
++ file. The raw `WORKER_API_KEY` stays in Script Properties and never appears in
+the iframe URL / browser history.
 
 ## Setup
-1. Create an Apps Script project (standalone, or container-bound to a Doc), add `Code.gs` + `Sidebar.html`.
-2. **Script Properties** (Project Settings → Script Properties):
+1. Apps Script project with `Code.gs`. **Script Properties:**
    - `WORKER_URL` = `https://google-workspace-mcp.hacolby.workers.dev`
    - `WORKER_TOKEN` = the worker's `WORKER_API_KEY`
-3. Reload the editor → **Copilot → Open Chat**.
+2. Reload the editor → **Copilot → Open Chat**.
 
-## How it talks to the worker
-`POST {WORKER_URL}/api/copilot/chat`
-- Header: `Authorization: Bearer {WORKER_TOKEN}`
-- Body: `{ "messages": [{ "role": "user"|"assistant", "content": "…" }], "account"?: "workspace"|"personal"|email }`
-- Returns: `{ "reply": "…", "account": "…", "steps": n }`
+## Worker endpoints (live on branch feat/oauth-only-tags-email-tracking, PR #20)
+- `POST /api/copilot/token`  (Bearer WORKER_API_KEY) `{ account?, fileId?, hostType? }` → `{ token, expiresIn }`
+- `POST /api/copilot/chat`   (Bearer token OR WORKER_API_KEY) `{ messages, fileId?, hostType?, account? }` → `{ reply, account, steps }`
+- `GET  /api/copilot/page`   → the copilot HTML (iframe target)
 
-The endpoint runs the SAME tool set + system prompt as the OrchestratorAgent
-(`buildWorkspaceToolSet`, `stepCountIs(16)`), request/response so a plain `fetch`
-works from the sidebar. The token is injected server-side (Script Properties) at
-render time and never committed.
+`/chat` runs the orchestrator's full Workspace tool set (multi-step). When `fileId`
+is present, the system prompt tells the copilot it's attached to that file.
 
-## Notes / next steps
-- **Request/response, not streamed.** The shadcn `MessageScroller`/`Marker`
-  streaming affordances need an SSE/WebSocket path (worker token-issue + stream
-  route) — a follow-up if you want live token streaming.
-- To ship this via `core-template-gas` CI instead of a manual project, wrap it as
-  a GAS project there (the CDN-React variant needs no esbuild build).
+## Notes
+- **Gmail** can't iframe HTML — the Gmail surface of the add-on stays CardService.
+  Same project, cards in Gmail, iframe sidebar in editors.
+- The `/api/copilot/page` is a functional vanilla page today; upgrade path is the
+  built **shadcn** copilot page (the shared Vite+shadcn framework in
+  core-template-gas, or the worker frontend), swapped in behind the same URL.
+- One deploy-time check: Google's HtmlService iframe CSP must allow the nested
+  worker iframe (standard, but verify on first install).

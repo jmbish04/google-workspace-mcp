@@ -33,3 +33,32 @@ describe("POST /api/copilot/chat", () => {
     expect(res.headers.get("access-control-allow-methods")).toContain("POST");
   });
 });
+
+describe("POST /api/copilot/token", () => {
+  it("401s without the worker key", async () => {
+    const res = await copilotRouter.request("/token", { method: "POST", body: "{}" }, env);
+    expect(res.status).toBe(401);
+  });
+  it("issues a token (KV-backed) with the worker key", async () => {
+    const store = new Map<string, string>();
+    const kvEnv: any = { WORKER_API_KEY: "tok", SESSIONS: { put: async (k: string, v: string) => void store.set(k, v), get: async (k: string) => store.get(k) ?? null } };
+    const res = await copilotRouter.request(
+      "/token",
+      { method: "POST", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: JSON.stringify({ account: "workspace", fileId: "1ABC", hostType: "doc" }) },
+      kvEnv,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string };
+    expect(body.token.length).toBeGreaterThan(20);
+    expect(store.has("copilottok:" + body.token)).toBe(true);
+  });
+});
+
+describe("GET /api/copilot/page", () => {
+  it("serves the copilot HTML", async () => {
+    const res = await copilotRouter.request("/page", {}, env);
+    expect(res.status).toBe(200);
+    expect((res.headers.get("content-type") ?? "")).toContain("text/html");
+    expect(await res.text()).toContain("/api/copilot/chat");
+  });
+});
