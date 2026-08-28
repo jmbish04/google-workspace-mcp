@@ -65,11 +65,16 @@ function workerBase(c: { env: Env; req: { url: string; header: (k: string) => st
 function iframeUrl(base: string, token: string, ctx: CopilotContext): string {
   // (extend: pick a page path by ctx.hostType / ctx.task here)
   const page = "/api/copilot/page";
-  const q = new URLSearchParams({ token });
+  const q = new URLSearchParams();
   if (ctx.fileId) q.set("fileId", ctx.fileId);
   if (ctx.hostType) q.set("hostType", ctx.hostType);
   if (ctx.task) q.set("task", ctx.task);
-  return `${base}${page}?${q.toString()}`;
+  const qs = q.toString();
+  // Token rides in the URL fragment (#), never the query string: fragments are
+  // not sent to the server, so this session token (grants the full workspace
+  // toolset for its TTL) stays out of CF/proxy access logs and browser history.
+  // copilot-page.ts reads it from location.hash.
+  return `${base}${page}${qs ? `?${qs}` : ""}#token=${token}`;
 }
 
 const SYSTEM_BASE = `You are the Copilot for a Google Workspace automation platform, acting on behalf of the user across Gmail, Docs, Sheets, Slides, Drive, Apps Script, and Calendar — right inside the editor.

@@ -55,11 +55,13 @@ describe("POST /api/copilot/token", () => {
     const body = (await res.json()) as { token: string; url: string };
     expect(body.token.length).toBeGreaterThan(20);
     expect(store.has("copilottok:" + body.token)).toBe(true);
-    // The worker owns the whole URL: base + page + token + context.
+    // The worker owns the whole URL: base + page + context (query) + token (fragment).
     expect(body.url).toContain("https://w.example.dev/api/copilot/page?");
-    expect(body.url).toContain("token=" + body.token);
     expect(body.url).toContain("fileId=1ABC");
     expect(body.url).toContain("hostType=doc");
+    // Token rides in the fragment, never the query string (keeps it out of logs).
+    expect(body.url).toContain("#token=" + body.token);
+    expect(body.url.split("#")[0]).not.toContain("token=");
   });
 });
 

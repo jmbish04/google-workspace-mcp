@@ -41,7 +41,9 @@ export function copilotPageHtml(): string {
 <script>
 (function(){
   var q = new URLSearchParams(location.search);
-  var token = q.get('token') || '';
+  // Token comes in the fragment (#token=…), kept out of the query so it never
+  // reaches server/proxy logs; context params stay in the query.
+  var token = (location.hash.match(/token=([^&]+)/) || [])[1] || '';
   var fileId = q.get('fileId') || '';
   var hostType = q.get('hostType') || '';
   var account = q.get('account') || '';
