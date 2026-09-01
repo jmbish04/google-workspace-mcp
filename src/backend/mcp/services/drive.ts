@@ -377,6 +377,18 @@ export class DriveService {
     });
   }
 
+  /**
+   * Permanently delete a file (skips trash). Used by the Workspace Events E2E
+   * probe so a `deleted`/`trashed` event can fire.
+   *
+   * @param fileId - Drive file id
+   * @returns Resolves when Drive accepts the delete (204)
+   * @throws GoogleApiError when Drive rejects the request
+   */
+  async deleteFile(fileId: string): Promise<void> {
+    await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?supportsAllDrives=true`, { method: "DELETE" });
+  }
+
   /** Move a file/folder into `targetFolderId`, detaching it from its current parents. */
   async moveFile(fileId: string, targetFolderId: string): Promise<DriveFile> {
     const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?fields=parents`);

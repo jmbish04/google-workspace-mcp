@@ -8,8 +8,9 @@
  * addresses — useful for "agent tagged in a comment" workflows.
  *
  * Delivery infra (Pub/Sub topic + a push subscription to this Worker's
- * /api/gws/drive-webhook) is configured out-of-band; these tools just manage
- * the subscription lifecycle.
+ * `/api/webhooks/workspace?token=<WORKER_API_KEY>`) is configured out-of-band;
+ * these tools just manage the Workspace Events subscription lifecycle. Classic
+ * Drive `changes.watch` channels still land on `/api/gws/drive-webhook`.
  */
 import { googleJson, googleFetch } from "../googleClient";
 
@@ -23,6 +24,13 @@ export type WorkspaceSubscription = {
   notificationEndpoint?: { pubsubTopic?: string };
 };
 
+type LongRunningOperation = {
+  name?: string;
+  done?: boolean;
+  error?: { code?: number; message?: string };
+  response?: WorkspaceSubscription;
+};
+
 export class WorkspaceEventsService {
   constructor(private env: Env, private sub: string) {}
 
@@ -30,12 +38,19 @@ export class WorkspaceEventsService {
    * Create a subscription. `targetResource` is like
    * `//drive.googleapis.com/files/FILE_ID` or `//drive.googleapis.com/drives/DRIVE_ID`.
    * `pubsubTopic` is like `projects/PROJECT/topics/TOPIC`.
+   *
+   * @param targetResource - Workspace resource URI
+   * @param eventTypes - CloudEvent types to receive
+   * @param pubsubTopic - Destination Pub/Sub topic
+   * @param opts - Payload / Drive descendant options / subscription TTL
+   * @returns The created (ACTIVE) subscription
+   * @throws GoogleApiError or a timeout if the long-running operation never completes
    */
   async createSubscription(
     targetResource: string,
     eventTypes: string[],
     pubsubTopic: string,
-    opts?: { includeResource?: boolean; includeDescendants?: boolean },
+    opts?: { includeResource?: boolean; includeDescendants?: boolean; ttl?: string },
   ): Promise<WorkspaceSubscription> {
     const body: Record<string, unknown> = {
       targetResource,
@@ -46,10 +61,37 @@ export class WorkspaceEventsService {
     if (opts?.includeDescendants !== undefined) {
       body.driveOptions = { includeDescendants: opts.includeDescendants };
     }
-    return googleJson<WorkspaceSubscription>(this.env, this.sub, `${BASE}/subscriptions`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    if (opts?.ttl) body.ttl = opts.ttl;
+    const created = await googleJson<WorkspaceSubscription & LongRunningOperation>(
+      this.env,
+      this.sub,
+      `${BASE}/subscriptions`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    if (created.name?.startsWith("subscriptions/")) return created;
+    if (created.done && created.response) return created.response;
+    if (created.name) return this.waitForOperation(created.name);
+    return created;
+  }
+
+  /**
+   * Poll a Workspace Events long-running operation until the subscription is ready.
+   *
+   * @param name - Operation resource name (`operations/…`)
+   * @returns The subscription from `operation.response`
+   * @throws When the operation reports an error or exceeds 30s
+   */
+  async waitForOperation(name: string): Promise<WorkspaceSubscription> {
+    const opName = name.startsWith("operations/") ? name : `operations/${name}`;
+    for (let i = 0; i < 30; i++) {
+      const op = await googleJson<LongRunningOperation>(this.env, this.sub, `${BASE}/${opName}`);
+      if (op.done) {
+        if (op.error) throw new Error(op.error.message ?? JSON.stringify(op.error));
+        return op.response ?? {};
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    throw new Error(`Timed out waiting for Workspace Events operation ${opName}`);
   }
 
   /** List subscriptions. The Events API requires a `filter` (e.g. `event_types:"google.workspace.drive.file.v3.contentChanged"` or a target resource). */

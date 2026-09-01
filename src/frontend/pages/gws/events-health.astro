@@ -1,0 +1,23 @@
+---
+/**
+ * `/gws/events-health` — trigger and review the Workspace Events E2E probe.
+ *
+ * The React island calls POST `/api/gws-health-check/run-e2e` (folder subscribe +
+ * create/rename/comment/delete a Doc, then poll D1 for Pub/Sub webhook rows) and GET
+ * `/api/gws-health-check/results`. AuthGate mints the `gsuite_session` cookie
+ * the API accepts alongside Bearer WORKER_API_KEY.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AuthGate } from "@/components/gsuite-agents/AuthGate";
+import { WorkspaceEventsHealth } from "@/components/gsuite-agents/WorkspaceEventsHealth";
+---
+
+<BaseLayout
+  title="Workspace Events Health"
+  description="End-to-end probe: mutate a Google Doc and verify Workspace Events arrive via Pub/Sub on this Worker."
+>
+  <AuthGate authed={false} client:load />
+  <div class="container mx-auto max-w-5xl px-4 py-16">
+    <WorkspaceEventsHealth client:load />
+  </div>
+</BaseLayout>
