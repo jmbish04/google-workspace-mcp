@@ -12,7 +12,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 
 import { healthRuns, healthResults } from "@db/schemas";
 import { getDb } from "@/db";
@@ -70,6 +70,9 @@ class HealthCoordinator {
     const [latest] = await db
       .select()
       .from(healthRuns)
+      .where(
+        sql`json_extract(${healthRuns.metadata}, '$.kind') IS NULL OR json_extract(${healthRuns.metadata}, '$.kind') != 'workspace_events_e2e'`,
+      )
       .orderBy(desc(healthRuns.createdAt))
       .limit(1);
 

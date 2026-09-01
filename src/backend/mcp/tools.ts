@@ -65,6 +65,7 @@ import { AppsScriptService } from "./services/appsscript";
 import { CommentsService } from "./services/comments";
 import { ChangesService } from "./services/changes";
 import { WorkspaceEventsService } from "./services/workspaceevents";
+import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
 import { PeopleService } from "./services/people";
 import { FormsService } from "./services/forms";
 import { queryCorpus } from "@/backend/ai/rag";
@@ -738,6 +739,46 @@ export const TOOLS: ToolDef[] = [
         result: { documentId: a.documentId, range },
         asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { styledText: a.find.slice(0, 40) } },
       };
+    },
+  },
+  {
+    name: "run_workspace_e2e_test",
+    description:
+      "Run the Workspace Events pipeline probe on this Worker: create a Drive folder, subscribe to it (includeDescendants) so create/rename/comment/delete CloudEvents publish to Pub/Sub, mutate a Doc inside the folder, then poll drive_notifications until /api/webhooks/workspace has recorded events. Takes ~20–60s. Use list_workspace_e2e_results to read prior runs.",
+    inputSchema: z.object({
+      as_user: z
+        .string()
+        .email()
+        .optional()
+        .describe("Optional signed-in Google account to mutate Drive as. Defaults to the first active OAuth account."),
+    }),
+    outputSchema: z.object({
+      runId: z.string(),
+      startedAt: z.string(),
+      finishedAt: z.string(),
+      status: z.enum(["ok", "fail"]),
+      health: z.enum(["healthy", "degraded", "unhealthy", "unknown"]),
+      docId: z.string().nullable(),
+      results: z.array(z.unknown()),
+    }),
+    async run({ env }, a) {
+      const run = await runWorkspaceEventsE2e(env, { trigger: "agent", account: a.as_user });
+      return { result: run };
+    },
+  },
+  {
+    name: "list_workspace_e2e_results",
+    description:
+      "List recent Workspace Events E2E health-check runs persisted on this Worker (folder subscribe → create/rename/comment/delete → webhook → D1). Most-recent first. Each run includes per-step status and the CloudEvent types that arrived.",
+    inputSchema: z.object({
+      limit: z.number().int().min(1).max(20).optional().describe("Max runs to return (default 10, max 20)."),
+    }),
+    outputSchema: z.object({
+      runs: z.array(z.unknown()),
+    }),
+    async run({ env }, a) {
+      const runs = await listWorkspaceEventsE2eRuns(env, a.limit ?? 10);
+      return { result: { runs } };
     },
   },
   // ---- Sheets ------------------------------------------------------------
@@ -2026,7 +2067,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "list_notifications",
     description:
-      "List recent push notifications received at the Drive webhook (from changes_watch channels or Workspace Events Pub/Sub push). Poll this to react to file/comment changes.",
+      "List recent push notifications recorded from classic Drive changes.watch (`/api/gws/drive-webhook`) or Workspace Events Pub/Sub push (`/api/webhooks/workspace`). Poll this to react to file/comment changes.",
     inputSchema: z.object({ limit: z.number().int().min(1).max(200).optional() }),
     async run({ env }, a) {
       const db = getDb(env);

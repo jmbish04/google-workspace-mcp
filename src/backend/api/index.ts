@@ -43,6 +43,8 @@ import { gwsRouter } from "./routes/gws";
 import { gwsNotificationsRouter } from "./routes/gws-notifications";
 import { gwsTemplatesRouter } from "./routes/gws-templates";
 import { driveWebhookRouter } from "./routes/drive-webhook";
+import { workspaceWebhookRouter } from "./routes/workspace-webhook";
+import { gwsHealthCheckRouter } from "./routes/gws-health-check";
 import { projectsRouter } from "./routes/projects";
 import { seedRouter } from "./routes/seed";
 import { settingsRouter } from "./routes/settings";
@@ -153,6 +155,9 @@ for (const base of ["/api/threads", "/api/catalog", "/api/agent-tasks", "/api/ac
   app.use(base, agentAuthMiddleware);
   app.use(`${base}/*`, agentAuthMiddleware);
 }
+// `/api/gws-health-check/health` stays public (liveness). `/run-e2e` and
+// `/results` apply `agentAuthMiddleware` inside the router so a signed-in
+// browser or Bearer WORKER_API_KEY can trigger the Workspace Events probe.
 
 // ---------------------------------------------------------------------------
 // Domain routers
@@ -190,6 +195,8 @@ app.route("/api/gws", gwsRouter);
 app.route("/api/gws/notifications", gwsNotificationsRouter);
 app.route("/api/gws/templates", gwsTemplatesRouter);
 app.route("/api/gws/drive-webhook", driveWebhookRouter);
+app.route("/api/webhooks/workspace", workspaceWebhookRouter);
+app.route("/api/gws-health-check", gwsHealthCheckRouter);
 app.route("/api/seed", seedRouter);
 
 // Ported chat/tasks-scheduler surfaces (core-gsuite-tools Phase 3). Open —

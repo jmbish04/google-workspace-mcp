@@ -101,7 +101,19 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   error, not a confusing DWD failure.
 - **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/scheduled-sends`
   (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),
-  `/gws/email-preview/[id]` (sandboxed iframe).
+  `/gws/email-preview/[id]` (sandboxed iframe), `/gws/events-health` (Workspace
+  Events E2E: trigger from UI or MCP `run_workspace_e2e_test` /
+  `list_workspace_e2e_results`).
+- **Workspace Events pipeline**: Pub/Sub push → `POST /api/webhooks/workspace?token=<WORKER_API_KEY>`
+  (records `drive_notifications`, invalidates artifact cache). Probe creates a
+  folder in Drive, subscribes via Workspace Events (`includeDescendants`) to
+  `projects/discovery-383518/topics/workspace-events-topic` (must be the OAuth
+  app's GCP project), then creates / renames / comments / deletes a Doc inside
+  that folder and polls D1 (`workspace-events/e2e.ts`). UI: `/gws/events-health`.
+  MCP: `run_workspace_e2e_test` / `list_workspace_e2e_results`. CLI:
+  `node scripts/test-workspace-events-e2e.mjs` (optional `--configure-push`).
+  `gen-lang-client-0933201592` `workspace-events-topic-sub` is also pushed to
+  this Worker; Gemini usage stays on Core Guardian.
 
 ## Template App Surface (reference implementation)
 
