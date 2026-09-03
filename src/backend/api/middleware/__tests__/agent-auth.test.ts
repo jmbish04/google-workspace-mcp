@@ -62,4 +62,19 @@ describe("agentAuthMiddleware", () => {
     );
     expect(res.status).toBe(200);
   });
+
+  it("passes through with a valid signed session token as Bearer", async () => {
+    const app = buildApp();
+    const { mintSessionToken } = await import("@/backend/auth/session-token");
+    const token = await mintSessionToken(env);
+    expect(token).toBeTruthy();
+
+    const res = await app.request(
+      "/protected/thing",
+      { headers: { Authorization: `Bearer ${token}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
 });

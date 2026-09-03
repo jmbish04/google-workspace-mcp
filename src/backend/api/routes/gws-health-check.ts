@@ -7,7 +7,8 @@
  *   Pub/Sub events land (or the poll window ends)
  * - `GET  /results`    — recent persisted runs (most-recent first)
  *
- * `/run-e2e` and `/results` require a `gsuite_session` cookie or
+ * `/run-e2e` and `/results` require a `gsuite_session` cookie,
+ * `Authorization: Bearer <signed session token>`, or
  * `Authorization: Bearer <WORKER_API_KEY>` (same gate as other agent surfaces).
  * The probe itself lives in `@/backend/workspace-events/e2e` so MCP tools call
  * the same function without an HTTP loopback.

@@ -5,7 +5,9 @@
  * The React island calls POST `/api/gws-health-check/run-e2e` (folder subscribe +
  * create/rename/comment/delete a Doc, then poll D1 for Pub/Sub webhook rows) and GET
  * `/api/gws-health-check/results`. AuthGate mints the `gsuite_session` cookie
- * the API accepts alongside Bearer WORKER_API_KEY.
+ * the API accepts alongside a signed session Bearer or WORKER_API_KEY. The
+ * island waits for `GET /api/agent-session/session` before listing runs so a
+ * locked gate is not reported as a history-load failure.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { AuthGate } from "@/components/gsuite-agents/AuthGate";

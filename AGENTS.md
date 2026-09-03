@@ -167,7 +167,9 @@ no mock data.
   instance `"global"`) syncs notification state over WebSocket. The client island
   is `components/NotificationsFeed.tsx` (`useAgent` + `onStateUpdate`); REST
   mutations proxy to it via `getAgentByName` (never `stub.fetch`).
-- **Shared frontend helpers**: `lib/api.ts` (`apiGet`/`apiSend`/`ApiError`) and
+- **Shared frontend helpers**: `lib/api.ts` (`apiGet`/`apiSend`/`ApiError`;
+  always `credentials: "include"` plus session Bearer when the `gsuite_session`
+  cookie is readable) and
   `lib/format.ts` (`relativeTime`/`shortDate`/`compactNumber`). Charts use the
   shadcn `ui/chart.tsx` wrapper + the OKLCH `--chart-1..5` palette in `global.css`.
 - **Shared data toolkit** (isomorphic, Remeda-backed): one core at
