@@ -81,21 +81,21 @@ export function getSessionToken(): ClientSession {
  * along — `AuthGate` uses the same endpoint as the source of truth, and gated
  * islands should wait for this before hitting protected `/api/*` routes.
  *
- * Returns false on network errors or a non-OK response rather than throwing,
- * so callers can skip a fetch instead of treating "not signed in yet" as an
- * application error.
+ * Returns false only when the Worker confirms the browser is not signed in.
+ * Transport, response-status, and response-parsing failures throw so callers
+ * can report an actual session-check failure through the centralized error UI.
  */
 export async function hasAgentSession(): Promise<boolean> {
-  try {
-    const res = await fetch("/api/agent-session/session", {
-      method: "GET",
-      credentials: "include",
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) return false;
-    const data = (await res.json()) as { authed?: boolean };
-    return Boolean(data.authed);
-  } catch {
-    return false;
+  const res = await fetch("/api/agent-session/session", {
+    method: "GET",
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`Session check failed (${res.status})`);
+
+  const data = (await res.json()) as { authed?: unknown };
+  if (typeof data.authed !== "boolean") {
+    throw new Error("Session check returned an invalid response.");
   }
+  return data.authed;
 }

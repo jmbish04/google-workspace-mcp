@@ -117,7 +117,6 @@ export function WorkspaceEventsHealth() {
   }, [loadHistory]);
 
   const runTest = useCallback(async () => {
-    if (!(await hasAgentSession())) return;
     setLoading(true);
     setCurrentRun(null);
     setShowEvents(false);
