@@ -50,19 +50,22 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 /**
- * Same-origin fetch init for `/api/*`: send cookies and, when present, the
- * signed session token as Bearer so cookie-gated routes authenticate.
+ * Same-origin fetch init for `/api/*`: always send cookies (`credentials` is
+ * set after `extra` so callers cannot override it) and, when present, the
+ * signed session token as Bearer. Headers are merged via `Headers` so a
+ * `Headers` instance or tuple list from `extra` is not dropped.
  */
 function apiInit(extra?: RequestInit): RequestInit {
   const { token } = getSessionToken();
+  const headers = new Headers(extra?.headers);
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   return {
-    credentials: "include",
     ...extra,
-    headers: {
-      Accept: "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(extra?.headers as Record<string, string> | undefined),
-    },
+    credentials: "include",
+    headers,
   };
 }
 
