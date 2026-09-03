@@ -23,7 +23,7 @@ import type { Context, Next } from "hono";
 
 import type { Variables } from "@/backend/api/index";
 import { readVerifiedSession } from "@/backend/auth/read-session";
-import { verifySessionToken } from "@/backend/auth/session-token";
+import { verifySessionTokenWithKey } from "@/backend/auth/session-token";
 import { constantTimeEqual } from "@/backend/lib/crypto";
 import { getWorkerApiKey } from "@/backend/utils/secrets";
 
@@ -49,11 +49,10 @@ export async function agentAuthMiddleware(
   const bearer = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
   if (bearer) {
     const workerKey = await getWorkerApiKey(c.env);
-    if (workerKey && constantTimeEqual(bearer, workerKey)) {
-      await next();
-      return;
-    }
-    if (await verifySessionToken(c.env, bearer)) {
+    if (
+      workerKey &&
+      (constantTimeEqual(bearer, workerKey) || (await verifySessionTokenWithKey(workerKey, bearer)))
+    ) {
       await next();
       return;
     }
