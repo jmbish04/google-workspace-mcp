@@ -157,7 +157,8 @@ for (const base of ["/api/threads", "/api/catalog", "/api/agent-tasks", "/api/ac
 }
 // `/api/gws-health-check/health` stays public (liveness). `/run-e2e` and
 // `/results` apply `agentAuthMiddleware` inside the router so a signed-in
-// browser or Bearer WORKER_API_KEY can trigger the Workspace Events probe.
+// browser (cookie or session Bearer) or Bearer WORKER_API_KEY can trigger
+// the Workspace Events probe.
 
 // ---------------------------------------------------------------------------
 // Domain routers

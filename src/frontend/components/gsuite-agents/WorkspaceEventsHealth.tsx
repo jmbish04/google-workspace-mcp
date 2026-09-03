@@ -4,7 +4,9 @@
  * Triggers POST `/api/gws-health-check/run-e2e` (create a folder, subscribe,
  * create/rename/comment/delete a Doc, then poll D1 for Pub/Sub webhook rows) and lists prior runs
  * from GET `/api/gws-health-check/results`. Auth is the `gsuite_session` cookie
- * (AuthGate on the page) or a Bearer key. Errors go through
+ * (AuthGate on the page) or a Bearer key. `loadHistory` waits for
+ * `GET /api/agent-session/session` before calling `/results` so a locked or
+ * still-checking AuthGate is not reported as a failed history fetch. Errors go through
  * `useFrontendErrorHandler` + `FrontendErrorDialog` — never `window.alert`.
  */
 
@@ -21,6 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiGet, apiSend, ApiError } from "@/lib/api";
 import { type FrontendErrorPayload, useFrontendErrorHandler } from "@/lib/error-handler";
+import { hasAgentSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 type StepResult = {
@@ -80,15 +83,22 @@ export function WorkspaceEventsHealth() {
   const [loading, setLoading] = useState(false);
   const [currentRun, setCurrentRun] = useState<RunResult | null>(null);
   const [history, setHistory] = useState<RunResult[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyFailed, setHistoryFailed] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
+    setHistoryFailed(false);
     try {
+      // AuthGate is a sibling island (`authed={false}`), so this page hydrates
+      // before the session cookie exists. Hitting /results then 401s and used
+      // to open the error dialog for a normal locked/checking gate.
+      if (!(await hasAgentSession())) return;
       const data = await apiGet<{ runs: RunResult[] }>("/gws-health-check/results", { limit: 5 });
       setHistory(data.runs ?? []);
     } catch (err) {
+      setHistoryFailed(true);
       handleError(
         errorPayload(
           "loadHistory",
@@ -107,6 +117,7 @@ export function WorkspaceEventsHealth() {
   }, [loadHistory]);
 
   const runTest = useCallback(async () => {
+    if (!(await hasAgentSession())) return;
     setLoading(true);
     setCurrentRun(null);
     setShowEvents(false);
@@ -197,7 +208,21 @@ export function WorkspaceEventsHealth() {
             <RunCard key={run.runId} run={run} compact />
           ))}
         </div>
-      ) : !historyLoading && !currentRun && !loading ? (
+      ) : historyLoading ? (
+        <Card className="bg-card ring-1 ring-border/40">
+          <CardContent className="space-y-3 p-6">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </CardContent>
+        </Card>
+      ) : historyFailed ? (
+        <Card className="bg-card ring-1 ring-destructive/30">
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            Previous runs could not be loaded. Use the error dialog to copy
+            details, then retry Refresh history.
+          </CardContent>
+        </Card>
+      ) : !currentRun && !loading ? (
         <Card className="bg-card ring-1 ring-border/40">
           <CardContent className="p-6 text-sm text-muted-foreground">
             No runs yet. Trigger a test from this page or via the

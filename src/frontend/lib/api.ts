@@ -5,7 +5,14 @@
  * error handling, query-string building, and JSON parsing stay consistent.
  * Errors throw `ApiError` (carrying status + parsed body) so islands can route
  * them through the global ErrorLogger / show inline error states.
+ *
+ * Every request uses `credentials: "include"` so the non-HttpOnly
+ * `gsuite_session` cookie reaches cookie-gated routes (`agentAuthMiddleware`).
+ * When `getSessionToken()` can read that cookie, it is also sent as
+ * `Authorization: Bearer` — the same pair `threads-api.ts` and AuthGate use.
  */
+
+import { getSessionToken } from "@/lib/session";
 
 export class ApiError extends Error {
   constructor(
@@ -42,14 +49,29 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
+/**
+ * Same-origin fetch init for `/api/*`: send cookies and, when present, the
+ * signed session token as Bearer so cookie-gated routes authenticate.
+ */
+function apiInit(extra?: RequestInit): RequestInit {
+  const { token } = getSessionToken();
+  return {
+    credentials: "include",
+    ...extra,
+    headers: {
+      Accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(extra?.headers as Record<string, string> | undefined),
+    },
+  };
+}
+
 /** GET `/api/<path>` with optional query params. */
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | number | boolean | null | undefined>,
 ): Promise<T> {
-  const res = await fetch(`/api/${path.replace(/^\//, "")}${qs(params)}`, {
-    headers: { Accept: "application/json" },
-  });
+  const res = await fetch(`/api/${path.replace(/^\//, "")}${qs(params)}`, apiInit());
   return parse<T>(res);
 }
 
@@ -59,10 +81,13 @@ export async function apiSend<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`/api/${path.replace(/^\//, "")}`, {
-    method,
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const res = await fetch(
+    `/api/${path.replace(/^\//, "")}`,
+    apiInit({
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
   return parse<T>(res);
 }

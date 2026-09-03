@@ -74,3 +74,28 @@ export function getSessionToken(): ClientSession {
   cached = { token, chatId };
   return cached;
 }
+
+/**
+ * Ask the Worker whether this browser currently has a valid `gsuite_session`
+ * cookie. Always sends `credentials: "include"` so the cookie actually rides
+ * along — `AuthGate` uses the same endpoint as the source of truth, and gated
+ * islands should wait for this before hitting protected `/api/*` routes.
+ *
+ * Returns false on network errors or a non-OK response rather than throwing,
+ * so callers can skip a fetch instead of treating "not signed in yet" as an
+ * application error.
+ */
+export async function hasAgentSession(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/agent-session/session", {
+      method: "GET",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { authed?: boolean };
+    return Boolean(data.authed);
+  } catch {
+    return false;
+  }
+}
