@@ -52,6 +52,8 @@ export interface BuildMessageOptions {
   /** Optional inlined-HTML body — produces a multipart/alternative. */
   html?: string;
   attachments?: MimeAttachment[];
+  /** Additional top-level headers, e.g. `{ "X-Colby-Ref": "CD-7K3M2Q" }`. Values must be header-safe ASCII. */
+  extraHeaders?: Record<string, string>;
 }
 
 function headerLines(o: BuildMessageOptions): string[] {
@@ -62,6 +64,9 @@ function headerLines(o: BuildMessageOptions): string[] {
   h.push(`Subject: ${encodeHeaderValue(o.subject)}`);
   if (o.inReplyTo) h.push(`In-Reply-To: ${o.inReplyTo}`);
   if (o.references) h.push(`References: ${o.references}`);
+  for (const [k, v] of Object.entries(o.extraHeaders ?? {})) {
+    if (/^[A-Za-z0-9-]+$/.test(k) && /^[\x20-\x7E]*$/.test(v)) h.push(`${k}: ${v}`);
+  }
   h.push("MIME-Version: 1.0");
   return h;
 }

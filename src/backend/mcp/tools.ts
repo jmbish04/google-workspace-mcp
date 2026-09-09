@@ -1090,16 +1090,21 @@ export const TOOLS: ToolDef[] = [
     name: "gmail_create_draft",
     description:
       "Create a Gmail DRAFT (not sent) so a human can review before sending. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`.",
-    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string().optional(), ...richBody, ...asUser }),
+    inputSchema: z.object({ to: z.string().email(), subject: z.string(), body: z.string().optional(), referenceId: z
+        .string()
+        .max(80)
+        .optional()
+        .describe("Correlation id to stamp into the body (trailing `ref: …` line, hidden in HTML) and the X-Colby-Ref header. Omit to mint a uuid. Echoed back as `referenceId`; search Gmail for it to find the whole thread."), ...richBody, ...asUser }),
     async run({ env, sub }, a) {
       const d = await new GmailService(env, acct(sub, a)).createDraft(a.to, a.subject, a.body ?? "", {
+        referenceId: a.referenceId,
         html: a.html,
         markdown: a.markdown,
         attachments: a.attachments,
         driveIds: a.driveIds,
         blobs: a.blobs,
       });
-      return { result: d, asset: { assetType: "gmail", googleId: d.id, title: a.subject, action: "create", detail: { to: a.to, draft: true } } };
+      return { result: d, asset: { assetType: "gmail", googleId: d.id, title: a.subject, action: "create", detail: { to: a.to, draft: true, referenceId: d.referenceId } } };
     },
   },
   {
@@ -1111,6 +1116,11 @@ export const TOOLS: ToolDef[] = [
       body: z.string().optional(),
       to: z.array(z.string().email()).optional(),
       replyAll: z.boolean().optional(),
+      referenceId: z
+        .string()
+        .max(80)
+        .optional()
+        .describe("Correlation id to stamp into the body (trailing `ref: …` line, hidden in HTML) and the X-Colby-Ref header. Omit to mint a uuid. Echoed back as `referenceId`; search Gmail for it to find the whole thread."),
       ...richBody,
       ...asUser,
     }),
@@ -1118,23 +1128,30 @@ export const TOOLS: ToolDef[] = [
       const d = await new GmailService(env, acct(sub, a)).createReplyDraft(a.messageId, a.body ?? "", {
         to: a.to,
         replyAll: a.replyAll,
+        referenceId: a.referenceId,
         html: a.html,
         markdown: a.markdown,
         attachments: a.attachments,
         driveIds: a.driveIds,
         blobs: a.blobs,
       });
-      return { result: d, asset: { assetType: "gmail", googleId: d.id, action: "create", detail: { replyTo: a.messageId, draft: true } } };
+      return { result: d, asset: { assetType: "gmail", googleId: d.id, action: "create", detail: { replyTo: a.messageId, draft: true, referenceId: d.referenceId } } };
     },
   },
   {
     name: "gmail_send",
     description:
-      "Send an email immediately. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
+      "Send an email immediately. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Every send is stamped with a reference id (yours via `referenceId`, else a uuid) in the body + X-Colby-Ref header and returned as `referenceId`. Prefer gmail_create_draft when a human should review first.",
     inputSchema: z.object({
       to: z.string().email(),
       subject: z.string(),
       body: z.string().optional(),
+      referenceId: z
+        .string()
+        .max(80)
+        .optional()
+        .describe("Correlation id to stamp into the body (trailing `ref: …` line, hidden in HTML) and the X-Colby-Ref header. Omit to mint a uuid. Echoed back as `referenceId`; search Gmail for it to find the whole thread."),
+
       replyToMessageId: z
         .string()
         .optional()
@@ -1148,6 +1165,7 @@ export const TOOLS: ToolDef[] = [
         from: a.as_user,
         replyToMessageId: a.replyToMessageId,
         threadId: a.threadId,
+        referenceId: a.referenceId,
         html: a.html,
         markdown: a.markdown,
         attachments: a.attachments,
@@ -1161,7 +1179,7 @@ export const TOOLS: ToolDef[] = [
           googleId: sent.id,
           title: a.subject,
           action: "create",
-          detail: { to: a.to, ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
+          detail: { to: a.to, referenceId: sent.referenceId, ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
         },
       };
     },

@@ -134,7 +134,7 @@ export class GsuiteService extends WorkerEntrypoint<Env> {
     to: string,
     subject: string,
     body: string,
-    opts?: { cc?: string; bcc?: string; html?: boolean; account?: string },
+    opts?: { cc?: string; bcc?: string; html?: boolean; account?: string; referenceId?: string },
   ): Promise<unknown> {
     const acct = resolveAccount(this.env, opts?.account);
     const stub = await getAgentByName(

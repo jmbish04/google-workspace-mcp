@@ -91,8 +91,8 @@ export class GmailService {
     to: string,
     subject: string,
     body: string,
-    opts?: { from?: string; replyToMessageId?: string; threadId?: string } & RichContent,
-  ): Promise<{ id: string; threadId?: string; attachments: AttachmentReportItem[] }> {
+    opts?: { from?: string; replyToMessageId?: string; threadId?: string; referenceId?: string } & RichContent,
+  ): Promise<{ id: string; threadId?: string; referenceId: string; attachments: AttachmentReportItem[] }> {
     let threadId = opts?.threadId;
     let finalSubject = subject;
     let inReplyTo: string | undefined;
@@ -112,7 +112,7 @@ export class GmailService {
       }
     }
 
-    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, referenceId, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
       from: opts?.from,
       subject: finalSubject,
@@ -121,6 +121,7 @@ export class GmailService {
       text: body,
       html: opts?.html,
       markdown: opts?.markdown,
+      referenceId: opts?.referenceId,
       ...attachmentOpts(opts),
     });
 
@@ -130,28 +131,29 @@ export class GmailService {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    return { ...sent, attachments: attachmentReport };
+    return { ...sent, referenceId, attachments: attachmentReport };
   }
 
   async createDraft(
     to: string,
     subject: string,
     body: string,
-    opts?: RichContent,
-  ): Promise<{ id: string; message?: { id: string }; attachments: AttachmentReportItem[] }> {
-    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+    opts?: RichContent & { referenceId?: string },
+  ): Promise<{ id: string; message?: { id: string }; referenceId: string; attachments: AttachmentReportItem[] }> {
+    const { raw, referenceId, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
       subject,
       text: body,
       html: opts?.html,
       markdown: opts?.markdown,
+      referenceId: opts?.referenceId,
       ...attachmentOpts(opts),
     });
     const draft = await googleJson<{ id: string; message?: { id: string } }>(this.env, this.sub, `${BASE}/drafts`, {
       method: "POST",
       body: JSON.stringify({ message: { raw } }),
     });
-    return { ...draft, attachments: attachmentReport };
+    return { ...draft, referenceId, attachments: attachmentReport };
   }
 
   /** Send an existing draft by id (used by the scheduled-send sweep). */
@@ -186,8 +188,8 @@ export class GmailService {
   async createReplyDraft(
     messageId: string,
     body: string,
-    opts?: { to?: string[]; replyAll?: boolean } & RichContent,
-  ): Promise<{ id: string; message?: { id: string; threadId?: string }; attachments: AttachmentReportItem[] }> {
+    opts?: { to?: string[]; replyAll?: boolean; referenceId?: string } & RichContent,
+  ): Promise<{ id: string; message?: { id: string; threadId?: string }; referenceId: string; attachments: AttachmentReportItem[] }> {
     const [{ headers, threadId }, profile] = await Promise.all([this.getMessageHeaders(messageId), this.getProfile()]);
     const self = profile.emailAddress.toLowerCase();
 
@@ -212,7 +214,7 @@ export class GmailService {
     const messageIdHeader = headers["message-id"] ?? "";
     const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
 
-    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, referenceId, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to: recipients.join(", "),
       subject,
       inReplyTo: messageIdHeader || undefined,
@@ -220,6 +222,7 @@ export class GmailService {
       text: body,
       html: opts?.html,
       markdown: opts?.markdown,
+      referenceId: opts?.referenceId,
       ...attachmentOpts(opts),
     });
 
@@ -227,7 +230,7 @@ export class GmailService {
       method: "POST",
       body: JSON.stringify({ message: { raw, threadId } }),
     });
-    return { ...draft, attachments: attachmentReport };
+    return { ...draft, referenceId, attachments: attachmentReport };
   }
 
   async listLabels(): Promise<{ labels: unknown[] }> {
