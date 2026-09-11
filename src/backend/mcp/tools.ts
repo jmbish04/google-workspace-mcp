@@ -1,3 +1,17 @@
+import {
+  templateArtifacts,
+  driveNotifications,
+  brailleArtifacts,
+  gmailLabels,
+  sheetExportJobs,
+  docExportJobs,
+  scheduledSends,
+  scheduledEmails,
+  emailPreviews,
+  emailTemplates,
+  type ScheduledEmailSpec,
+} from "@db/schemas";
+import { eq, desc, and } from "drizzle-orm";
 /**
  * @fileoverview MCP tool catalog for the Google Workspace worker.
  *
@@ -14,64 +28,78 @@
  * Also consumed by `/api/gws/tools` for a human-facing tool list.
  */
 import { z } from "zod";
-import { eq, desc, and } from "drizzle-orm";
 
-import { getDb } from "@/db";
-import { templateArtifacts, driveNotifications, brailleArtifacts, gmailLabels, sheetExportJobs, docExportJobs, scheduledSends, scheduledEmails, emailPreviews, emailTemplates, type ScheduledEmailSpec } from "@db/schemas";
-import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
-import { seedBuiltinTemplates } from "@/backend/gmail/email-templates";
+import { queryCorpus } from "@/backend/ai/rag";
+import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
+import {
+  deployMergedVersion,
+  rollbackDeployment,
+  deploymentHistory,
+} from "@/backend/appscript/deploy-pipeline";
+import { resolveGasScript, setGasScript } from "@/backend/appscript/gas-projects";
+import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
 import { deconstruct, detectSurface, type BrailleSurface } from "@/backend/braille/deconstruct";
-import { syncLabels, syncLabelsForAllAccounts, listCaptureAccounts, accountEmailFor } from "@/backend/gmail/sync-service";
-import { exportSheetsToJson } from "@/backend/google/sheet-export";
-import { exportDocsToFiles } from "@/backend/google/doc-export";
-import { isValidCron } from "@/backend/gmail/cron";
-import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
-import { searchGmail } from "@/backend/gmail/search-service";
+import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
+import { rasterizePdf, storeRender, renderHtmlToPdf } from "@/backend/docs/browser-render";
+import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
+import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-collab";
+import { buildDocPreview, type DocPreview } from "@/backend/docs/doc-preview";
+import { htmlToRequests } from "@/backend/docs/html-to-braille";
+import { findLastTable } from "@/backend/docs/locate";
+import { docBodyContent } from "@/backend/docs/locate";
+import { markdownToRequests } from "@/backend/docs/markdown-to-requests";
+import { putPreview } from "@/backend/docs/preview-store";
+import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
+import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
+import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/schema";
+import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
+import { buildFolderTree } from "@/backend/drive/folder-tree";
+import {
+  walkFolder,
+  auditSharing,
+  applySharingActions,
+  DEFAULT_MAX_NODES,
+} from "@/backend/drive/sharing-audit";
+import { listTags, createTag, applyTags, findByTags } from "@/backend/drive/tags";
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { attachmentManifest } from "@/backend/gmail/attachments";
 import { extractBody, type BodyFormat } from "@/backend/gmail/body-extract";
+import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
+import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
+import { isValidCron } from "@/backend/gmail/cron";
+import { seedBuiltinTemplates } from "@/backend/gmail/email-templates";
 import { parseRawMessage } from "@/backend/gmail/parse-message";
-import { walkFolder, auditSharing, applySharingActions, DEFAULT_MAX_NODES } from "@/backend/drive/sharing-audit";
-import { buildFolderTree } from "@/backend/drive/folder-tree";
-import { runCodeMode, runCodeModeSearch } from "./code-mode";
-import { deployMergedVersion, rollbackDeployment, deploymentHistory } from "@/backend/appscript/deploy-pipeline";
-import { resolveStandingScript, setStandingScript } from "@/backend/appscript/standing";
-import { resolveGasScript, setGasScript } from "@/backend/appscript/gas-projects";
-import { listTags, createTag, applyTags, findByTags } from "@/backend/drive/tags";
-import { findEmailRecords } from "@/backend/gmail/tracking";
-import { buildCodeTextRequests, CODE_THEMES } from "@/backend/docs/code-format";
-import { findLastTable } from "@/backend/docs/locate";
-import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
-import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
-import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/schema";
-import { htmlToRequests } from "@/backend/docs/html-to-braille";
-import { markdownToRequests } from "@/backend/docs/markdown-to-requests";
-import { docBodyContent } from "@/backend/docs/locate";
-import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
-import { SCRIPT_SCAFFOLDS } from "@/backend/docs/appscript-scaffolds";
-import { buildTemplate, type BindConfig } from "@/backend/appscript-templates";
-import { rasterizePdf, storeRender, renderHtmlToPdf } from "@/backend/docs/browser-render";
-import { buildDocPreview, type DocPreview } from "@/backend/docs/doc-preview";
-import { putPreview } from "@/backend/docs/preview-store";
+import { searchGmail } from "@/backend/gmail/search-service";
+import {
+  syncLabels,
+  syncLabelsForAllAccounts,
+  listCaptureAccounts,
+  accountEmailFor,
+} from "@/backend/gmail/sync-service";
 import { buildThreadHtml, toRenderMessage } from "@/backend/gmail/thread-pdf";
-import { DriveService, FOLDER_MIME, escapeDriveQuery, type DriveFile } from "./services/drive";
-import { extractGoogleId } from "@/backend/google/core/ids";
-import { DocsService } from "./services/docs";
-import { SheetsService } from "./services/sheets";
-import { GmailService } from "./services/gmail";
-import { SlidesService } from "./services/slides";
-import { CalendarService } from "./services/calendar";
-import { AppsScriptService } from "./services/appsscript";
-import { CommentsService } from "./services/comments";
-import { ChangesService } from "./services/changes";
-import { WorkspaceEventsService } from "./services/workspaceevents";
-import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
-import { PeopleService } from "./services/people";
-import { FormsService } from "./services/forms";
-import { queryCorpus } from "@/backend/ai/rag";
+import { findEmailRecords } from "@/backend/gmail/tracking";
 import { GoogleDocsClient } from "@/backend/google";
-import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-collab";
+import { extractGoogleId } from "@/backend/google/core/ids";
+import { exportDocsToFiles } from "@/backend/google/doc-export";
+import { exportSheetsToJson } from "@/backend/google/sheet-export";
+import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
+import { getDb } from "@/db";
+
 import type { AssetAction } from "./logging";
+
+import { runCodeMode, runCodeModeSearch } from "./code-mode";
+import { AppsScriptService } from "./services/appsscript";
+import { CalendarService } from "./services/calendar";
+import { ChangesService } from "./services/changes";
+import { CommentsService } from "./services/comments";
+import { DocsService } from "./services/docs";
+import { DriveService, FOLDER_MIME, escapeDriveQuery, type DriveFile } from "./services/drive";
+import { FormsService } from "./services/forms";
+import { GmailService } from "./services/gmail";
+import { PeopleService } from "./services/people";
+import { SheetsService } from "./services/sheets";
+import { SlidesService } from "./services/slides";
+import { WorkspaceEventsService } from "./services/workspaceevents";
 
 export type ToolCtx = { env: Env; sub: string };
 
@@ -135,23 +163,41 @@ function addrList(v: string | string[] | undefined): string | undefined {
 const richBody = {
   cc: recipients
     .optional()
-    .describe("Cc recipients — one or more, as an array or a comma-separated string. Fully supported on drafts and sends — a Gmail draft carries To, Cc, AND Bcc, and they are preserved when the draft is later sent."),
+    .describe(
+      "Cc recipients — one or more, as an array or a comma-separated string. Fully supported on drafts and sends — a Gmail draft carries To, Cc, AND Bcc, and they are preserved when the draft is later sent.",
+    ),
   bcc: recipients
     .optional()
-    .describe("Bcc recipients — one or more, as an array or a comma-separated string. Fully supported on drafts too (not just To)."),
+    .describe(
+      "Bcc recipients — one or more, as an array or a comma-separated string. Fully supported on drafts too (not just To).",
+    ),
   html: z
     .string()
     .optional()
-    .describe("Rich HTML body. The worker inlines all CSS for Gmail — you do NOT need to write inline styles yourself. Takes precedence over `body`. For links use `<a href=\"…\">`; for INLINE images use `<img src=\"cid:myimg\">` and pass the image in `attachments` with as:'inline', contentId:'myimg'."),
+    .describe(
+      "Rich HTML body. The worker inlines all CSS for Gmail — you do NOT need to write inline styles yourself. Takes precedence over `body`. For links use `<a href=\"…\">`; for INLINE images use `<img src=\"cid:myimg\">` and pass the image in `attachments` with as:'inline', contentId:'myimg'.",
+    ),
   markdown: z
     .string()
     .optional()
-    .describe("Markdown body. The worker renders it to Gmail-safe inline-styled HTML (headings, bold, lists, links, tables). Links via [text](url). Takes precedence over `body`."),
+    .describe(
+      "Markdown body. The worker renders it to Gmail-safe inline-styled HTML (headings, bold, lists, links, tables). Links via [text](url). Takes precedence over `body`.",
+    ),
   attachments: z
     .array(
       z.union([
-        z.object({ driveFileId: z.string(), as: z.enum(["attach", "link", "inline"]).optional(), contentId: z.string().optional() }),
-        z.object({ blob: z.string().describe("base64"), filename: z.string(), mimeType: z.string().optional(), as: z.enum(["attach", "link", "inline"]).optional(), contentId: z.string().optional() }),
+        z.object({
+          driveFileId: z.string(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+        z.object({
+          blob: z.string().describe("base64"),
+          filename: z.string(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
       ]),
     )
     .optional()
@@ -161,11 +207,21 @@ const richBody = {
   driveIds: z
     .array(z.string())
     .optional()
-    .describe("Legacy shorthand for attachments: Drive file ids to attach (same size/link fallback as `attachments`)."),
+    .describe(
+      "Legacy shorthand for attachments: Drive file ids to attach (same size/link fallback as `attachments`).",
+    ),
   blobs: z
-    .array(z.object({ filename: z.string(), mimeType: z.string().optional(), contentBase64: z.string() }))
+    .array(
+      z.object({
+        filename: z.string(),
+        mimeType: z.string().optional(),
+        contentBase64: z.string(),
+      }),
+    )
     .optional()
-    .describe("Legacy shorthand for attachments: inline base64 files (same size/link fallback as `attachments`)."),
+    .describe(
+      "Legacy shorthand for attachments: inline base64 files (same size/link fallback as `attachments`).",
+    ),
 };
 
 /** Resolve the account ref for a call: the as_user email, else the signed-in sub (OAuth-only). */
@@ -194,6 +250,7 @@ export const SHADOW_TOOLS = new Set<string>([
   "get_file_permissions",
   "read_file_content",
   "download_file_content",
+  "drive_download_base64",
   "list_folder_children",
   "list_folder_recursive",
   "drive_audit_sharing",
@@ -257,6 +314,36 @@ async function previewFile(
 }
 
 /** Decode standard or url-safe base64 to bytes (for binary Drive uploads). */
+/** Chunked btoa so multi-MB files do not blow the argument limit. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+export async function md5Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "MD5",
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+  );
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function exportExt(mime: string): string {
+  return (
+    (
+      {
+        "application/pdf": ".pdf",
+        "text/plain": ".txt",
+        "text/csv": ".csv",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+      } as Record<string, string>
+    )[mime] ?? ""
+  );
+}
+
 export function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -270,13 +357,16 @@ export function base64ToBytes(b64: string): Uint8Array {
 const GMAIL_BODY_TEXT_STYLE = {
   weightedFontFamily: { fontFamily: "Arial", weight: 400 },
   fontSize: { magnitude: 11, unit: "PT" },
-  foregroundColor: { color: { rgbColor: { red: 0.13333334, green: 0.13333334, blue: 0.13333334 } } },
+  foregroundColor: {
+    color: { rgbColor: { red: 0.13333334, green: 0.13333334, blue: 0.13333334 } },
+  },
   bold: false,
   italic: false,
   underline: false,
   strikethrough: false,
 };
-const GMAIL_BODY_STYLE_FIELDS = "weightedFontFamily,fontSize,foregroundColor,bold,italic,underline,strikethrough";
+const GMAIL_BODY_STYLE_FIELDS =
+  "weightedFontFamily,fontSize,foregroundColor,bold,italic,underline,strikethrough";
 
 /**
  * Place a freshly-created Doc: move it into `folderRaw` if given, else — when a
@@ -307,8 +397,13 @@ export const TOOLS: ToolDef[] = [
   // ---- Drive -------------------------------------------------------------
   {
     name: "search_files",
-    description: "Search Google Drive files. Optional query in Drive query syntax (e.g. \"name contains 'report'\").",
-    inputSchema: z.object({ query: z.string().optional(), pageSize: z.number().int().min(1).max(100).optional(), ...asUser }),
+    description:
+      "Search Google Drive files. Optional query in Drive query syntax (e.g. \"name contains 'report'\").",
+    inputSchema: z.object({
+      query: z.string().optional(),
+      pageSize: z.number().int().min(1).max(100).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       return { result: await new DriveService(env, acct(sub, a)).search(a.query, a.pageSize) };
     },
@@ -327,7 +422,16 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ fileId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const f = await new DriveService(env, acct(sub, a)).get(a.fileId);
-      return { result: f, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "read" } };
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: f.id,
+          title: f.name,
+          url: f.webViewLink,
+          action: "read",
+        },
+      };
     },
   },
   {
@@ -335,7 +439,10 @@ export const TOOLS: ToolDef[] = [
     description: "List the permissions (who has access, and what role) on a Drive file.",
     inputSchema: z.object({ fileId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new DriveService(env, acct(sub, a)).getPermissions(a.fileId), asset: { assetType: "drive", googleId: a.fileId, action: "read" } };
+      return {
+        result: await new DriveService(env, acct(sub, a)).getPermissions(a.fileId),
+        asset: { assetType: "drive", googleId: a.fileId, action: "read" },
+      };
     },
   },
   {
@@ -345,33 +452,133 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ fileId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const out = await new DriveService(env, acct(sub, a)).readContent(a.fileId);
-      return { result: out, asset: { assetType: "drive", googleId: a.fileId, action: "read", detail: { exported: out.exported } } };
+      return {
+        result: out,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "read",
+          detail: { exported: out.exported },
+        },
+      };
     },
   },
   {
     name: "download_file_content",
-    description: "Download a Drive file's raw media content as text (alt=media). For binary files prefer read_file_content.",
+    description:
+      "Download a Drive file's raw media content as text (alt=media). For binary files prefer read_file_content.",
     inputSchema: z.object({ fileId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new DriveService(env, acct(sub, a)).downloadContent(a.fileId), asset: { assetType: "drive", googleId: a.fileId, action: "read" } };
+      return {
+        result: await new DriveService(env, acct(sub, a)).downloadContent(a.fileId),
+        asset: { assetType: "drive", googleId: a.fileId, action: "read" },
+      };
+    },
+  },
+  {
+    name: "drive_download_base64",
+    description:
+      "Download a Drive file's raw bytes, base64-encoded, with its metadata { id, name, mimeType, size, md5Checksum, modifiedTime, contentBase64 }. Use this for binary files (PDF, images, docx) that must arrive byte-exact — download_file_content / read_file_content return text and corrupt binaries. Google-native files (Docs/Sheets/Slides) are exported to PDF (or `exportMimeType`) first. Max 15 MB.",
+    inputSchema: z.object({
+      fileId: z.string(),
+      exportMimeType: z
+        .string()
+        .optional()
+        .describe("For Google-native files only: export format, default application/pdf."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const drive = new DriveService(env, acct(sub, a));
+      const fileId = extractGoogleId(a.fileId);
+      const meta = await drive.getContentMeta(fileId);
+      const native = meta.mimeType.startsWith("application/vnd.google-apps.");
+      const exportMime = a.exportMimeType ?? "application/pdf";
+      const bytes = native
+        ? await drive.exportBytes(fileId, exportMime)
+        : await drive.downloadBytes(fileId);
+      if (bytes.length > MAX_DRIVE_UPLOAD_BYTES) {
+        throw new Error(`File too large (${bytes.length} bytes); max ${MAX_DRIVE_UPLOAD_BYTES}.`);
+      }
+      const md5 = native ? null : await md5Hex(bytes);
+      const loc = await drive.getLocationInfo(fileId);
+      const name =
+        native && !meta.name.toLowerCase().endsWith(exportExt(exportMime))
+          ? `${meta.name}${exportExt(exportMime)}`
+          : meta.name;
+      return {
+        result: {
+          id: meta.id,
+          name,
+          mimeType: native ? exportMime : meta.mimeType,
+          size: bytes.length,
+          md5Checksum: md5,
+          modifiedTime: loc.modifiedTime ?? null,
+          exported: native,
+          contentBase64: bytesToBase64(bytes),
+        },
+        asset: {
+          assetType: "drive",
+          googleId: fileId,
+          title: meta.name,
+          action: "read",
+          detail: { bytes: bytes.length, exported: native },
+        },
+      };
     },
   },
   {
     name: "create_file",
-    description: "Create a Drive file with text content and an explicit mimeType (e.g. text/plain, text/markdown, text/csv).",
-    inputSchema: z.object({ name: z.string(), mimeType: z.string(), content: z.string(), parentId: z.string().optional(), ...asUser }),
+    description:
+      "Create a Drive file with text content and an explicit mimeType (e.g. text/plain, text/markdown, text/csv).",
+    inputSchema: z.object({
+      name: z.string(),
+      mimeType: z.string(),
+      content: z.string(),
+      parentId: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const f = await new DriveService(env, acct(sub, a)).createFile(a.name, a.mimeType, a.content, a.parentId);
-      return { result: f, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { mimeType: a.mimeType } } };
+      const f = await new DriveService(env, acct(sub, a)).createFile(
+        a.name,
+        a.mimeType,
+        a.content,
+        a.parentId,
+      );
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: f.id,
+          title: f.name,
+          url: f.webViewLink,
+          action: "create",
+          detail: { mimeType: a.mimeType },
+        },
+      };
     },
   },
   {
     name: "copy_file",
     description: "Copy a Drive file to a new file (optionally into a target folder).",
-    inputSchema: z.object({ fileId: z.string(), name: z.string(), targetFolderId: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      fileId: z.string(),
+      name: z.string(),
+      targetFolderId: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const f = await new DriveService(env, acct(sub, a)).copy(a.fileId, a.name, a.targetFolderId);
-      return { result: f, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { copiedFrom: a.fileId } } };
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: f.id,
+          title: f.name,
+          url: f.webViewLink,
+          action: "create",
+          detail: { copiedFrom: a.fileId },
+        },
+      };
     },
   },
   {
@@ -380,7 +587,17 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ name: z.string(), parentId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const f = await new DriveService(env, acct(sub, a)).createFolder(a.name, a.parentId);
-      return { result: f, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { name: a.name } } };
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: f.id,
+          title: f.name,
+          url: f.webViewLink,
+          action: "create",
+          detail: { name: a.name },
+        },
+      };
     },
   },
   {
@@ -391,8 +608,14 @@ export const TOOLS: ToolDef[] = [
       name: z.string().describe("File name including extension, e.g. 'invoice.pdf'."),
       mimeType: z.string().describe("MIME type of the bytes, e.g. 'application/pdf'."),
       contentBase64: z.string().describe("File bytes, base64-encoded (standard or url-safe)."),
-      folderId: z.string().optional().describe("Destination folder id. Takes precedence over folderPath."),
-      folderPath: z.string().optional().describe("'/'-separated destination folder path; missing segments are created."),
+      folderId: z
+        .string()
+        .optional()
+        .describe("Destination folder id. Takes precedence over folderPath."),
+      folderPath: z
+        .string()
+        .optional()
+        .describe("'/'-separated destination folder path; missing segments are created."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -402,18 +625,30 @@ export const TOOLS: ToolDef[] = [
       }
       const drive = new DriveService(env, acct(sub, a));
       // Accept a pasted Drive folder URL as well as a bare id.
-      const folderId = a.folderId ? extractGoogleId(a.folderId) : a.folderPath ? await drive.resolveFolderPath(a.folderPath) : undefined;
+      const folderId = a.folderId
+        ? extractGoogleId(a.folderId)
+        : a.folderPath
+          ? await drive.resolveFolderPath(a.folderPath)
+          : undefined;
       const f = await drive.uploadBinary(a.name, a.mimeType, bytes, folderId);
       const url = f.webViewLink ?? `https://drive.google.com/file/d/${f.id}/view`;
       return {
         result: { id: f.id, name: f.name, url, folderId: folderId ?? null },
-        asset: { assetType: "drive", googleId: f.id, title: f.name, url, action: "create", detail: { folderId, folderPath: a.folderPath } },
+        asset: {
+          assetType: "drive",
+          googleId: f.id,
+          title: f.name,
+          url,
+          action: "create",
+          detail: { folderId, folderPath: a.folderPath },
+        },
       };
     },
   },
   {
     name: "share_file",
-    description: "Share a Drive file: grant a role (reader/commenter/writer/owner) to a type (user/group/domain/anyone), optionally an emailAddress.",
+    description:
+      "Share a Drive file: grant a role (reader/commenter/writer/owner) to a type (user/group/domain/anyone), optionally an emailAddress.",
     inputSchema: z.object({
       fileId: z.string(),
       role: z.enum(["reader", "commenter", "writer", "owner"]),
@@ -423,25 +658,61 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const r = await new DriveService(env, acct(sub, a)).share(a.fileId, a.role, a.type, a.emailAddress, a.sendNotificationEmail ?? false);
-      return { result: r, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { role: a.role, type: a.type } } };
+      const r = await new DriveService(env, acct(sub, a)).share(
+        a.fileId,
+        a.role,
+        a.type,
+        a.emailAddress,
+        a.sendNotificationEmail ?? false,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { role: a.role, type: a.type },
+        },
+      };
     },
   },
   {
     name: "update_file",
     description: "Rename and/or move a Drive file (name, addParents, removeParents).",
-    inputSchema: z.object({ fileId: z.string(), name: z.string().optional(), addParents: z.string().optional(), removeParents: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      fileId: z.string(),
+      name: z.string().optional(),
+      addParents: z.string().optional(),
+      removeParents: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const f = await new DriveService(env, acct(sub, a)).updateFile(a.fileId, { name: a.name, addParents: a.addParents, removeParents: a.removeParents });
-      return { result: f, asset: { assetType: "drive", googleId: a.fileId, title: a.name, action: "update" } };
+      const f = await new DriveService(env, acct(sub, a)).updateFile(a.fileId, {
+        name: a.name,
+        addParents: a.addParents,
+        removeParents: a.removeParents,
+      });
+      return {
+        result: f,
+        asset: { assetType: "drive", googleId: a.fileId, title: a.name, action: "update" },
+      };
     },
   },
   {
     name: "export_file",
-    description: "Export a Google-native file to a given mimeType (e.g. application/pdf, text/plain, text/csv) and return the content.",
+    description:
+      "Export a Google-native file to a given mimeType (e.g. application/pdf, text/plain, text/csv) and return the content.",
     inputSchema: z.object({ fileId: z.string(), mimeType: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new DriveService(env, acct(sub, a)).exportFile(a.fileId, a.mimeType), asset: { assetType: "drive", googleId: a.fileId, action: "read", detail: { export: a.mimeType } } };
+      return {
+        result: await new DriveService(env, acct(sub, a)).exportFile(a.fileId, a.mimeType),
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "read",
+          detail: { export: a.mimeType },
+        },
+      };
     },
   },
   {
@@ -450,12 +721,22 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ fileId: z.string(), name: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const f = await new DriveService(env, acct(sub, a)).updateFile(a.fileId, { name: a.name });
-      return { result: f, asset: { assetType: "drive", googleId: a.fileId, title: a.name, action: "update", detail: { rename: a.name } } };
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          title: a.name,
+          action: "update",
+          detail: { rename: a.name },
+        },
+      };
     },
   },
   {
     name: "move_file",
-    description: "Move a Drive file or folder into a target folder (detaches it from its current parents). Give the destination as `targetFolderId` (aliases: `folderId`, `parentFolderId`).",
+    description:
+      "Move a Drive file or folder into a target folder (detaches it from its current parents). Give the destination as `targetFolderId` (aliases: `folderId`, `parentFolderId`).",
     inputSchema: z
       .object({
         fileId: z.string(),
@@ -470,44 +751,95 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const dest = (a.targetFolderId ?? a.folderId ?? a.parentFolderId)!;
       const f = await new DriveService(env, acct(sub, a)).moveFile(a.fileId, dest);
-      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { movedTo: dest } } };
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "update",
+          detail: { movedTo: dest },
+        },
+      };
     },
   },
   {
     name: "trash_file",
-    description: "Move a Drive file or folder to the trash (reversible). Pass `restore:true` to un-trash instead. This is NOT a permanent delete — items stay recoverable in Drive trash.",
+    description:
+      "Move a Drive file or folder to the trash (reversible). Pass `restore:true` to un-trash instead. This is NOT a permanent delete — items stay recoverable in Drive trash.",
     inputSchema: z.object({ fileId: z.string(), restore: z.boolean().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const f = await new DriveService(env, acct(sub, a)).trashFile(a.fileId, !a.restore);
-      return { result: f, asset: { assetType: "drive", googleId: a.fileId, action: "update", detail: { trashed: !a.restore } } };
+      return {
+        result: f,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "update",
+          detail: { trashed: !a.restore },
+        },
+      };
     },
   },
   {
     name: "list_folder_children",
-    description: "List the direct children (files + folders) of a Drive folder. Paginated via pageToken.",
-    inputSchema: z.object({ folderId: z.string(), pageToken: z.string().optional(), pageSize: z.number().int().min(1).max(1000).optional(), ...asUser }),
+    description:
+      "List the direct children (files + folders) of a Drive folder. Paginated via pageToken.",
+    inputSchema: z.object({
+      folderId: z.string(),
+      pageToken: z.string().optional(),
+      pageSize: z.number().int().min(1).max(1000).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      return { result: await new DriveService(env, acct(sub, a)).listChildren(a.folderId, { pageToken: a.pageToken, pageSize: a.pageSize }) };
+      return {
+        result: await new DriveService(env, acct(sub, a)).listChildren(a.folderId, {
+          pageToken: a.pageToken,
+          pageSize: a.pageSize,
+        }),
+      };
     },
   },
   {
     name: "list_folder_recursive",
     description:
       "Recursively list every descendant (files + folders) under a Drive folder. Bounded by maxNodes (default 2000); returns truncated:true if the tree is larger.",
-    inputSchema: z.object({ folderId: z.string(), maxNodes: z.number().int().min(1).max(5000).optional(), ...asUser }),
+    inputSchema: z.object({
+      folderId: z.string(),
+      maxNodes: z.number().int().min(1).max(5000).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const { nodes, truncated } = await walkFolder(new DriveService(env, acct(sub, a)), a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
-      const files = nodes.map((n) => ({ id: n.id, name: n.name, mimeType: n.mimeType, parents: n.parents, webViewLink: n.webViewLink }));
+      const { nodes, truncated } = await walkFolder(
+        new DriveService(env, acct(sub, a)),
+        a.folderId,
+        a.maxNodes ?? DEFAULT_MAX_NODES,
+      );
+      const files = nodes.map((n) => ({
+        id: n.id,
+        name: n.name,
+        mimeType: n.mimeType,
+        parents: n.parents,
+        webViewLink: n.webViewLink,
+      }));
       return { result: { rootId: a.folderId, count: files.length, truncated, files } };
     },
   },
   {
     name: "delete_permission",
-    description: "Remove a single permission from a Drive file or folder by permissionId (see get_file_permissions).",
+    description:
+      "Remove a single permission from a Drive file or folder by permissionId (see get_file_permissions).",
     inputSchema: z.object({ fileId: z.string(), permissionId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       await new DriveService(env, acct(sub, a)).deletePermission(a.fileId, a.permissionId);
-      return { result: { ok: true }, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { removedPermission: a.permissionId } } };
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { removedPermission: a.permissionId },
+        },
+      };
     },
   },
   {
@@ -516,14 +848,29 @@ export const TOOLS: ToolDef[] = [
       "Audit sharing across a Drive folder tree (recursive). Returns counts of files/folders shared to 'anyone with the link', and — when auditEmails is given — per-account shared/not-shared counts. Bounded by maxNodes (default 2000; truncated:true if exceeded).",
     inputSchema: z.object({
       folderId: z.string(),
-      auditEmails: z.array(z.string().email()).optional().describe("Accounts to report explicit shared/not-shared counts for."),
+      auditEmails: z
+        .array(z.string().email())
+        .optional()
+        .describe("Accounts to report explicit shared/not-shared counts for."),
       maxNodes: z.number().int().min(1).max(5000).optional(),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const drive = new DriveService(env, acct(sub, a));
-      const { nodes, truncated } = await walkFolder(drive, a.folderId, a.maxNodes ?? DEFAULT_MAX_NODES);
-      return { result: auditSharing(a.folderId, nodes, truncated, a.auditEmails ?? []), asset: { assetType: "drive", googleId: a.folderId, action: "read", detail: { audited: nodes.length } } };
+      const { nodes, truncated } = await walkFolder(
+        drive,
+        a.folderId,
+        a.maxNodes ?? DEFAULT_MAX_NODES,
+      );
+      return {
+        result: auditSharing(a.folderId, nodes, truncated, a.auditEmails ?? []),
+        asset: {
+          assetType: "drive",
+          googleId: a.folderId,
+          action: "read",
+          detail: { audited: nodes.length },
+        },
+      };
     },
   },
   {
@@ -541,7 +888,12 @@ export const TOOLS: ToolDef[] = [
       const { nodes, truncated } = await walkFolder(drive, rootId, a.maxNodes ?? DEFAULT_MAX_NODES);
       return {
         result: buildFolderTree(rootId, nodes, truncated),
-        asset: { assetType: "drive", googleId: rootId, action: "read", detail: { listed: nodes.length } },
+        asset: {
+          assetType: "drive",
+          googleId: rootId,
+          action: "read",
+          detail: { listed: nodes.length },
+        },
       };
     },
   },
@@ -555,13 +907,27 @@ export const TOOLS: ToolDef[] = [
         addAnyoneWithLink: z.enum(["reader", "commenter", "writer"]).optional(),
         removeAnyoneWithLink: z.boolean().optional(),
         removeEmails: z.array(z.string().email()).optional(),
-        addEmails: z.array(z.object({ email: z.string().email(), role: z.enum(["reader", "commenter", "writer"]) })).optional(),
+        addEmails: z
+          .array(
+            z.object({
+              email: z.string().email(),
+              role: z.enum(["reader", "commenter", "writer"]),
+            }),
+          )
+          .optional(),
         maxNodes: z.number().int().min(1).max(5000).optional(),
         ...asUser,
       })
       .refine(
-        (v) => v.addAnyoneWithLink || v.removeAnyoneWithLink || (v.removeEmails?.length ?? 0) > 0 || (v.addEmails?.length ?? 0) > 0,
-        { message: "Provide at least one action (addAnyoneWithLink, removeAnyoneWithLink, removeEmails, or addEmails)." },
+        (v) =>
+          v.addAnyoneWithLink ||
+          v.removeAnyoneWithLink ||
+          (v.removeEmails?.length ?? 0) > 0 ||
+          (v.addEmails?.length ?? 0) > 0,
+        {
+          message:
+            "Provide at least one action (addAnyoneWithLink, removeAnyoneWithLink, removeEmails, or addEmails).",
+        },
       ),
     async run({ env, sub }, a) {
       const result = await applySharingActions(
@@ -575,7 +941,15 @@ export const TOOLS: ToolDef[] = [
         },
         a.maxNodes ?? DEFAULT_MAX_NODES,
       );
-      return { result, asset: { assetType: "drive", googleId: a.folderId, action: "modify", detail: { scanned: result.scanned } } };
+      return {
+        result,
+        asset: {
+          assetType: "drive",
+          googleId: a.folderId,
+          action: "modify",
+          detail: { scanned: result.scanned },
+        },
+      };
     },
   },
   // ---- Docs --------------------------------------------------------------
@@ -585,7 +959,10 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ documentId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const d = await new DocsService(env, acct(sub, a)).get(a.documentId);
-      return { result: d, asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "read" } };
+      return {
+        result: d,
+        asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "read" },
+      };
     },
   },
   {
@@ -597,22 +974,38 @@ export const TOOLS: ToolDef[] = [
       "(3) pass neither to just create in root. The acting account (see `as_user`) must have write access to the destination folder. Returns { documentId, title, folderId, folderMatches }.",
     inputSchema: z.object({
       title: z.string(),
-      folderId: z.string().optional().describe("Destination folder id (or URL). The new doc is moved here after creation."),
+      folderId: z
+        .string()
+        .optional()
+        .describe("Destination folder id (or URL). The new doc is moved here after creation."),
       parentFolderId: z.string().optional().describe("Alias for folderId."),
       folderKeyword: z
         .string()
         .optional()
-        .describe("Folder name keyword. When set (and no folderId), the doc is left in root and matching folders (type:folder) are returned as `folderMatches` for a follow-up move_file."),
+        .describe(
+          "Folder name keyword. When set (and no folderId), the doc is left in root and matching folders (type:folder) are returned as `folderMatches` for a follow-up move_file.",
+        ),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const d = await new DocsService(env, account).create(a.title);
-      const { folderId, folderMatches } = await placeNewDoc(drive, d.documentId, a.folderId ?? a.parentFolderId, a.folderKeyword);
+      const { folderId, folderMatches } = await placeNewDoc(
+        drive,
+        d.documentId,
+        a.folderId ?? a.parentFolderId,
+        a.folderKeyword,
+      );
       return {
         result: { ...d, folderId, folderMatches },
-        asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "create", detail: { folderId } },
+        asset: {
+          assetType: "doc",
+          googleId: d.documentId,
+          title: d.title,
+          action: "create",
+          detail: { folderId },
+        },
       };
     },
   },
@@ -622,13 +1015,23 @@ export const TOOLS: ToolDef[] = [
       "Create a Gmail message DRAFT as a Google Doc, pre-styled in Gmail's standard body format (Arial 11pt, color #222222) so it copy-pastes into the Gmail compose window without the font being remapped. Pass the message text as `body` (plain text; blank lines separate paragraphs) — it is inserted and styled in one step. Folder placement is optional and works exactly like docs_create: `folderId`/`parentFolderId` to place it, or `folderKeyword` to get back matching folders (type:folder) for a follow-up move_file, or neither to leave it in My Drive root. Acts as `as_user` (must have write access to any target folder). Returns { documentId, title, url, folderId, folderMatches }.",
     inputSchema: z.object({
       title: z.string().describe("Doc title (e.g. the email subject)."),
-      body: z.string().optional().describe("Message text. Inserted at the top and styled Gmail-standard. Use blank lines between paragraphs."),
-      folderId: z.string().optional().describe("Destination folder id (or URL). The draft is moved here after creation."),
+      body: z
+        .string()
+        .optional()
+        .describe(
+          "Message text. Inserted at the top and styled Gmail-standard. Use blank lines between paragraphs.",
+        ),
+      folderId: z
+        .string()
+        .optional()
+        .describe("Destination folder id (or URL). The draft is moved here after creation."),
       parentFolderId: z.string().optional().describe("Alias for folderId."),
       folderKeyword: z
         .string()
         .optional()
-        .describe("Folder name keyword. When set (and no folderId), the draft is left in root and matching folders are returned as `folderMatches` for a follow-up move_file."),
+        .describe(
+          "Folder name keyword. When set (and no folderId), the draft is left in root and matching folders are returned as `folderMatches` for a follow-up move_file.",
+        ),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -642,42 +1045,110 @@ export const TOOLS: ToolDef[] = [
         // Insert the text then style the exact range it occupies — one atomic batch.
         await docs.batchUpdate(d.documentId, [
           { insertText: { location: { index: 1 }, text: body } },
-          { updateTextStyle: { range: { startIndex: 1, endIndex: 1 + body.length }, textStyle: GMAIL_BODY_TEXT_STYLE, fields: GMAIL_BODY_STYLE_FIELDS } },
+          {
+            updateTextStyle: {
+              range: { startIndex: 1, endIndex: 1 + body.length },
+              textStyle: GMAIL_BODY_TEXT_STYLE,
+              fields: GMAIL_BODY_STYLE_FIELDS,
+            },
+          },
         ]);
       }
 
-      const { folderId, folderMatches } = await placeNewDoc(drive, d.documentId, a.folderId ?? a.parentFolderId, a.folderKeyword);
+      const { folderId, folderMatches } = await placeNewDoc(
+        drive,
+        d.documentId,
+        a.folderId ?? a.parentFolderId,
+        a.folderKeyword,
+      );
       return {
-        result: { ...d, url: `https://docs.google.com/document/d/${d.documentId}/edit`, folderId, folderMatches },
-        asset: { assetType: "doc", googleId: d.documentId, title: d.title, action: "create", detail: { folderId, gmailStyled: Boolean(body) } },
+        result: {
+          ...d,
+          url: `https://docs.google.com/document/d/${d.documentId}/edit`,
+          folderId,
+          folderMatches,
+        },
+        asset: {
+          assetType: "doc",
+          googleId: d.documentId,
+          title: d.title,
+          action: "create",
+          detail: { folderId, gmailStyled: Boolean(body) },
+        },
       };
     },
   },
   {
     name: "docs_insert_text",
     description: "Insert text into a Google Doc at an index (default 1).",
-    inputSchema: z.object({ documentId: z.string(), text: z.string(), index: z.number().int().optional(), ...asUser }),
+    inputSchema: z.object({
+      documentId: z.string(),
+      text: z.string(),
+      index: z.number().int().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       await new DocsService(env, acct(sub, a)).insertText(a.documentId, a.text, a.index);
-      return { result: { ok: true }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { inserted: a.text.length } } };
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { inserted: a.text.length },
+        },
+      };
     },
   },
   {
     name: "docs_replace_text",
     description: "Replace all occurrences of a string in a Google Doc.",
-    inputSchema: z.object({ documentId: z.string(), find: z.string(), replace: z.string(), matchCase: z.boolean().optional(), ...asUser }),
+    inputSchema: z.object({
+      documentId: z.string(),
+      find: z.string(),
+      replace: z.string(),
+      matchCase: z.boolean().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      await new DocsService(env, acct(sub, a)).replaceText(a.documentId, a.find, a.replace, a.matchCase);
-      return { result: { ok: true }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { replace: a.find } } };
+      await new DocsService(env, acct(sub, a)).replaceText(
+        a.documentId,
+        a.find,
+        a.replace,
+        a.matchCase,
+      );
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { replace: a.find },
+        },
+      };
     },
   },
   {
     name: "docs_insert_image",
-    description: "Insert an inline image (by public URL) into a Google Doc at an index (default 1).",
-    inputSchema: z.object({ documentId: z.string(), uri: z.string().url(), index: z.number().int().optional(), ...asUser }),
+    description:
+      "Insert an inline image (by public URL) into a Google Doc at an index (default 1).",
+    inputSchema: z.object({
+      documentId: z.string(),
+      uri: z.string().url(),
+      index: z.number().int().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       await new DocsService(env, acct(sub, a)).insertImage(a.documentId, a.uri, a.index);
-      return { result: { ok: true }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { image: true } } };
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { image: true },
+        },
+      };
     },
   },
   {
@@ -719,7 +1190,9 @@ export const TOOLS: ToolDef[] = [
       const docs = new GoogleDocsClient(env, acct(sub, a));
       const range = await docs.findElement(a.documentId, a.find, a.instance ?? 1);
       if (!range) {
-        throw new Error(`Text not found: ${JSON.stringify(a.find)}${a.instance ? ` (instance ${a.instance})` : ""}`);
+        throw new Error(
+          `Text not found: ${JSON.stringify(a.find)}${a.instance ? ` (instance ${a.instance})` : ""}`,
+        );
       }
       await docs.applyTextStyle(a.documentId, range.startIndex, range.endIndex, {
         bold: a.bold,
@@ -733,11 +1206,18 @@ export const TOOLS: ToolDef[] = [
         linkUrl: a.linkUrl,
       });
       if (a.namedStyleType) {
-        await docs.applyParagraphStyle(a.documentId, range.startIndex, range.endIndex, { namedStyleType: a.namedStyleType });
+        await docs.applyParagraphStyle(a.documentId, range.startIndex, range.endIndex, {
+          namedStyleType: a.namedStyleType,
+        });
       }
       return {
         result: { documentId: a.documentId, range },
-        asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { styledText: a.find.slice(0, 40) } },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { styledText: a.find.slice(0, 40) },
+        },
       };
     },
   },
@@ -750,7 +1230,9 @@ export const TOOLS: ToolDef[] = [
         .string()
         .email()
         .optional()
-        .describe("Optional signed-in Google account to mutate Drive as. Defaults to the first active OAuth account."),
+        .describe(
+          "Optional signed-in Google account to mutate Drive as. Defaults to the first active OAuth account.",
+        ),
     }),
     outputSchema: z.object({
       runId: z.string(),
@@ -771,7 +1253,13 @@ export const TOOLS: ToolDef[] = [
     description:
       "List recent Workspace Events E2E health-check runs persisted on this Worker (folder subscribe → create/rename/comment/delete → webhook → D1). Most-recent first. Each run includes per-step status and the CloudEvent types that arrived.",
     inputSchema: z.object({
-      limit: z.number().int().min(1).max(20).optional().describe("Max runs to return (default 10, max 20)."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Max runs to return (default 10, max 20)."),
     }),
     outputSchema: z.object({
       runs: z.array(z.unknown()),
@@ -788,7 +1276,10 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ title: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const s = await new SheetsService(env, acct(sub, a)).create(a.title);
-      return { result: s, asset: { assetType: "sheet", googleId: s.spreadsheetId, title: a.title, action: "create" } };
+      return {
+        result: s,
+        asset: { assetType: "sheet", googleId: s.spreadsheetId, title: a.title, action: "create" },
+      };
     },
   },
   {
@@ -797,16 +1288,37 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ spreadsheetId: z.string(), range: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const v = await new SheetsService(env, acct(sub, a)).getValues(a.spreadsheetId, a.range);
-      return { result: v, asset: { assetType: "sheet", googleId: a.spreadsheetId, action: "read", detail: { range: a.range } } };
+      return {
+        result: v,
+        asset: {
+          assetType: "sheet",
+          googleId: a.spreadsheetId,
+          action: "read",
+          detail: { range: a.range },
+        },
+      };
     },
   },
   {
     name: "sheets_append_values",
     description: "Append rows to a spreadsheet range (A1 notation).",
-    inputSchema: z.object({ spreadsheetId: z.string(), range: z.string(), values: z.array(z.array(z.string())), ...asUser }),
+    inputSchema: z.object({
+      spreadsheetId: z.string(),
+      range: z.string(),
+      values: z.array(z.array(z.string())),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       await new SheetsService(env, acct(sub, a)).appendValues(a.spreadsheetId, a.range, a.values);
-      return { result: { ok: true }, asset: { assetType: "sheet", googleId: a.spreadsheetId, action: "update", detail: { rows: a.values.length } } };
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "sheet",
+          googleId: a.spreadsheetId,
+          action: "update",
+          detail: { rows: a.values.length },
+        },
+      };
     },
   },
   {
@@ -814,7 +1326,10 @@ export const TOOLS: ToolDef[] = [
     description: "Get a spreadsheet's metadata: title + the list of tabs (sheetId, title, index).",
     inputSchema: z.object({ spreadsheetId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new SheetsService(env, acct(sub, a)).getMetadata(a.spreadsheetId), asset: { assetType: "sheet", googleId: a.spreadsheetId, action: "read" } };
+      return {
+        result: await new SheetsService(env, acct(sub, a)).getMetadata(a.spreadsheetId),
+        asset: { assetType: "sheet", googleId: a.spreadsheetId, action: "read" },
+      };
     },
   },
   {
@@ -826,7 +1341,9 @@ export const TOOLS: ToolDef[] = [
       "Cross-account is automatic: the sheet may live in any registered account (e.g. jmbish04@ vs justin@); each account is tried until one can read it, and the winning account is reported per item. " +
       "Each ref is processed independently — a bad/inaccessible id yields an error report item without aborting the rest. `shape`: 'records' (each tab → objects keyed by the header row, default) or 'values' (raw 2-D arrays). Every run is tracked in D1 (sheet_export_jobs).",
     inputSchema: z.object({
-      sheets: z.union([z.string(), z.array(z.string()).min(1)]).describe("Drive id or url, or an array of them (ids/urls may be mixed)."),
+      sheets: z
+        .union([z.string(), z.array(z.string()).min(1)])
+        .describe("Drive id or url, or an array of them (ids/urls may be mixed)."),
       shape: z.enum(["records", "values"]).optional(),
       ...asUser,
     }),
@@ -874,10 +1391,19 @@ export const TOOLS: ToolDef[] = [
         result: {
           requestId,
           results,
-          summary: { total: results.length, done: results.filter((r) => r.status === "done").length },
+          summary: {
+            total: results.length,
+            done: results.filter((r) => r.status === "done").length,
+          },
         },
         asset: firstDone?.jsonDriveId
-          ? { assetType: "drive", googleId: firstDone.jsonDriveId, title: "sheet export JSON", url: firstDone.jsonDriveUrl, action: "create" as const }
+          ? {
+              assetType: "drive",
+              googleId: firstDone.jsonDriveId,
+              title: "sheet export JSON",
+              url: firstDone.jsonDriveUrl,
+              action: "create" as const,
+            }
           : undefined,
       };
     },
@@ -891,9 +1417,14 @@ export const TOOLS: ToolDef[] = [
       "`tab` (default 'all'): 'all' = whole document in the chosen format; 'first' or a tabId = a single tab — but single-tab export is Markdown-only (Google has no native per-tab PDF), so a single tab with a non-markdown format is reported as an error for that item. " +
       "Cross-account is automatic (the doc may live in any registered account); each ref is processed independently (a bad id yields an error item, others still run). Every run is tracked in D1 (doc_export_jobs) with a requestId, content hash, and the source doc's modifiedTime.",
     inputSchema: z.object({
-      docs: z.union([z.string(), z.array(z.string()).min(1)]).describe("Drive id or url, or an array of them (ids/urls may be mixed)."),
+      docs: z
+        .union([z.string(), z.array(z.string()).min(1)])
+        .describe("Drive id or url, or an array of them (ids/urls may be mixed)."),
       format: z.enum(["pdf", "markdown", "docx", "html", "txt", "odt", "rtf", "epub"]).optional(),
-      tab: z.string().optional().describe("'all' (default), 'first', or a specific tabId. Single-tab is markdown-only."),
+      tab: z
+        .string()
+        .optional()
+        .describe("'all' (default), 'first', or a specific tabId. Single-tab is markdown-only."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -907,7 +1438,13 @@ export const TOOLS: ToolDef[] = [
         accounts.unshift({ email: primaryEmail, ref: acct(sub, a) });
       }
 
-      const results = await exportDocsToFiles(env, accounts, a.docs, a.format ?? "pdf", a.tab ?? "all");
+      const results = await exportDocsToFiles(
+        env,
+        accounts,
+        a.docs,
+        a.format ?? "pdf",
+        a.tab ?? "all",
+      );
 
       const requestId = crypto.randomUUID();
       const db = getDb(env);
@@ -937,10 +1474,19 @@ export const TOOLS: ToolDef[] = [
         result: {
           requestId,
           results,
-          summary: { total: results.length, done: results.filter((r) => r.status === "done").length },
+          summary: {
+            total: results.length,
+            done: results.filter((r) => r.status === "done").length,
+          },
         },
         asset: firstDone?.exportDriveId
-          ? { assetType: "drive", googleId: firstDone.exportDriveId, title: `doc export (${firstDone.format})`, url: firstDone.exportDriveUrl, action: "create" as const }
+          ? {
+              assetType: "drive",
+              googleId: firstDone.exportDriveId,
+              title: `doc export (${firstDone.format})`,
+              url: firstDone.exportDriveUrl,
+              action: "create" as const,
+            }
           : undefined,
       };
     },
@@ -951,16 +1497,37 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ spreadsheetId: z.string(), title: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       await new SheetsService(env, acct(sub, a)).addSheet(a.spreadsheetId, a.title);
-      return { result: { ok: true }, asset: { assetType: "sheet", googleId: a.spreadsheetId, action: "modify", detail: { addSheet: a.title } } };
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "sheet",
+          googleId: a.spreadsheetId,
+          action: "modify",
+          detail: { addSheet: a.title },
+        },
+      };
     },
   },
   {
     name: "sheets_batch_update",
-    description: "Apply raw Sheets API batchUpdate requests (formatting, addSheet, updateCells, conditional formats, etc.).",
-    inputSchema: z.object({ spreadsheetId: z.string(), requests: z.array(z.record(z.string(), z.any())), ...asUser }),
+    description:
+      "Apply raw Sheets API batchUpdate requests (formatting, addSheet, updateCells, conditional formats, etc.).",
+    inputSchema: z.object({
+      spreadsheetId: z.string(),
+      requests: z.array(z.record(z.string(), z.any())),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       await new SheetsService(env, acct(sub, a)).batchUpdate(a.spreadsheetId, a.requests);
-      return { result: { ok: true }, asset: { assetType: "sheet", googleId: a.spreadsheetId, action: "modify", detail: { requests: a.requests.length } } };
+      return {
+        result: { ok: true },
+        asset: {
+          assetType: "sheet",
+          googleId: a.spreadsheetId,
+          action: "modify",
+          detail: { requests: a.requests.length },
+        },
+      };
     },
   },
   // ---- Slides ------------------------------------------------------------
@@ -970,7 +1537,10 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ title: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const p = await new SlidesService(env, acct(sub, a)).create(a.title);
-      return { result: p, asset: { assetType: "slide", googleId: p.presentationId, title: a.title, action: "create" } };
+      return {
+        result: p,
+        asset: { assetType: "slide", googleId: p.presentationId, title: a.title, action: "create" },
+      };
     },
   },
   {
@@ -979,16 +1549,35 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ presentationId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       const p = await new SlidesService(env, acct(sub, a)).get(a.presentationId);
-      return { result: p, asset: { assetType: "slide", googleId: a.presentationId, title: p.title, action: "read" } };
+      return {
+        result: p,
+        asset: { assetType: "slide", googleId: a.presentationId, title: p.title, action: "read" },
+      };
     },
   },
   {
     name: "slides_batch_update",
-    description: "Apply raw Slides API batchUpdate requests (createSlide, insertText, etc.) to a presentation.",
-    inputSchema: z.object({ presentationId: z.string(), requests: z.array(z.record(z.string(), z.any())), ...asUser }),
+    description:
+      "Apply raw Slides API batchUpdate requests (createSlide, insertText, etc.) to a presentation.",
+    inputSchema: z.object({
+      presentationId: z.string(),
+      requests: z.array(z.record(z.string(), z.any())),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const r = await new SlidesService(env, acct(sub, a)).batchUpdate(a.presentationId, a.requests);
-      return { result: r, asset: { assetType: "slide", googleId: a.presentationId, action: "modify", detail: { requests: a.requests.length } } };
+      const r = await new SlidesService(env, acct(sub, a)).batchUpdate(
+        a.presentationId,
+        a.requests,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "slide",
+          googleId: a.presentationId,
+          action: "modify",
+          detail: { requests: a.requests.length },
+        },
+      };
     },
   },
   {
@@ -997,25 +1586,62 @@ export const TOOLS: ToolDef[] = [
       "Create a Slides presentation FROM MARKDOWN (--- separates slides; '# '/'## ' = title; '- ' = bullets; '![](url)' = image). Returns the presentationId and a map of deterministic object IDs per slide (slideObjectId/titleId/bodyId/imageId) so you can then style each element with slides_batch_update. This is one way to build slides — slides_create + slides_batch_update remain for full control.",
     inputSchema: z.object({ title: z.string(), markdown: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const out = await new SlidesService(env, acct(sub, a)).createFromMarkdown(a.title, a.markdown);
-      return { result: out, asset: { assetType: "slide", googleId: out.presentationId, title: a.title, action: "create", detail: { slides: out.slides.length, fromMarkdown: true } } };
+      const out = await new SlidesService(env, acct(sub, a)).createFromMarkdown(
+        a.title,
+        a.markdown,
+      );
+      return {
+        result: out,
+        asset: {
+          assetType: "slide",
+          googleId: out.presentationId,
+          title: a.title,
+          action: "create",
+          detail: { slides: out.slides.length, fromMarkdown: true },
+        },
+      };
     },
   },
   {
     name: "slides_replace_all_text",
-    description: "Replace all occurrences of text across a presentation (great for filling a template). replacements = [{find, replace, matchCase?}].",
-    inputSchema: z.object({ presentationId: z.string(), replacements: z.array(z.object({ find: z.string(), replace: z.string(), matchCase: z.boolean().optional() })), ...asUser }),
+    description:
+      "Replace all occurrences of text across a presentation (great for filling a template). replacements = [{find, replace, matchCase?}].",
+    inputSchema: z.object({
+      presentationId: z.string(),
+      replacements: z.array(
+        z.object({ find: z.string(), replace: z.string(), matchCase: z.boolean().optional() }),
+      ),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const r = await new SlidesService(env, acct(sub, a)).replaceAllText(a.presentationId, a.replacements);
-      return { result: r, asset: { assetType: "slide", googleId: a.presentationId, action: "modify", detail: { replacements: a.replacements.length } } };
+      const r = await new SlidesService(env, acct(sub, a)).replaceAllText(
+        a.presentationId,
+        a.replacements,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "slide",
+          googleId: a.presentationId,
+          action: "modify",
+          detail: { replacements: a.replacements.length },
+        },
+      };
     },
   },
   {
     name: "slides_get_thumbnail",
-    description: "Get a rendered thumbnail image URL for a slide/page — lets you SEE a slide before styling it.",
+    description:
+      "Get a rendered thumbnail image URL for a slide/page — lets you SEE a slide before styling it.",
     inputSchema: z.object({ presentationId: z.string(), pageObjectId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new SlidesService(env, acct(sub, a)).getThumbnail(a.presentationId, a.pageObjectId), asset: { assetType: "slide", googleId: a.presentationId, action: "read" } };
+      return {
+        result: await new SlidesService(env, acct(sub, a)).getThumbnail(
+          a.presentationId,
+          a.pageObjectId,
+        ),
+        asset: { assetType: "slide", googleId: a.presentationId, action: "read" },
+      };
     },
   },
   {
@@ -1044,12 +1670,21 @@ export const TOOLS: ToolDef[] = [
         foregroundColorHex: a.foregroundColorHex,
         link: a.link,
       });
-      return { result: r, asset: { assetType: "slide", googleId: a.presentationId, action: "modify", detail: { objectId: a.objectId } } };
+      return {
+        result: r,
+        asset: {
+          assetType: "slide",
+          googleId: a.presentationId,
+          action: "modify",
+          detail: { objectId: a.objectId },
+        },
+      };
     },
   },
   {
     name: "slides_style_shape",
-    description: "Style a shape's fill/outline color (backgroundColorHex/outlineColorHex, both #RRGGBB) without hand-writing an updateShapeProperties batchUpdate request.",
+    description:
+      "Style a shape's fill/outline color (backgroundColorHex/outlineColorHex, both #RRGGBB) without hand-writing an updateShapeProperties batchUpdate request.",
     inputSchema: z.object({
       presentationId: z.string(),
       objectId: z.string(),
@@ -1058,26 +1693,57 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const r = await new SlidesService(env, acct(sub, a)).styleShape(a.presentationId, a.objectId, {
-        backgroundColorHex: a.backgroundColorHex,
-        outlineColorHex: a.outlineColorHex,
-      });
-      return { result: r, asset: { assetType: "slide", googleId: a.presentationId, action: "modify", detail: { objectId: a.objectId } } };
+      const r = await new SlidesService(env, acct(sub, a)).styleShape(
+        a.presentationId,
+        a.objectId,
+        {
+          backgroundColorHex: a.backgroundColorHex,
+          outlineColorHex: a.outlineColorHex,
+        },
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "slide",
+          googleId: a.presentationId,
+          action: "modify",
+          detail: { objectId: a.objectId },
+        },
+      };
     },
   },
   {
     name: "slides_set_slide_background",
-    description: "Set a slide's background to a solid color (colorHex #RRGGBB) without hand-writing an updatePageProperties batchUpdate request.",
-    inputSchema: z.object({ presentationId: z.string(), pageObjectId: z.string(), colorHex: z.string(), ...asUser }),
+    description:
+      "Set a slide's background to a solid color (colorHex #RRGGBB) without hand-writing an updatePageProperties batchUpdate request.",
+    inputSchema: z.object({
+      presentationId: z.string(),
+      pageObjectId: z.string(),
+      colorHex: z.string(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const r = await new SlidesService(env, acct(sub, a)).setSlideBackground(a.presentationId, a.pageObjectId, a.colorHex);
-      return { result: r, asset: { assetType: "slide", googleId: a.presentationId, action: "modify", detail: { pageObjectId: a.pageObjectId } } };
+      const r = await new SlidesService(env, acct(sub, a)).setSlideBackground(
+        a.presentationId,
+        a.pageObjectId,
+        a.colorHex,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "slide",
+          googleId: a.presentationId,
+          action: "modify",
+          detail: { pageObjectId: a.pageObjectId },
+        },
+      };
     },
   },
   // ---- Calendar ----------------------------------------------------------
   {
     name: "calendar_list_events",
-    description: "List calendar events (default calendar 'primary'). Optional time window (RFC3339) + text query.",
+    description:
+      "List calendar events (default calendar 'primary'). Optional time window (RFC3339) + text query.",
     inputSchema: z.object({
       calendarId: z.string().optional(),
       timeMin: z.string().optional(),
@@ -1087,12 +1753,15 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const out = await new CalendarService(env, acct(sub, a)).listEvents(a.calendarId ?? "primary", {
-        timeMin: a.timeMin,
-        timeMax: a.timeMax,
-        q: a.q,
-        maxResults: a.maxResults,
-      });
+      const out = await new CalendarService(env, acct(sub, a)).listEvents(
+        a.calendarId ?? "primary",
+        {
+          timeMin: a.timeMin,
+          timeMax: a.timeMax,
+          q: a.q,
+          maxResults: a.maxResults,
+        },
+      );
       return { result: out };
     },
   },
@@ -1101,8 +1770,20 @@ export const TOOLS: ToolDef[] = [
     description: "Get a single calendar event by id.",
     inputSchema: z.object({ calendarId: z.string().optional(), eventId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const e = await new CalendarService(env, acct(sub, a)).getEvent(a.calendarId ?? "primary", a.eventId);
-      return { result: e, asset: { assetType: "calendar", googleId: a.eventId, title: e.summary, url: e.htmlLink, action: "read" } };
+      const e = await new CalendarService(env, acct(sub, a)).getEvent(
+        a.calendarId ?? "primary",
+        a.eventId,
+      );
+      return {
+        result: e,
+        asset: {
+          assetType: "calendar",
+          googleId: a.eventId,
+          title: e.summary,
+          url: e.htmlLink,
+          action: "read",
+        },
+      };
     },
   },
   {
@@ -1119,22 +1800,43 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const e = await new CalendarService(env, acct(sub, a)).createEvent(a.calendarId ?? "primary", {
-        summary: a.summary,
-        description: a.description,
-        start: a.start,
-        end: a.end,
-        attendees: a.attendees,
-      });
-      return { result: e, asset: { assetType: "calendar", googleId: e.id, title: a.summary, url: e.htmlLink, action: "create" } };
+      const e = await new CalendarService(env, acct(sub, a)).createEvent(
+        a.calendarId ?? "primary",
+        {
+          summary: a.summary,
+          description: a.description,
+          start: a.start,
+          end: a.end,
+          attendees: a.attendees,
+        },
+      );
+      return {
+        result: e,
+        asset: {
+          assetType: "calendar",
+          googleId: e.id,
+          title: a.summary,
+          url: e.htmlLink,
+          action: "create",
+        },
+      };
     },
   },
   {
     name: "calendar_update_event",
     description: "Patch/update fields of an existing calendar event.",
-    inputSchema: z.object({ calendarId: z.string().optional(), eventId: z.string(), patch: z.record(z.string(), z.any()), ...asUser }),
+    inputSchema: z.object({
+      calendarId: z.string().optional(),
+      eventId: z.string(),
+      patch: z.record(z.string(), z.any()),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const e = await new CalendarService(env, acct(sub, a)).updateEvent(a.calendarId ?? "primary", a.eventId, a.patch);
+      const e = await new CalendarService(env, acct(sub, a)).updateEvent(
+        a.calendarId ?? "primary",
+        a.eventId,
+        a.patch,
+      );
       return { result: e, asset: { assetType: "calendar", googleId: a.eventId, action: "update" } };
     },
   },
@@ -1143,17 +1845,33 @@ export const TOOLS: ToolDef[] = [
     description: "Delete a calendar event.",
     inputSchema: z.object({ calendarId: z.string().optional(), eventId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const r = await new CalendarService(env, acct(sub, a)).deleteEvent(a.calendarId ?? "primary", a.eventId);
+      const r = await new CalendarService(env, acct(sub, a)).deleteEvent(
+        a.calendarId ?? "primary",
+        a.eventId,
+      );
       return { result: r, asset: { assetType: "calendar", googleId: a.eventId, action: "delete" } };
     },
   },
   {
     name: "calendar_quick_add",
-    description: "Create an event from natural-language text (e.g. 'Lunch with Sam tomorrow 12pm').",
+    description:
+      "Create an event from natural-language text (e.g. 'Lunch with Sam tomorrow 12pm').",
     inputSchema: z.object({ calendarId: z.string().optional(), text: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const e = await new CalendarService(env, acct(sub, a)).quickAdd(a.calendarId ?? "primary", a.text);
-      return { result: e, asset: { assetType: "calendar", googleId: e.id, title: e.summary, url: e.htmlLink, action: "create" } };
+      const e = await new CalendarService(env, acct(sub, a)).quickAdd(
+        a.calendarId ?? "primary",
+        a.text,
+      );
+      return {
+        result: e,
+        asset: {
+          assetType: "calendar",
+          googleId: e.id,
+          title: e.summary,
+          url: e.htmlLink,
+          action: "create",
+        },
+      };
     },
   },
   {
@@ -1190,8 +1908,13 @@ export const TOOLS: ToolDef[] = [
         result: {
           count: rows.length,
           records: rows.map((r) => ({
-            uuid: r.uuid, action: r.action, account: r.account, subject: r.subject,
-            recipients: r.recipients, threadId: r.threadId, messageId: r.messageId,
+            uuid: r.uuid,
+            action: r.action,
+            account: r.account,
+            subject: r.subject,
+            recipients: r.recipients,
+            threadId: r.threadId,
+            messageId: r.messageId,
             createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,
           })),
         },
@@ -1201,19 +1924,34 @@ export const TOOLS: ToolDef[] = [
   // ---- Drive descriptions + tags ----------------------------------------
   {
     name: "drive_get_description",
-    description: "Read a Drive file/folder's `description` field (free-text notes; also where tags live as #UPPER_SNAKE tokens).",
+    description:
+      "Read a Drive file/folder's `description` field (free-text notes; also where tags live as #UPPER_SNAKE tokens).",
     inputSchema: z.object({ fileId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: { fileId: a.fileId, description: await new DriveService(env, acct(sub, a)).getDescription(a.fileId) } };
+      return {
+        result: {
+          fileId: a.fileId,
+          description: await new DriveService(env, acct(sub, a)).getDescription(a.fileId),
+        },
+      };
     },
   },
   {
     name: "drive_set_description",
-    description: "Set (overwrite) a Drive file/folder's `description` field. To ADD tags without clobbering existing notes/tags, prefer drive_tag_apply.",
+    description:
+      "Set (overwrite) a Drive file/folder's `description` field. To ADD tags without clobbering existing notes/tags, prefer drive_tag_apply.",
     inputSchema: z.object({ fileId: z.string(), description: z.string(), ...asUser }),
     async run({ env, sub }, a) {
       await new DriveService(env, acct(sub, a)).setDescription(a.fileId, a.description);
-      return { result: { fileId: a.fileId, ok: true }, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { description: true } } };
+      return {
+        result: { fileId: a.fileId, ok: true },
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { description: true },
+        },
+      };
     },
   },
   {
@@ -1221,12 +1959,28 @@ export const TOOLS: ToolDef[] = [
     description:
       "List the existing Drive tag registry (D1). ALWAYS call this BEFORE creating a tag so you REUSE an existing one instead of making a near-duplicate. Filter by `category` (e.g. project/scenario/topic) and/or a `search` substring over tag name + description. Returns [{ id, name, description, category }]. Tag names are canonical UPPER_SNAKE.",
     inputSchema: z.object({
-      category: z.string().optional().describe("Filter to this category (project | scenario | topic | …)."),
-      search: z.string().optional().describe("Case-insensitive substring over tag name + description."),
+      category: z
+        .string()
+        .optional()
+        .describe("Filter to this category (project | scenario | topic | …)."),
+      search: z
+        .string()
+        .optional()
+        .describe("Case-insensitive substring over tag name + description."),
     }),
     async run({ env }, a) {
       const tags = await listTags(env, { category: a.category, search: a.search });
-      return { result: { count: tags.length, tags: tags.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category })) } };
+      return {
+        result: {
+          count: tags.length,
+          tags: tags.map((t) => ({
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            category: t.category,
+          })),
+        },
+      };
     },
   },
   {
@@ -1234,13 +1988,28 @@ export const TOOLS: ToolDef[] = [
     description:
       "Create a Drive tag in the registry (deduplicated: if the canonical UPPER_SNAKE name already exists, the existing tag is returned, never a duplicate). Check drive_tags_list first. `category` should be a coarse bucket (project | scenario | topic) so tags stay filterable. Returns { tag, created }.",
     inputSchema: z.object({
-      name: z.string().describe("Tag label; normalized to UPPER_SNAKE (e.g. 'Roof Warranty' → ROOF_WARRANTY)."),
-      description: z.string().optional().describe("What this tag means — helps future agents decide to reuse it."),
+      name: z
+        .string()
+        .describe("Tag label; normalized to UPPER_SNAKE (e.g. 'Roof Warranty' → ROOF_WARRANTY)."),
+      description: z
+        .string()
+        .optional()
+        .describe("What this tag means — helps future agents decide to reuse it."),
       category: z.string().optional().describe("project | scenario | topic (or your own bucket)."),
     }),
     async run({ env, sub }, a) {
-      const { tag, created } = await createTag(env, { name: a.name, description: a.description, category: a.category, sub });
-      return { result: { created, tag: { id: tag.id, name: tag.name, description: tag.description, category: tag.category } } };
+      const { tag, created } = await createTag(env, {
+        name: a.name,
+        description: a.description,
+        category: a.category,
+        sub,
+      });
+      return {
+        result: {
+          created,
+          tag: { id: tag.id, name: tag.name, description: tag.description, category: tag.category },
+        },
+      };
     },
   },
   {
@@ -1249,14 +2018,25 @@ export const TOOLS: ToolDef[] = [
       "Tag a Drive file or folder with one or more tags: adds the tag→drive mapping in D1 AND appends the `#UPPER_SNAKE` token(s) into the file's Drive description (so it's later findable via Drive full-text search too). Unknown tag names are auto-created (canonical + deduped) — but prefer creating/checking via drive_tags_list/drive_tag_create first. Idempotent. Returns the applied canonical names.",
     inputSchema: z.object({
       fileId: z.string().describe("Drive file OR folder id."),
-      tags: z.array(z.string()).min(1).describe("Tag names (any casing; normalized to UPPER_SNAKE)."),
+      tags: z
+        .array(z.string())
+        .min(1)
+        .describe("Tag names (any casing; normalized to UPPER_SNAKE)."),
       driveType: z.enum(["file", "folder"]).optional(),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const drive = new DriveService(env, acct(sub, a));
       const out = await applyTags(env, drive, a.fileId, a.tags, { driveType: a.driveType, sub });
-      return { result: out, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { tags: out.applied } } };
+      return {
+        result: out,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { tags: out.applied },
+        },
+      };
     },
   },
   {
@@ -1277,16 +2057,28 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_list",
     description: "List Gmail messages matching an optional query.",
-    inputSchema: z.object({ query: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional(), ...asUser }),
+    inputSchema: z.object({
+      query: z.string().optional(),
+      maxResults: z.number().int().min(1).max(100).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      return { result: await new GmailService(env, acct(sub, a)).listMessages(a.query, a.maxResults) };
+      return {
+        result: await new GmailService(env, acct(sub, a)).listMessages(a.query, a.maxResults),
+      };
     },
   },
   {
     name: "gmail_create_draft",
     description:
       "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
-    inputSchema: z.object({ to: recipients, subject: z.string(), body: z.string().optional(), ...richBody, ...asUser }),
+    inputSchema: z.object({
+      to: recipients,
+      subject: z.string(),
+      body: z.string().optional(),
+      ...richBody,
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const to = addrList(a.to)!;
       const d = await new GmailService(env, acct(sub, a)).createDraft(to, a.subject, a.body ?? "", {
@@ -1298,7 +2090,16 @@ export const TOOLS: ToolDef[] = [
         driveIds: a.driveIds,
         blobs: a.blobs,
       });
-      return { result: d, asset: { assetType: "gmail", googleId: d.id, title: a.subject, action: "create", detail: { to, draft: true } } };
+      return {
+        result: d,
+        asset: {
+          assetType: "gmail",
+          googleId: d.id,
+          title: a.subject,
+          action: "create",
+          detail: { to, draft: true },
+        },
+      };
     },
   },
   {
@@ -1314,18 +2115,30 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const d = await new GmailService(env, acct(sub, a)).createReplyDraft(a.messageId, a.body ?? "", {
-        to: a.to,
-        replyAll: a.replyAll,
-        cc: addrList(a.cc),
-        bcc: addrList(a.bcc),
-        html: a.html,
-        markdown: a.markdown,
-        attachments: a.attachments,
-        driveIds: a.driveIds,
-        blobs: a.blobs,
-      });
-      return { result: d, asset: { assetType: "gmail", googleId: d.id, action: "create", detail: { replyTo: a.messageId, draft: true } } };
+      const d = await new GmailService(env, acct(sub, a)).createReplyDraft(
+        a.messageId,
+        a.body ?? "",
+        {
+          to: a.to,
+          replyAll: a.replyAll,
+          cc: addrList(a.cc),
+          bcc: addrList(a.bcc),
+          html: a.html,
+          markdown: a.markdown,
+          attachments: a.attachments,
+          driveIds: a.driveIds,
+          blobs: a.blobs,
+        },
+      );
+      return {
+        result: d,
+        asset: {
+          assetType: "gmail",
+          googleId: d.id,
+          action: "create",
+          detail: { replyTo: a.messageId, draft: true },
+        },
+      };
     },
   },
   {
@@ -1339,24 +2152,36 @@ export const TOOLS: ToolDef[] = [
       replyToMessageId: z
         .string()
         .optional()
-        .describe("Reply to this message id: sets In-Reply-To/References and keeps the reply in the original thread."),
-      threadId: z.string().optional().describe("Explicit Gmail threadId to attach the message to (overrides replyToMessageId's thread)."),
+        .describe(
+          "Reply to this message id: sets In-Reply-To/References and keeps the reply in the original thread.",
+        ),
+      threadId: z
+        .string()
+        .optional()
+        .describe(
+          "Explicit Gmail threadId to attach the message to (overrides replyToMessageId's thread).",
+        ),
       ...richBody,
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const sent = await new GmailService(env, acct(sub, a)).send(addrList(a.to)!, a.subject, a.body ?? "", {
-        from: a.as_user,
-        replyToMessageId: a.replyToMessageId,
-        threadId: a.threadId,
-        cc: addrList(a.cc),
-        bcc: addrList(a.bcc),
-        html: a.html,
-        markdown: a.markdown,
-        attachments: a.attachments,
-        driveIds: a.driveIds,
-        blobs: a.blobs,
-      });
+      const sent = await new GmailService(env, acct(sub, a)).send(
+        addrList(a.to)!,
+        a.subject,
+        a.body ?? "",
+        {
+          from: a.as_user,
+          replyToMessageId: a.replyToMessageId,
+          threadId: a.threadId,
+          cc: addrList(a.cc),
+          bcc: addrList(a.bcc),
+          html: a.html,
+          markdown: a.markdown,
+          attachments: a.attachments,
+          driveIds: a.driveIds,
+          blobs: a.blobs,
+        },
+      );
       return {
         result: sent,
         asset: {
@@ -1364,7 +2189,11 @@ export const TOOLS: ToolDef[] = [
           googleId: sent.id,
           title: a.subject,
           action: "create",
-          detail: { to: addrList(a.to), ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}), ...(sent.threadId ? { threadId: sent.threadId } : {}) },
+          detail: {
+            to: addrList(a.to),
+            ...(a.replyToMessageId ? { replyTo: a.replyToMessageId } : {}),
+            ...(sent.threadId ? { threadId: sent.threadId } : {}),
+          },
         },
       };
     },
@@ -1391,7 +2220,14 @@ export const TOOLS: ToolDef[] = [
         .values({ draftId: a.draftId, accountRef: ref, accountEmail: email, cron: a.cron })
         .returning({ id: scheduledSends.id });
       return {
-        result: { id: row.id, draftId: a.draftId, cron: a.cron, account: email, timezone: "UTC", status: "scheduled" },
+        result: {
+          id: row.id,
+          draftId: a.draftId,
+          cron: a.cron,
+          account: email,
+          timezone: "UTC",
+          status: "scheduled",
+        },
       };
     },
   },
@@ -1403,14 +2239,20 @@ export const TOOLS: ToolDef[] = [
       to: recipients,
       subject: z.string(),
       body: z.string().optional(),
-      send_at: z.string().describe("Absolute send time as ISO-8601 UTC (e.g. '2026-08-18T16:00:00Z'). Resolve relative phrases yourself first."),
+      send_at: z
+        .string()
+        .describe(
+          "Absolute send time as ISO-8601 UTC (e.g. '2026-08-18T16:00:00Z'). Resolve relative phrases yourself first.",
+        ),
       ...richBody,
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const when = new Date(a.send_at);
       if (Number.isNaN(when.getTime())) {
-        throw new Error(`Invalid send_at "${a.send_at}". Pass an absolute ISO-8601 UTC instant, e.g. "2026-08-18T16:00:00Z".`);
+        throw new Error(
+          `Invalid send_at "${a.send_at}". Pass an absolute ISO-8601 UTC instant, e.g. "2026-08-18T16:00:00Z".`,
+        );
       }
       const ref = acct(sub, a);
       const email = await accountEmailFor(env, ref);
@@ -1431,7 +2273,14 @@ export const TOOLS: ToolDef[] = [
         .values({ accountRef: ref, accountEmail: email, spec, sendAt: when, status: "scheduled" })
         .returning({ id: scheduledEmails.id });
       return {
-        result: { id: row.id, to: addrList(a.to), subject: a.subject, sendAt: when.toISOString(), account: email, status: "scheduled" },
+        result: {
+          id: row.id,
+          to: addrList(a.to),
+          subject: a.subject,
+          sendAt: when.toISOString(),
+          account: email,
+          status: "scheduled",
+        },
       };
     },
   },
@@ -1440,12 +2289,20 @@ export const TOOLS: ToolDef[] = [
     description:
       "List queued scheduled emails (schedule_email), newest send-time first. Shows id, recipient, subject, send time, status (scheduled | sending | sent | error | canceled), and any last error.",
     inputSchema: z.object({
-      status: z.enum(["scheduled", "sending", "sent", "error", "canceled"]).optional().describe("Filter to one status."),
+      status: z
+        .enum(["scheduled", "sending", "sent", "error", "canceled"])
+        .optional()
+        .describe("Filter to one status."),
     }),
     async run({ env }, a) {
       const db = getDb(env);
       const rows = a.status
-        ? await db.select().from(scheduledEmails).where(eq(scheduledEmails.status, a.status)).orderBy(desc(scheduledEmails.sendAt)).limit(200)
+        ? await db
+            .select()
+            .from(scheduledEmails)
+            .where(eq(scheduledEmails.status, a.status))
+            .orderBy(desc(scheduledEmails.sendAt))
+            .limit(200)
         : await db.select().from(scheduledEmails).orderBy(desc(scheduledEmails.sendAt)).limit(200);
       return {
         result: {
@@ -1492,10 +2349,20 @@ export const TOOLS: ToolDef[] = [
     }),
     async run({ env, sub }, a) {
       const composed = composeBody({ text: a.body, html: a.html, markdown: a.markdown });
-      const html = composed.html ?? `<pre style="font-family:ui-monospace,monospace;white-space:pre-wrap;">${composed.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string)}</pre>`;
+      const html =
+        composed.html ??
+        `<pre style="font-family:ui-monospace,monospace;white-space:pre-wrap;">${composed.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string)}</pre>`;
       const id = crypto.randomUUID();
       const account = await accountEmailFor(env, acct(sub, a)).catch(() => undefined);
-      await getDb(env).insert(emailPreviews).values({ id, subject: a.subject ?? null, toAddr: a.to ?? null, html, account: account ?? null });
+      await getDb(env)
+        .insert(emailPreviews)
+        .values({
+          id,
+          subject: a.subject ?? null,
+          toAddr: a.to ?? null,
+          html,
+          account: account ?? null,
+        });
       const base = (env as { PUBLIC_BASE_URL?: string }).PUBLIC_BASE_URL;
       const path = `/gws/email-preview/${id}`;
       return { result: { id, path, url: base ? `${base}${path}` : path } };
@@ -1514,7 +2381,13 @@ export const TOOLS: ToolDef[] = [
         : await db.select().from(emailTemplates);
       return {
         result: {
-          templates: rows.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category, isBuiltin: t.isBuiltin })),
+          templates: rows.map((t) => ({
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            category: t.category,
+            isBuiltin: t.isBuiltin,
+          })),
         },
       };
     },
@@ -1526,9 +2399,25 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ id: z.string() }),
     async run({ env }, a) {
       await seedBuiltinTemplates(env);
-      const [t] = await getDb(env).select().from(emailTemplates).where(eq(emailTemplates.id, a.id)).limit(1);
-      if (!t) throw new Error(`Template ${a.id} not found. Use email_templates_list to see available ids.`);
-      return { result: { id: t.id, name: t.name, description: t.description, category: t.category, html: t.html, isBuiltin: t.isBuiltin } };
+      const [t] = await getDb(env)
+        .select()
+        .from(emailTemplates)
+        .where(eq(emailTemplates.id, a.id))
+        .limit(1);
+      if (!t)
+        throw new Error(
+          `Template ${a.id} not found. Use email_templates_list to see available ids.`,
+        );
+      return {
+        result: {
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          category: t.category,
+          html: t.html,
+          isBuiltin: t.isBuiltin,
+        },
+      };
     },
   },
   {
@@ -1545,7 +2434,15 @@ export const TOOLS: ToolDef[] = [
       const id = crypto.randomUUID();
       await getDb(env)
         .insert(emailTemplates)
-        .values({ id, name: a.name, description: a.description ?? null, category: a.category ?? null, html: inlineGmailStyles(a.html), isBuiltin: false, createdBySub: sub });
+        .values({
+          id,
+          name: a.name,
+          description: a.description ?? null,
+          category: a.category ?? null,
+          html: inlineGmailStyles(a.html),
+          isBuiltin: false,
+          createdBySub: sub,
+        });
       return { result: { id, name: a.name, status: "added" } };
     },
   },
@@ -1555,7 +2452,12 @@ export const TOOLS: ToolDef[] = [
       "Upload a message's (non-junk) attachments to the acting account's Google Drive and extract their text. Defaults to a folder named after the thread subject under the per-account 'MCP Email Threads' folder (created on first use); pass parentId to target a specific folder instead. Returns each attachment as { filename, driveId, driveUrl, mimetype, size, sha256_hash, doc_text }.",
     inputSchema: z.object({
       messageId: z.string(),
-      parentId: z.string().optional().describe("Target Drive folder id. Omit to use the thread-subject folder under 'MCP Email Threads'."),
+      parentId: z
+        .string()
+        .optional()
+        .describe(
+          "Target Drive folder id. Omit to use the thread-subject folder under 'MCP Email Threads'.",
+        ),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -1564,17 +2466,28 @@ export const TOOLS: ToolDef[] = [
       const raw = await gmail.getRawMessage(a.messageId);
       const payload = (raw as { payload?: unknown }).payload;
       const subject = subjectFromPayload(payload) ?? "(no subject)";
-      const { folderId, attachments } = await uploadMessageAttachments(env, account, a.as_user ?? sub, {
-        messageId: a.messageId,
-        payload,
-        subject,
-        parentId: a.parentId,
-        gmail,
-      });
+      const { folderId, attachments } = await uploadMessageAttachments(
+        env,
+        account,
+        a.as_user ?? sub,
+        {
+          messageId: a.messageId,
+          payload,
+          subject,
+          parentId: a.parentId,
+          gmail,
+        },
+      );
       return {
         result: { folderId, attachments },
         asset: folderId
-          ? { assetType: "drive", googleId: folderId, title: subject, action: "modify", detail: { attachments: attachments.length } }
+          ? {
+              assetType: "drive",
+              googleId: folderId,
+              title: subject,
+              action: "modify",
+              detail: { attachments: attachments.length },
+            }
           : undefined,
       };
     },
@@ -1585,7 +2498,10 @@ export const TOOLS: ToolDef[] = [
       "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes).",
     inputSchema: z.object({
       id: z.string(),
-      bodyFormat: z.enum(["text", "html", "rfc"]).optional().describe("Body representation to return. Default 'text' (most efficient)."),
+      bodyFormat: z
+        .enum(["text", "html", "rfc"])
+        .optional()
+        .describe("Body representation to return. Default 'text' (most efficient)."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -1616,7 +2532,11 @@ export const TOOLS: ToolDef[] = [
     name: "gmail_get_thread",
     description:
       "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. Every message carries a `body` (decoded plain text), a `urls` array of { label, href } extracted from that message, and an attachments[] manifest of { filename, mimeType, size, attachmentId }. By default each message's attachments are ALSO uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and the manifest is enriched with { driveId, doc_text, sha256_hash }. Pass includeAttachments:false to skip all Drive writes and return the metadata-only manifest. For a single message in a specific body format (html/rfc), use gmail_get_message.",
-    inputSchema: z.object({ threadId: z.string(), includeAttachments: z.boolean().optional(), ...asUser }),
+    inputSchema: z.object({
+      threadId: z.string(),
+      includeAttachments: z.boolean().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const gmail = new GmailService(env, account);
@@ -1630,12 +2550,17 @@ export const TOOLS: ToolDef[] = [
         // Still surface attachment metadata (count/filename/mimeType/size) for
         // every message — cheap payload walk, no Drive writes — so the model is
         // never blind to attachments just because byte-fetching was skipped.
-        const messages = thread.messages.map((m) => ({ ...m, ...bodyOf(m), attachments: attachmentManifest(m.payload) }));
+        const messages = thread.messages.map((m) => ({
+          ...m,
+          ...bodyOf(m),
+          attachments: attachmentManifest(m.payload),
+        }));
         return { result: { ...thread, messages } };
       }
 
       const accountKey = a.as_user ?? sub;
-      const subject = thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
+      const subject =
+        thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
       // Resolve the thread folder once (on the first message that has attachments)
       // and reuse it for the rest, so the whole thread lands in one folder.
       let folderId: string | undefined;
@@ -1661,13 +2586,31 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({
       threadId: z.string().optional().describe("Print every message in this thread."),
       messageId: z.string().optional().describe("Print just this one message."),
-      messageIds: z.array(z.string()).optional().describe("Print these specific messages (e.g. a subset of a thread), in order."),
-      filename: z.string().optional().describe("Suggested download filename (defaults to the subject)."),
-      via: z.enum(["render", "appscript"]).optional().describe("'render' (default): Browser Rendering → worker pdf_url (supports highlights). 'appscript': native Apps Script → Drive URL (requires appsscript_install_gmail_pdf)."),
-      highlights: z
-        .array(z.object({ term: z.string().min(1), color: z.string().describe("Hex color, e.g. '#ffe600' or 'ffe600'.") }))
+      messageIds: z
+        .array(z.string())
         .optional()
-        .describe("render mode only: highlight these terms in the message bodies, each with its own hex color. Case-insensitive; only text is highlighted (never links/markup)."),
+        .describe("Print these specific messages (e.g. a subset of a thread), in order."),
+      filename: z
+        .string()
+        .optional()
+        .describe("Suggested download filename (defaults to the subject)."),
+      via: z
+        .enum(["render", "appscript"])
+        .optional()
+        .describe(
+          "'render' (default): Browser Rendering → worker pdf_url (supports highlights). 'appscript': native Apps Script → Drive URL (requires appsscript_install_gmail_pdf).",
+        ),
+      highlights: z
+        .array(
+          z.object({
+            term: z.string().min(1),
+            color: z.string().describe("Hex color, e.g. '#ffe600' or 'ffe600'."),
+          }),
+        )
+        .optional()
+        .describe(
+          "render mode only: highlight these terms in the message bodies, each with its own hex color. Case-insensitive; only text is highlighted (never links/markup).",
+        ),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -1685,15 +2628,36 @@ export const TOOLS: ToolDef[] = [
         }
         const messageIds = a.messageIds ?? (a.messageId ? [a.messageId] : []);
         const params = [a.threadId ?? null, messageIds, { filename: a.filename }];
-        const r = (await new AppsScriptService(env, ref).run(gas.scriptId, gas.entry, params, false)) as any;
+        const r = (await new AppsScriptService(env, ref).run(
+          gas.scriptId,
+          gas.entry,
+          params,
+          false,
+        )) as any;
         const out = r?.response?.result;
         if (!out?.url) {
-          const err = r?.error ? JSON.stringify(r.error.details ?? r.error) : "no result — is email-to-pdf deployed as an API Executable for this account?";
+          const err = r?.error
+            ? JSON.stringify(r.error.details ?? r.error)
+            : "no result — is email-to-pdf deployed as an API Executable for this account?";
           throw new Error(`Apps Script export failed: ${err}`);
         }
         return {
-          result: { via: "appscript", drive_url: out.url, fileId: out.fileId, filename: out.name, subject: out.subject, messages: out.messages },
-          asset: { assetType: "drive", googleId: out.fileId, title: out.name, url: out.url, action: "create", detail: { emailPdf: true } },
+          result: {
+            via: "appscript",
+            drive_url: out.url,
+            fileId: out.fileId,
+            filename: out.name,
+            subject: out.subject,
+            messages: out.messages,
+          },
+          asset: {
+            assetType: "drive",
+            googleId: out.fileId,
+            title: out.name,
+            url: out.url,
+            action: "create",
+            detail: { emailPdf: true },
+          },
         };
       }
 
@@ -1714,10 +2678,18 @@ export const TOOLS: ToolDef[] = [
 
       const messages = raws.map(toRenderMessage);
       const subject = messages.find((m) => m.subject)?.subject ?? "(no subject)";
-      const pdf = await renderHtmlToPdf(env, buildThreadHtml(subject, messages, a.highlights ?? []));
-      if (!pdf) throw new Error("PDF rendering failed (Browser Rendering not configured or unavailable).");
+      const pdf = await renderHtmlToPdf(
+        env,
+        buildThreadHtml(subject, messages, a.highlights ?? []),
+      );
+      if (!pdf)
+        throw new Error("PDF rendering failed (Browser Rendering not configured or unavailable).");
 
-      const safe = (a.filename ?? subject).replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "email";
+      const safe =
+        (a.filename ?? subject)
+          .replace(/[^\w.-]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 80) || "email";
       const filename = safe.toLowerCase().endsWith(".pdf") ? safe : `${safe}.pdf`;
       const pdfUrl = await putPreview(env, `${crypto.randomUUID()}.pdf`, pdf, "application/pdf");
       return { result: { pdf_url: pdfUrl, filename, subject, messages: messages.length } };
@@ -1741,10 +2713,20 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "gmail_modify_labels",
-    description: "Add and/or remove labels on a Gmail message (e.g. archive by removing INBOX, mark read by removing UNREAD).",
-    inputSchema: z.object({ id: z.string(), addLabelIds: z.array(z.string()).optional(), removeLabelIds: z.array(z.string()).optional(), ...asUser }),
+    description:
+      "Add and/or remove labels on a Gmail message (e.g. archive by removing INBOX, mark read by removing UNREAD).",
+    inputSchema: z.object({
+      id: z.string(),
+      addLabelIds: z.array(z.string()).optional(),
+      removeLabelIds: z.array(z.string()).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const m = await new GmailService(env, acct(sub, a)).modifyMessageLabels(a.id, a.addLabelIds ?? [], a.removeLabelIds ?? []);
+      const m = await new GmailService(env, acct(sub, a)).modifyMessageLabels(
+        a.id,
+        a.addLabelIds ?? [],
+        a.removeLabelIds ?? [],
+      );
       return { result: m, asset: { assetType: "gmail", googleId: a.id, action: "modify" } };
     },
   },
@@ -1764,7 +2746,10 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ title: z.string(), parentId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const p = await new AppsScriptService(env, acct(sub, a)).createProject(a.title, a.parentId);
-      return { result: p, asset: { assetType: "script", googleId: p.scriptId, title: a.title, action: "create" } };
+      return {
+        result: p,
+        asset: { assetType: "script", googleId: p.scriptId, title: a.title, action: "create" },
+      };
     },
   },
   {
@@ -1778,7 +2763,10 @@ export const TOOLS: ToolDef[] = [
         .object({
           title: z.string(),
           menu: z
-            .object({ name: z.string().optional(), items: z.array(z.object({ label: z.string(), fn: z.string() })) })
+            .object({
+              name: z.string().optional(),
+              items: z.array(z.object({ label: z.string(), fn: z.string() })),
+            })
             .optional(),
           questions: z
             .object({
@@ -1795,9 +2783,13 @@ export const TOOLS: ToolDef[] = [
               ),
             })
             .optional(),
-          webapp: z.object({ title: z.string().optional(), intro: z.string().optional() }).optional(),
+          webapp: z
+            .object({ title: z.string().optional(), intro: z.string().optional() })
+            .optional(),
         })
-        .describe("Per-doc config: project title, custom menu, questions schema, and/or web-app settings."),
+        .describe(
+          "Per-doc config: project title, custom menu, questions schema, and/or web-app settings.",
+        ),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -1807,7 +2799,12 @@ export const TOOLS: ToolDef[] = [
       await svc.updateContent(project.scriptId, files);
       const url = `https://script.google.com/d/${project.scriptId}/edit`;
       return {
-        result: { scriptId: project.scriptId, url, template: a.template, files: files.map((f) => f.name) },
+        result: {
+          scriptId: project.scriptId,
+          url,
+          template: a.template,
+          files: files.map((f) => f.name),
+        },
         asset: {
           assetType: "script",
           googleId: project.scriptId,
@@ -1823,17 +2820,32 @@ export const TOOLS: ToolDef[] = [
     description: "Get the files (code + manifest) of an Apps Script project.",
     inputSchema: z.object({ scriptId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new AppsScriptService(env, acct(sub, a)).getContent(a.scriptId), asset: { assetType: "script", googleId: a.scriptId, action: "read" } };
+      return {
+        result: await new AppsScriptService(env, acct(sub, a)).getContent(a.scriptId),
+        asset: { assetType: "script", googleId: a.scriptId, action: "read" },
+      };
     },
   },
   {
     name: "appsscript_update_content",
     description:
       "Push code to an Apps Script project (overwrites all files). `files` is the Apps Script files array (an appsscript manifest JSON file + one or more SERVER_JS files).",
-    inputSchema: z.object({ scriptId: z.string(), files: z.array(z.record(z.string(), z.any())), ...asUser }),
+    inputSchema: z.object({
+      scriptId: z.string(),
+      files: z.array(z.record(z.string(), z.any())),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const r = await new AppsScriptService(env, acct(sub, a)).updateContent(a.scriptId, a.files);
-      return { result: r, asset: { assetType: "script", googleId: a.scriptId, action: "update", detail: { files: a.files.length } } };
+      return {
+        result: r,
+        asset: {
+          assetType: "script",
+          googleId: a.scriptId,
+          action: "update",
+          detail: { files: a.files.length },
+        },
+      };
     },
   },
   {
@@ -1848,8 +2860,21 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const r = await new AppsScriptService(env, acct(sub, a)).run(a.scriptId, a.functionName, a.parameters, a.devMode ?? true);
-      return { result: r, asset: { assetType: "script", googleId: a.scriptId, action: "modify", detail: { function: a.functionName } } };
+      const r = await new AppsScriptService(env, acct(sub, a)).run(
+        a.scriptId,
+        a.functionName,
+        a.parameters,
+        a.devMode ?? true,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "script",
+          googleId: a.scriptId,
+          action: "modify",
+          detail: { function: a.functionName },
+        },
+      };
     },
   },
   {
@@ -1858,12 +2883,24 @@ export const TOOLS: ToolDef[] = [
       "Register the deployed Apps Script scriptId for a GAS project in a given account, so the worker can run it via scripts.run (e.g. after core-template-gas CI deploys 'email-to-pdf' to each account, register the two scriptIds here). Stored in global_config as gas_script:<project>:<account>; overrides the seeded default. Then gmail_to_pdf via:'appscript' works for that account.",
     inputSchema: z.object({
       project: z.string().describe("GAS project name, e.g. 'email-to-pdf'."),
-      account: z.string().email().describe("Account email the scriptId belongs to (e.g. jmbish04@gmail.com)."),
-      scriptId: z.string().describe("The deployed Apps Script scriptId (API Executable) for that account."),
+      account: z
+        .string()
+        .email()
+        .describe("Account email the scriptId belongs to (e.g. jmbish04@gmail.com)."),
+      scriptId: z
+        .string()
+        .describe("The deployed Apps Script scriptId (API Executable) for that account."),
     }),
     async run({ env }, a) {
       await setGasScript(env, a.project, a.account, a.scriptId);
-      return { result: { project: a.project, account: a.account.toLowerCase(), scriptId: a.scriptId, ok: true } };
+      return {
+        result: {
+          project: a.project,
+          account: a.account.toLowerCase(),
+          scriptId: a.scriptId,
+          ok: true,
+        },
+      };
     },
   },
   {
@@ -1878,9 +2915,20 @@ export const TOOLS: ToolDef[] = [
   {
     name: "comments_list",
     description: "List comments on a Drive file (with replies). Includes resolved/anchored info.",
-    inputSchema: z.object({ fileId: z.string(), includeDeleted: z.boolean().optional(), pageSize: z.number().int().min(1).max(100).optional(), ...asUser }),
+    inputSchema: z.object({
+      fileId: z.string(),
+      includeDeleted: z.boolean().optional(),
+      pageSize: z.number().int().min(1).max(100).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      return { result: await new CommentsService(env, acct(sub, a)).list(a.fileId, { includeDeleted: a.includeDeleted, pageSize: a.pageSize }), asset: { assetType: "drive", googleId: a.fileId, action: "read" } };
+      return {
+        result: await new CommentsService(env, acct(sub, a)).list(a.fileId, {
+          includeDeleted: a.includeDeleted,
+          pageSize: a.pageSize,
+        }),
+        asset: { assetType: "drive", googleId: a.fileId, action: "read" },
+      };
     },
   },
   {
@@ -1889,7 +2937,10 @@ export const TOOLS: ToolDef[] = [
       "Find comments/replies on a file that mention a tag (e.g. '#colby') so an agent can pick up work it was tagged in. Case-insensitive substring match on comment content.",
     inputSchema: z.object({ fileId: z.string(), tag: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new CommentsService(env, acct(sub, a)).findMentions(a.fileId, a.tag), asset: { assetType: "drive", googleId: a.fileId, action: "read" } };
+      return {
+        result: await new CommentsService(env, acct(sub, a)).findMentions(a.fileId, a.tag),
+        asset: { assetType: "drive", googleId: a.fileId, action: "read" },
+      };
     },
   },
   {
@@ -1902,29 +2953,77 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "comments_create",
-    description: "Create a comment on a Drive file. Optional `anchor` (JSON string) to anchor it to a region; omit for an unanchored comment.",
-    inputSchema: z.object({ fileId: z.string(), content: z.string(), anchor: z.string().optional(), ...asUser }),
+    description:
+      "Create a comment on a Drive file. Optional `anchor` (JSON string) to anchor it to a region; omit for an unanchored comment.",
+    inputSchema: z.object({
+      fileId: z.string(),
+      content: z.string(),
+      anchor: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const c = await new CommentsService(env, acct(sub, a)).create(a.fileId, a.content, a.anchor);
-      return { result: c, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { commentId: c.id } } };
+      return {
+        result: c,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { commentId: c.id },
+        },
+      };
     },
   },
   {
     name: "comments_reply",
     description: "Reply to a comment on a Drive file.",
-    inputSchema: z.object({ fileId: z.string(), commentId: z.string(), content: z.string(), ...asUser }),
+    inputSchema: z.object({
+      fileId: z.string(),
+      commentId: z.string(),
+      content: z.string(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const r = await new CommentsService(env, acct(sub, a)).reply(a.fileId, a.commentId, a.content);
-      return { result: r, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { commentId: a.commentId, reply: true } } };
+      const r = await new CommentsService(env, acct(sub, a)).reply(
+        a.fileId,
+        a.commentId,
+        a.content,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { commentId: a.commentId, reply: true },
+        },
+      };
     },
   },
   {
     name: "comments_resolve",
     description: "Resolve (close) a comment on a Drive file by posting a resolving reply.",
-    inputSchema: z.object({ fileId: z.string(), commentId: z.string(), content: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      fileId: z.string(),
+      commentId: z.string(),
+      content: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const r = await new CommentsService(env, acct(sub, a)).resolve(a.fileId, a.commentId, a.content);
-      return { result: r, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { commentId: a.commentId, resolved: true } } };
+      const r = await new CommentsService(env, acct(sub, a)).resolve(
+        a.fileId,
+        a.commentId,
+        a.content,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { commentId: a.commentId, resolved: true },
+        },
+      };
     },
   },
   {
@@ -1954,13 +3053,22 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const marker = collabConfig(env).standbyMarker;
       const r = await new CommentsService(env, acct(sub, a)).reply(a.fileId, a.commentId, marker);
-      return { result: r, asset: { assetType: "drive", googleId: a.fileId, action: "modify", detail: { commentId: a.commentId, claimed: true } } };
+      return {
+        result: r,
+        asset: {
+          assetType: "drive",
+          googleId: a.fileId,
+          action: "modify",
+          detail: { commentId: a.commentId, claimed: true },
+        },
+      };
     },
   },
   // ---- Drive changes (classic watch/list) --------------------------------
   {
     name: "changes_get_start_page_token",
-    description: "Get a Drive changes start page token — the cursor to begin tracking changes from now.",
+    description:
+      "Get a Drive changes start page token — the cursor to begin tracking changes from now.",
     inputSchema: z.object({ driveId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       return { result: await new ChangesService(env, acct(sub, a)).getStartPageToken(a.driveId) };
@@ -1968,7 +3076,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "changes_list",
-    description: "List Drive changes since a page token. Returns changes + a newStartPageToken to persist for the next poll.",
+    description:
+      "List Drive changes since a page token. Returns changes + a newStartPageToken to persist for the next poll.",
     inputSchema: z.object({
       pageToken: z.string(),
       includeRemoved: z.boolean().optional(),
@@ -2003,7 +3112,14 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      return { result: await new ChangesService(env, acct(sub, a)).watch(a.pageToken, { id: a.channelId, address: a.address, token: a.token, expiration: a.expiration }) };
+      return {
+        result: await new ChangesService(env, acct(sub, a)).watch(a.pageToken, {
+          id: a.channelId,
+          address: a.address,
+          token: a.token,
+          expiration: a.expiration,
+        }),
+      };
     },
   },
   {
@@ -2011,7 +3127,9 @@ export const TOOLS: ToolDef[] = [
     description: "Stop a Drive changes push channel (from changes_watch).",
     inputSchema: z.object({ channelId: z.string(), resourceId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new ChangesService(env, acct(sub, a)).stop(a.channelId, a.resourceId) };
+      return {
+        result: await new ChangesService(env, acct(sub, a)).stop(a.channelId, a.resourceId),
+      };
     },
   },
   // ---- Workspace Events API (fine-grained subscriptions) -----------------
@@ -2028,15 +3146,25 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      return { result: await new WorkspaceEventsService(env, acct(sub, a)).createSubscription(a.targetResource, a.eventTypes, a.pubsubTopic, { includeResource: a.includeResource, includeDescendants: a.includeDescendants }) };
+      return {
+        result: await new WorkspaceEventsService(env, acct(sub, a)).createSubscription(
+          a.targetResource,
+          a.eventTypes,
+          a.pubsubTopic,
+          { includeResource: a.includeResource, includeDescendants: a.includeDescendants },
+        ),
+      };
     },
   },
   {
     name: "events_list_subscriptions",
-    description: "List Workspace Events subscriptions. `filter` is required, e.g. event_types:\"google.workspace.drive.file.v3.contentChanged\".",
+    description:
+      'List Workspace Events subscriptions. `filter` is required, e.g. event_types:"google.workspace.drive.file.v3.contentChanged".',
     inputSchema: z.object({ filter: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new WorkspaceEventsService(env, acct(sub, a)).listSubscriptions(a.filter) };
+      return {
+        result: await new WorkspaceEventsService(env, acct(sub, a)).listSubscriptions(a.filter),
+      };
     },
   },
   {
@@ -2044,7 +3172,9 @@ export const TOOLS: ToolDef[] = [
     description: "Get a Workspace Events subscription by resource name (subscriptions/ID).",
     inputSchema: z.object({ name: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new WorkspaceEventsService(env, acct(sub, a)).getSubscription(a.name) };
+      return {
+        result: await new WorkspaceEventsService(env, acct(sub, a)).getSubscription(a.name),
+      };
     },
   },
   {
@@ -2052,14 +3182,20 @@ export const TOOLS: ToolDef[] = [
     description: "Delete a Workspace Events subscription by resource name (subscriptions/ID).",
     inputSchema: z.object({ name: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new WorkspaceEventsService(env, acct(sub, a)).deleteSubscription(a.name) };
+      return {
+        result: await new WorkspaceEventsService(env, acct(sub, a)).deleteSubscription(a.name),
+      };
     },
   },
   {
     name: "rag_query",
     description:
       "Semantic search over an indexed RAG corpus (emails | docs | general) via Vectorize embeddings. Returns the top matching chunks. Content must have been indexed by the agents first.",
-    inputSchema: z.object({ corpus: z.enum(["emails", "docs", "general"]), query: z.string(), topK: z.number().int().min(1).max(20).optional() }),
+    inputSchema: z.object({
+      corpus: z.enum(["emails", "docs", "general"]),
+      query: z.string(),
+      topK: z.number().int().min(1).max(20).optional(),
+    }),
     async run({ env }, a) {
       return { result: await queryCorpus(env, a.corpus, a.query, a.topK ?? 5) };
     },
@@ -2071,25 +3207,48 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ limit: z.number().int().min(1).max(200).optional() }),
     async run({ env }, a) {
       const db = getDb(env);
-      const rows = await db.select().from(driveNotifications).orderBy(desc(driveNotifications.receivedAt)).limit(a.limit ?? 50);
+      const rows = await db
+        .select()
+        .from(driveNotifications)
+        .orderBy(desc(driveNotifications.receivedAt))
+        .limit(a.limit ?? 50);
       return { result: { notifications: rows } };
     },
   },
   // ---- People (contacts + directory) -------------------------------------
   {
     name: "people_get_contact",
-    description: "Get a person by resourceName ('people/me' or 'people/c123'). personFields defaults to names,emails,phones,orgs.",
-    inputSchema: z.object({ resourceName: z.string(), personFields: z.string().optional(), ...asUser }),
+    description:
+      "Get a person by resourceName ('people/me' or 'people/c123'). personFields defaults to names,emails,phones,orgs.",
+    inputSchema: z.object({
+      resourceName: z.string(),
+      personFields: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      return { result: await new PeopleService(env, acct(sub, a)).getContact(a.resourceName, a.personFields) };
+      return {
+        result: await new PeopleService(env, acct(sub, a)).getContact(
+          a.resourceName,
+          a.personFields,
+        ),
+      };
     },
   },
   {
     name: "people_list_connections",
     description: "List the user's contacts (connections), most-recently-modified first.",
-    inputSchema: z.object({ pageSize: z.number().int().min(1).max(1000).optional(), personFields: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      pageSize: z.number().int().min(1).max(1000).optional(),
+      personFields: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      return { result: await new PeopleService(env, acct(sub, a)).listConnections(a.pageSize, a.personFields) };
+      return {
+        result: await new PeopleService(env, acct(sub, a)).listConnections(
+          a.pageSize,
+          a.personFields,
+        ),
+      };
     },
   },
   {
@@ -2097,7 +3256,9 @@ export const TOOLS: ToolDef[] = [
     description: "Search the user's own contacts by name/email/phone.",
     inputSchema: z.object({ query: z.string(), readMask: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new PeopleService(env, acct(sub, a)).searchContacts(a.query, a.readMask) };
+      return {
+        result: await new PeopleService(env, acct(sub, a)).searchContacts(a.query, a.readMask),
+      };
     },
   },
   {
@@ -2105,21 +3266,32 @@ export const TOOLS: ToolDef[] = [
     description: "Search the Workspace domain directory for people (requires directory access).",
     inputSchema: z.object({ query: z.string(), readMask: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new PeopleService(env, acct(sub, a)).searchDirectory(a.query, a.readMask) };
+      return {
+        result: await new PeopleService(env, acct(sub, a)).searchDirectory(a.query, a.readMask),
+      };
     },
   },
   {
     name: "people_create_contact",
     description: "Create a new contact (names, emailAddresses, phoneNumbers).",
     inputSchema: z.object({
-      names: z.array(z.object({ givenName: z.string().optional(), familyName: z.string().optional() })).optional(),
+      names: z
+        .array(z.object({ givenName: z.string().optional(), familyName: z.string().optional() }))
+        .optional(),
       emailAddresses: z.array(z.object({ value: z.string() })).optional(),
       phoneNumbers: z.array(z.object({ value: z.string() })).optional(),
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const p = await new PeopleService(env, acct(sub, a)).createContact({ names: a.names, emailAddresses: a.emailAddresses, phoneNumbers: a.phoneNumbers });
-      return { result: p, asset: { assetType: "contact", googleId: p.resourceName, action: "create" } };
+      const p = await new PeopleService(env, acct(sub, a)).createContact({
+        names: a.names,
+        emailAddresses: a.emailAddresses,
+        phoneNumbers: a.phoneNumbers,
+      });
+      return {
+        result: p,
+        asset: { assetType: "contact", googleId: p.resourceName, action: "create" },
+      };
     },
   },
   // ---- Forms -------------------------------------------------------------
@@ -2129,7 +3301,16 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ title: z.string(), documentTitle: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const f = await new FormsService(env, acct(sub, a)).create(a.title, a.documentTitle);
-      return { result: f, asset: { assetType: "form", googleId: f.formId, title: a.title, url: f.responderUri, action: "create" } };
+      return {
+        result: f,
+        asset: {
+          assetType: "form",
+          googleId: f.formId,
+          title: a.title,
+          url: f.responderUri,
+          action: "create",
+        },
+      };
     },
   },
   {
@@ -2137,25 +3318,63 @@ export const TOOLS: ToolDef[] = [
     description: "Get a Google Form (its items/questions + metadata).",
     inputSchema: z.object({ formId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new FormsService(env, acct(sub, a)).get(a.formId), asset: { assetType: "form", googleId: a.formId, action: "read" } };
+      return {
+        result: await new FormsService(env, acct(sub, a)).get(a.formId),
+        asset: { assetType: "form", googleId: a.formId, action: "read" },
+      };
     },
   },
   {
     name: "forms_add_question",
-    description: "Add a question to a Form. No options → a text question; with options → a multiple-choice (RADIO) question.",
-    inputSchema: z.object({ formId: z.string(), title: z.string(), options: z.array(z.string()).optional(), required: z.boolean().optional(), index: z.number().int().optional(), ...asUser }),
+    description:
+      "Add a question to a Form. No options → a text question; with options → a multiple-choice (RADIO) question.",
+    inputSchema: z.object({
+      formId: z.string(),
+      title: z.string(),
+      options: z.array(z.string()).optional(),
+      required: z.boolean().optional(),
+      index: z.number().int().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
-      const r = await new FormsService(env, acct(sub, a)).addQuestion(a.formId, a.title, a.options, a.required ?? false, a.index ?? 0);
-      return { result: r, asset: { assetType: "form", googleId: a.formId, action: "modify", detail: { question: a.title } } };
+      const r = await new FormsService(env, acct(sub, a)).addQuestion(
+        a.formId,
+        a.title,
+        a.options,
+        a.required ?? false,
+        a.index ?? 0,
+      );
+      return {
+        result: r,
+        asset: {
+          assetType: "form",
+          googleId: a.formId,
+          action: "modify",
+          detail: { question: a.title },
+        },
+      };
     },
   },
   {
     name: "forms_batch_update",
-    description: "Apply raw Forms API batchUpdate requests (add/move/delete items, update settings).",
-    inputSchema: z.object({ formId: z.string(), requests: z.array(z.record(z.string(), z.any())), ...asUser }),
+    description:
+      "Apply raw Forms API batchUpdate requests (add/move/delete items, update settings).",
+    inputSchema: z.object({
+      formId: z.string(),
+      requests: z.array(z.record(z.string(), z.any())),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const r = await new FormsService(env, acct(sub, a)).batchUpdate(a.formId, a.requests);
-      return { result: r, asset: { assetType: "form", googleId: a.formId, action: "modify", detail: { requests: a.requests.length } } };
+      return {
+        result: r,
+        asset: {
+          assetType: "form",
+          googleId: a.formId,
+          action: "modify",
+          detail: { requests: a.requests.length },
+        },
+      };
     },
   },
   {
@@ -2163,7 +3382,10 @@ export const TOOLS: ToolDef[] = [
     description: "List the responses submitted to a Google Form.",
     inputSchema: z.object({ formId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      return { result: await new FormsService(env, acct(sub, a)).listResponses(a.formId), asset: { assetType: "form", googleId: a.formId, action: "read" } };
+      return {
+        result: await new FormsService(env, acct(sub, a)).listResponses(a.formId),
+        asset: { assetType: "form", googleId: a.formId, action: "read" },
+      };
     },
   },
   // ---- Template registry (reference library for agents) ------------------
@@ -2175,7 +3397,11 @@ export const TOOLS: ToolDef[] = [
     async run({ env }, a) {
       const db = getDb(env);
       const rows = a.templateType
-        ? await db.select().from(templateArtifacts).where(eq(templateArtifacts.templateType, a.templateType)).orderBy(desc(templateArtifacts.updatedAt))
+        ? await db
+            .select()
+            .from(templateArtifacts)
+            .where(eq(templateArtifacts.templateType, a.templateType))
+            .orderBy(desc(templateArtifacts.updatedAt))
         : await db.select().from(templateArtifacts).orderBy(desc(templateArtifacts.updatedAt));
       return { result: { templates: rows } };
     },
@@ -2186,7 +3412,11 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ id: z.string() }),
     async run({ env }, a) {
       const db = getDb(env);
-      const rows = await db.select().from(templateArtifacts).where(eq(templateArtifacts.id, a.id)).limit(1);
+      const rows = await db
+        .select()
+        .from(templateArtifacts)
+        .where(eq(templateArtifacts.id, a.id))
+        .limit(1);
       return { result: { template: rows[0] ?? null } };
     },
   },
@@ -2194,16 +3424,42 @@ export const TOOLS: ToolDef[] = [
     name: "instantiate_from_template",
     description:
       "Copy a registry template's Drive file into a new file (optionally in a target folder) and return the new file's id + url. Use this to start from a template instead of a blank document.",
-    inputSchema: z.object({ templateId: z.string(), name: z.string(), targetFolderId: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      templateId: z.string(),
+      name: z.string(),
+      targetFolderId: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const db = getDb(env);
-      const rows = await db.select().from(templateArtifacts).where(eq(templateArtifacts.id, a.templateId)).limit(1);
+      const rows = await db
+        .select()
+        .from(templateArtifacts)
+        .where(eq(templateArtifacts.id, a.templateId))
+        .limit(1);
       const tpl = rows[0];
       if (!tpl) throw new Error(`No template with id ${a.templateId}`);
-      const copy = await new DriveService(env, acct(sub, a)).copy(tpl.driveId, a.name, a.targetFolderId);
+      const copy = await new DriveService(env, acct(sub, a)).copy(
+        tpl.driveId,
+        a.name,
+        a.targetFolderId,
+      );
       return {
-        result: { id: copy.id, name: copy.name, url: copy.webViewLink, fromTemplate: tpl.id, templateType: tpl.templateType },
-        asset: { assetType: tpl.templateType || "drive", googleId: copy.id, title: copy.name, url: copy.webViewLink, action: "create", detail: { fromTemplate: tpl.id } },
+        result: {
+          id: copy.id,
+          name: copy.name,
+          url: copy.webViewLink,
+          fromTemplate: tpl.id,
+          templateType: tpl.templateType,
+        },
+        asset: {
+          assetType: tpl.templateType || "drive",
+          googleId: copy.id,
+          title: copy.name,
+          url: copy.webViewLink,
+          action: "create",
+          detail: { fromTemplate: tpl.id },
+        },
       };
     },
   },
@@ -2224,7 +3480,9 @@ export const TOOLS: ToolDef[] = [
       const meta = await new DriveService(env, account).get(a.fileId);
       const surface: BrailleSurface | null = a.surface ?? detectSurface(meta.mimeType ?? "");
       if (!surface) {
-        throw new Error(`Unsupported file type for braille (mimeType: ${meta.mimeType ?? "unknown"}). Supported: Google Doc, Slides, Sheet.`);
+        throw new Error(
+          `Unsupported file type for braille (mimeType: ${meta.mimeType ?? "unknown"}). Supported: Google Doc, Slides, Sheet.`,
+        );
       }
 
       let raw: unknown;
@@ -2255,9 +3513,18 @@ export const TOOLS: ToolDef[] = [
           indexed: rows.length,
           surface,
           templateId: template?.id ?? null,
-          components: rows.filter((r) => r.kind === "component").map((r) => ({ id: r.id, name: r.name, anchor: r.anchor })),
+          components: rows
+            .filter((r) => r.kind === "component")
+            .map((r) => ({ id: r.id, name: r.name, anchor: r.anchor })),
         },
-        asset: { assetType: surface, googleId: a.fileId, title: baseName, url: sourceUrl ?? undefined, action: "read", detail: { braille: rows.length } },
+        asset: {
+          assetType: surface,
+          googleId: a.fileId,
+          title: baseName,
+          url: sourceUrl ?? undefined,
+          action: "read",
+          detail: { braille: rows.length },
+        },
       };
     },
   },
@@ -2288,7 +3555,9 @@ export const TOOLS: ToolDef[] = [
         createdAt: brailleArtifacts.createdAt,
       };
       const base = db.select(cols).from(brailleArtifacts);
-      const rows = await (conds.length ? base.where(and(...conds)) : base).orderBy(desc(brailleArtifacts.createdAt));
+      const rows = await (conds.length ? base.where(and(...conds)) : base).orderBy(
+        desc(brailleArtifacts.createdAt),
+      );
       return { result: { artifacts: rows } };
     },
   },
@@ -2299,7 +3568,11 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ id: z.string() }),
     async run({ env }, a) {
       const db = getDb(env);
-      const rows = await db.select().from(brailleArtifacts).where(eq(brailleArtifacts.id, a.id)).limit(1);
+      const rows = await db
+        .select()
+        .from(brailleArtifacts)
+        .where(eq(brailleArtifacts.id, a.id))
+        .limit(1);
       return { result: { artifact: rows[0] ?? null } };
     },
   },
@@ -2307,7 +3580,11 @@ export const TOOLS: ToolDef[] = [
     name: "deconstruct_drive_folder",
     description:
       "Sweep a Drive folder and deconstruct every Google Doc, Slides deck, and Sheet inside it into the braille registry in one call. Other file types are skipped. Accepts a folder id or a Drive folder URL.",
-    inputSchema: z.object({ folderId: z.string(), tags: z.array(z.string()).optional(), ...asUser }),
+    inputSchema: z.object({
+      folderId: z.string(),
+      tags: z.array(z.string()).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       // Defaults to the signed-in account (as_user overrides).
       const account = acct(sub, a);
@@ -2316,7 +3593,12 @@ export const TOOLS: ToolDef[] = [
       const { files } = await drive.search(`'${folderId}' in parents and trashed = false`, 100);
 
       const db = getDb(env);
-      const results: Array<{ fileId: string; name: string; surface: BrailleSurface; indexed: number }> = [];
+      const results: Array<{
+        fileId: string;
+        name: string;
+        surface: BrailleSurface;
+        indexed: number;
+      }> = [];
       let skipped = 0;
 
       for (const f of files) {
@@ -2372,7 +3654,15 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const result = await new DocsService(env, account).batchUpdate(a.documentId, a.requests);
-      return { result, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { requests: a.requests.length } } };
+      return {
+        result,
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { requests: a.requests.length },
+        },
+      };
     },
   },
   {
@@ -2393,15 +3683,34 @@ export const TOOLS: ToolDef[] = [
       const cols = Math.max(0, ...a.data.map((r: string[]) => r.length));
       if (!rows || !cols) throw new Error("data must be a non-empty 2D array");
 
-      await docs.batchUpdate(a.documentId, [{ insertTable: { rows, columns: cols, endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {} } }]);
+      await docs.batchUpdate(a.documentId, [
+        {
+          insertTable: {
+            rows,
+            columns: cols,
+            endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {},
+          },
+        },
+      ]);
       let table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
       if (!table) throw new Error("Could not locate the inserted table.");
       await docs.batchUpdate(a.documentId, buildFillRequests(table, a.data, a.tabId));
       table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
       if (!table) throw new Error("Table not found after fill.");
-      await docs.batchUpdate(a.documentId, buildTableStyleRequests(table, a.data, a.theme ?? "default", a.tabId));
+      await docs.batchUpdate(
+        a.documentId,
+        buildTableStyleRequests(table, a.data, a.theme ?? "default", a.tabId),
+      );
 
-      return { result: { documentId: a.documentId, rows, cols }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { table: `${rows}x${cols}` } } };
+      return {
+        result: { documentId: a.documentId, rows, cols },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { table: `${rows}x${cols}` },
+        },
+      };
     },
   },
   {
@@ -2421,17 +3730,31 @@ export const TOOLS: ToolDef[] = [
       const docs = new DocsService(env, account);
       const theme = a.theme ?? "github";
 
-      await docs.batchUpdate(a.documentId, [{ insertTable: { rows: 1, columns: 1, endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {} } }]);
+      await docs.batchUpdate(a.documentId, [
+        {
+          insertTable: {
+            rows: 1,
+            columns: 1,
+            endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {},
+          },
+        },
+      ]);
       const table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
       if (!table?.cells[0]) throw new Error("Could not locate the inserted code container.");
       const cellIndex = table.cells[0].startIndex;
-      const start = a.tabId ? { index: table.tableStartIndex, tabId: a.tabId } : { index: table.tableStartIndex };
+      const start = a.tabId
+        ? { index: table.tableStartIndex, tabId: a.tabId }
+        : { index: table.tableStartIndex };
       const bg = (CODE_THEMES[theme] ?? CODE_THEMES.github).background;
 
       const requests = [
         {
           updateTableCellStyle: {
-            tableRange: { tableCellLocation: { tableStartLocation: start, rowIndex: 0, columnIndex: 0 }, rowSpan: 1, columnSpan: 1 },
+            tableRange: {
+              tableCellLocation: { tableStartLocation: start, rowIndex: 0, columnIndex: 0 },
+              rowSpan: 1,
+              columnSpan: 1,
+            },
             tableCellStyle: {
               backgroundColor: { color: { rgbColor: bg } },
               paddingTop: { magnitude: 8, unit: "PT" },
@@ -2445,7 +3768,15 @@ export const TOOLS: ToolDef[] = [
         ...buildCodeTextRequests(cellIndex, a.code, a.language ?? "text", theme, a.tabId),
       ];
       await docs.batchUpdate(a.documentId, requests);
-      return { result: { documentId: a.documentId, language: a.language ?? "text", theme }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { codeBlock: a.language ?? "text" } } };
+      return {
+        result: { documentId: a.documentId, language: a.language ?? "text", theme },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { codeBlock: a.language ?? "text" },
+        },
+      };
     },
   },
   {
@@ -2476,7 +3807,12 @@ export const TOOLS: ToolDef[] = [
           remaining: findings.filter((f) => f.rule === "phantom-empty-paragraph"),
           findings,
         },
-        asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { qcFixes: requests.length } },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { qcFixes: requests.length },
+        },
       };
     },
   },
@@ -2488,20 +3824,40 @@ export const TOOLS: ToolDef[] = [
     async run({ env }, a) {
       const surface = a.surface as SchemaSurface;
       const requestTypes = await getRequestTypes(env, surface).catch(() => [] as string[]);
-      return { result: { surface, recipes: RECIPES[surface], requestTypes, discoveryUrl: `/api/schema/${surface}` } };
+      return {
+        result: {
+          surface,
+          recipes: RECIPES[surface],
+          requestTypes,
+          discoveryUrl: `/api/schema/${surface}`,
+        },
+      };
     },
   },
   {
     name: "html_to_doc",
     description:
       "Convert an HTML string into a Google Doc via native batchUpdate (NOT Google's importer) — headings, bold/italic/underline/code, and bullet/numbered lists come out clean. WE control the mapping, so no <hr>-around-heading junk. Inserts at index 1 (use a fresh/scratch doc). Tables/images not yet mapped — use table_factory. Defaults to the signed-in account.",
-    inputSchema: z.object({ documentId: z.string(), html: z.string(), tabId: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      documentId: z.string(),
+      html: z.string(),
+      tabId: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const requests = htmlToRequests(a.html, 1, a.tabId);
       if (!requests.length) throw new Error("No renderable content parsed from the HTML.");
       await new DocsService(env, account).batchUpdate(a.documentId, requests);
-      return { result: { documentId: a.documentId, blocks: requests.length }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { htmlImport: true } } };
+      return {
+        result: { documentId: a.documentId, blocks: requests.length },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { htmlImport: true },
+        },
+      };
     },
   },
   {
@@ -2512,16 +3868,45 @@ export const TOOLS: ToolDef[] = [
       name: z.string(),
       markdown: z.string(),
       parentId: z.string().optional(),
-      preview: z.boolean().optional().describe("Render per-page image previews of the created doc (default true). Set false to skip."),
-      critique: z.boolean().optional().describe("Also run the Ollama formatting critique per page (default false here to keep creates fast). Use preview_file for a full critique."),
+      preview: z
+        .boolean()
+        .optional()
+        .describe(
+          "Render per-page image previews of the created doc (default true). Set false to skip.",
+        ),
+      critique: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also run the Ollama formatting critique per page (default false here to keep creates fast). Use preview_file for a full critique.",
+        ),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const drive = new DriveService(env, account);
       const f = await drive.createDocFromMarkdown(a.name, a.markdown, a.parentId);
-      const preview = a.preview === false ? undefined : await previewFile(env, drive, f.id, { sub, critique: a.critique === true });
-      return { result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink, ...(preview ? { preview } : {}) }, asset: { assetType: "doc", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { markdownImport: true } } };
+      const preview =
+        a.preview === false
+          ? undefined
+          : await previewFile(env, drive, f.id, { sub, critique: a.critique === true });
+      return {
+        result: {
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          url: f.webViewLink,
+          ...(preview ? { preview } : {}),
+        },
+        asset: {
+          assetType: "doc",
+          googleId: f.id,
+          title: f.name,
+          url: f.webViewLink,
+          action: "create",
+          detail: { markdownImport: true },
+        },
+      };
     },
   },
   {
@@ -2530,18 +3915,35 @@ export const TOOLS: ToolDef[] = [
       "Render a Drive file (Google Doc, Sheet, Slides, or PDF) to per-page images so the model can SEE how it actually looks — the reliable way to catch mangled layout, overflow, or bad pagination after creating OR updating a document. Exports the PDF and rasterizes each page, stores them on R2 (served at /api/preview/:id, auto-expired after 48h), and by default critiques each page with an Ollama vision model for formatting/presentation (professional, fun, creative, etc). Returns `{ pdf_url, pages: { pg_1: { image_url, vision_ai_notes }, ... }, meta }`. Pass critique:false for images only, or maxPages to raise/lower the page cap (default 5). Best-effort: if Browser Rendering is unavailable, `pages` is empty (the pdf_url still works). Defaults to the signed-in account; as_user overrides.",
     inputSchema: z.object({
       fileId: z.string(),
-      critique: z.boolean().optional().describe("Run the Ollama per-page formatting critique (default true)."),
-      maxPages: z.number().int().min(1).max(20).optional().describe("Max pages to render (default 5)."),
+      critique: z
+        .boolean()
+        .optional()
+        .describe("Run the Ollama per-page formatting critique (default true)."),
+      maxPages: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Max pages to render (default 5)."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const drive = new DriveService(env, account);
-      const preview = await previewFile(env, drive, a.fileId, { sub, critique: a.critique, maxPages: a.maxPages });
+      const preview = await previewFile(env, drive, a.fileId, {
+        sub,
+        critique: a.critique,
+        maxPages: a.maxPages,
+      });
       return {
         result: preview
           ? { fileId: a.fileId, ...preview }
-          : { fileId: a.fileId, pages: {}, note: "Preview unavailable (Browser Rendering not configured, or the file is too large / not PDF-exportable)." },
+          : {
+              fileId: a.fileId,
+              pages: {},
+              note: "Preview unavailable (Browser Rendering not configured, or the file is too large / not PDF-exportable).",
+            },
       };
     },
   },
@@ -2549,7 +3951,12 @@ export const TOOLS: ToolDef[] = [
     name: "docs_append_markdown",
     description:
       "METHOD 2 (append to existing doc): Convert a Markdown string into native Docs batchUpdate requests and append them to the END of an EXISTING Google Doc — headings become HEADING_n paragraphs, **bold**/*italic*/`code`/bullets/numbered lists are styled. Differs from docs_create_from_markdown, which uses Drive's importer to make a NEW doc. Tables/images are not mapped here (use table_factory / native importer). Pass tabId to append into a specific tab. Defaults to the signed-in account; as_user overrides.",
-    inputSchema: z.object({ documentId: z.string(), markdown: z.string(), tabId: z.string().optional(), ...asUser }),
+    inputSchema: z.object({
+      documentId: z.string(),
+      markdown: z.string(),
+      tabId: z.string().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const docs = new DocsService(env, account);
@@ -2559,7 +3966,15 @@ export const TOOLS: ToolDef[] = [
       const requests = markdownToRequests(a.markdown, endIndex, a.tabId);
       if (!requests.length) throw new Error("No renderable content parsed from the Markdown.");
       await docs.batchUpdate(a.documentId, requests);
-      return { result: { documentId: a.documentId, blocks: requests.length, at: endIndex }, asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { markdownAppend: true } } };
+      return {
+        result: { documentId: a.documentId, blocks: requests.length, at: endIndex },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { markdownAppend: true },
+        },
+      };
     },
   },
   {
@@ -2570,7 +3985,17 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const account = acct(sub, a);
       const f = await new DriveService(env, account).convertToGoogle(a.fileId, a.name);
-      return { result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink }, asset: { assetType: "drive", googleId: f.id, title: f.name, url: f.webViewLink, action: "create", detail: { convertedFrom: a.fileId } } };
+      return {
+        result: { id: f.id, name: f.name, mimeType: f.mimeType, url: f.webViewLink },
+        asset: {
+          assetType: "drive",
+          googleId: f.id,
+          title: f.name,
+          url: f.webViewLink,
+          action: "create",
+          detail: { convertedFrom: a.fileId },
+        },
+      };
     },
   },
   {
@@ -2604,10 +4029,21 @@ export const TOOLS: ToolDef[] = [
       const svc = new AppsScriptService(env, acct(sub, a));
       const version = await svc.createVersion(a.scriptId, a.description);
       const dep = await svc.createDeployment(a.scriptId, version.versionNumber, a.description);
-      const webAppUrl = ((dep.entryPoints as any[]) ?? []).map((e) => e?.webApp?.url).find(Boolean) ?? null;
+      const webAppUrl =
+        ((dep.entryPoints as any[]) ?? []).map((e) => e?.webApp?.url).find(Boolean) ?? null;
       return {
-        result: { versionNumber: version.versionNumber, deploymentId: dep.deploymentId, webAppUrl, entryPoints: dep.entryPoints },
-        asset: { assetType: "script", googleId: a.scriptId, action: "modify", detail: { deploymentId: dep.deploymentId } },
+        result: {
+          versionNumber: version.versionNumber,
+          deploymentId: dep.deploymentId,
+          webAppUrl,
+          entryPoints: dep.entryPoints,
+        },
+        asset: {
+          assetType: "script",
+          googleId: a.scriptId,
+          action: "modify",
+          detail: { deploymentId: dep.deploymentId },
+        },
       };
     },
   },
@@ -2624,7 +4060,9 @@ export const TOOLS: ToolDef[] = [
     description:
       "Push agent-authored code to a standing Apps Script project and make it runnable: reads the project (preserving the manifest + existing files), merges the new/modified files by name, snapshots an immutable version, and re-points the standing (API-executable) deployment at it — then logs the deployment to D1 for audit/rollback. Omit scriptId to use the acting account's standing project. Namespace file names by use case (e.g. 'UseCaseA_Helper') so extensions don't clobber each other. Execute afterwards with appscript_run. Set createNew:true to mint a fresh deployment instead of updating the standing one.",
     inputSchema: z.object({
-      useCase: z.string().describe("Short label for this deployment (audit + version description)."),
+      useCase: z
+        .string()
+        .describe("Short label for this deployment (audit + version description)."),
       newFiles: z
         .array(
           z.object({
@@ -2634,18 +4072,31 @@ export const TOOLS: ToolDef[] = [
           }),
         )
         .min(1)
-        .describe("New or modified files. Use the manifest name 'appsscript' (type JSON) only to change the manifest."),
-      scriptId: z.string().optional().describe("Target project. Omit to use the acting account's standing script."),
+        .describe(
+          "New or modified files. Use the manifest name 'appsscript' (type JSON) only to change the manifest.",
+        ),
+      scriptId: z
+        .string()
+        .optional()
+        .describe("Target project. Omit to use the acting account's standing script."),
       description: z.string().optional(),
-      deploymentId: z.string().optional().describe("Deployment to update. Omit to use the cached/discovered standing deployment."),
-      createNew: z.boolean().optional().describe("Create a brand-new deployment instead of updating the standing one."),
+      deploymentId: z
+        .string()
+        .optional()
+        .describe("Deployment to update. Omit to use the cached/discovered standing deployment."),
+      createNew: z
+        .boolean()
+        .optional()
+        .describe("Create a brand-new deployment instead of updating the standing one."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const accountKey = a.as_user ?? sub;
       const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
       if (!scriptId) {
-        throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}. Pass scriptId or call appscript_register_standing.`);
+        throw new Error(
+          `No scriptId given and no standing Apps Script registered for ${accountKey}. Pass scriptId or call appscript_register_standing.`,
+        );
       }
       const result = await deployMergedVersion(env, acct(sub, a), {
         scriptId,
@@ -2656,7 +4107,15 @@ export const TOOLS: ToolDef[] = [
         createNew: a.createNew,
         account: accountKey,
       });
-      return { result, asset: { assetType: "script", googleId: scriptId, action: "modify", detail: { versionNumber: result.versionNumber, deploymentId: result.deploymentId } } };
+      return {
+        result,
+        asset: {
+          assetType: "script",
+          googleId: scriptId,
+          action: "modify",
+          detail: { versionNumber: result.versionNumber, deploymentId: result.deploymentId },
+        },
+      };
     },
   },
   {
@@ -2673,7 +4132,10 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const accountKey = a.as_user ?? sub;
       const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
-      if (!scriptId) throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}.`);
+      if (!scriptId)
+        throw new Error(
+          `No scriptId given and no standing Apps Script registered for ${accountKey}.`,
+        );
       const result = await rollbackDeployment(env, acct(sub, a), {
         scriptId,
         versionNumber: a.versionNumber,
@@ -2681,70 +4143,116 @@ export const TOOLS: ToolDef[] = [
         description: a.description,
         account: accountKey,
       });
-      return { result, asset: { assetType: "script", googleId: scriptId, action: "modify", detail: { rollbackTo: a.versionNumber } } };
+      return {
+        result,
+        asset: {
+          assetType: "script",
+          googleId: scriptId,
+          action: "modify",
+          detail: { rollbackTo: a.versionNumber },
+        },
+      };
     },
   },
   {
     name: "appscript_deploy_history",
-    description: "List the D1 deployment/rollback audit log for an Apps Script project (newest version first), for reviewing past variants and picking a rollback target. Omit scriptId to use the acting account's standing project.",
+    description:
+      "List the D1 deployment/rollback audit log for an Apps Script project (newest version first), for reviewing past variants and picking a rollback target. Omit scriptId to use the acting account's standing project.",
     inputSchema: z.object({ scriptId: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const accountKey = a.as_user ?? sub;
       const scriptId = a.scriptId ?? (await resolveStandingScript(env, accountKey));
-      if (!scriptId) throw new Error(`No scriptId given and no standing Apps Script registered for ${accountKey}.`);
+      if (!scriptId)
+        throw new Error(
+          `No scriptId given and no standing Apps Script registered for ${accountKey}.`,
+        );
       return { result: { scriptId, history: await deploymentHistory(env, scriptId) } };
     },
   },
   {
     name: "appscript_register_standing",
-    description: "Register (or override) the standing Apps Script project — and optionally its deployment id — for an account, so appscript_deploy_code/rollback can be called without a scriptId. Defaults the account to the acting identity.",
-    inputSchema: z.object({ scriptId: z.string(), deploymentId: z.string().optional(), account: z.string().email().optional(), ...asUser }),
+    description:
+      "Register (or override) the standing Apps Script project — and optionally its deployment id — for an account, so appscript_deploy_code/rollback can be called without a scriptId. Defaults the account to the acting identity.",
+    inputSchema: z.object({
+      scriptId: z.string(),
+      deploymentId: z.string().optional(),
+      account: z.string().email().optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const accountKey = a.account ?? a.as_user ?? sub;
       await setStandingScript(env, accountKey, a.scriptId, a.deploymentId);
-      return { result: { ok: true, account: accountKey, scriptId: a.scriptId, deploymentId: a.deploymentId ?? null } };
+      return {
+        result: {
+          ok: true,
+          account: accountKey,
+          scriptId: a.scriptId,
+          deploymentId: a.deploymentId ?? null,
+        },
+      };
     },
   },
   {
     name: "appscript_scaffold",
     description:
       "Overwrite an Apps Script project with a ready-to-use container-bound template: 'sidebar' (custom menu + sidebar shell) or 'chat-sidebar' (chat UI that calls the worker's /api/appscript/ai bridge). After: set Script Properties WORKER_URL + WORKER_KEY, then appsscript_deploy. Defaults to the signed-in account.",
-    inputSchema: z.object({ scriptId: z.string(), template: z.enum(["sidebar", "chat-sidebar"]), ...asUser }),
+    inputSchema: z.object({
+      scriptId: z.string(),
+      template: z.enum(["sidebar", "chat-sidebar"]),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const files = SCRIPT_SCAFFOLDS[a.template];
       await new AppsScriptService(env, acct(sub, a)).updateContent(a.scriptId, files);
-      return { result: { scriptId: a.scriptId, template: a.template, files: files.map((f) => f.name) } };
+      return {
+        result: { scriptId: a.scriptId, template: a.template, files: files.map((f) => f.name) },
+      };
     },
   },
   {
     name: "appscript_save_roll",
-    description: "Save an Apps Script project's current files as a reusable 'roll' in the braille registry (surface=appscript) for replay into other projects.",
-    inputSchema: z.object({ scriptId: z.string(), name: z.string(), tags: z.array(z.string()).optional(), ...asUser }),
+    description:
+      "Save an Apps Script project's current files as a reusable 'roll' in the braille registry (surface=appscript) for replay into other projects.",
+    inputSchema: z.object({
+      scriptId: z.string(),
+      name: z.string(),
+      tags: z.array(z.string()).optional(),
+      ...asUser,
+    }),
     async run({ env, sub }, a) {
       const content = await new AppsScriptService(env, acct(sub, a)).getContent(a.scriptId);
       const id = crypto.randomUUID();
-      await getDb(env).insert(brailleArtifacts).values({
-        id,
-        sourceFileId: a.scriptId,
-        sourceUrl: null,
-        surface: "appscript",
-        kind: "template",
-        name: a.name,
-        anchor: null,
-        structure: content as Record<string, unknown>,
-        tags: a.tags ?? null,
-        createdBySub: sub,
-        createdAt: new Date(),
-      });
+      await getDb(env)
+        .insert(brailleArtifacts)
+        .values({
+          id,
+          sourceFileId: a.scriptId,
+          sourceUrl: null,
+          surface: "appscript",
+          kind: "template",
+          name: a.name,
+          anchor: null,
+          structure: content as Record<string, unknown>,
+          tags: a.tags ?? null,
+          createdBySub: sub,
+          createdAt: new Date(),
+        });
       return { result: { id, name: a.name } };
     },
   },
   {
     name: "appscript_apply_roll",
-    description: "Apply a saved Apps Script roll (braille id) to a project — overwrites its files with the roll's.",
+    description:
+      "Apply a saved Apps Script roll (braille id) to a project — overwrites its files with the roll's.",
     inputSchema: z.object({ rollId: z.string(), scriptId: z.string(), ...asUser }),
     async run({ env, sub }, a) {
-      const row = (await getDb(env).select().from(brailleArtifacts).where(eq(brailleArtifacts.id, a.rollId)).limit(1))[0];
+      const row = (
+        await getDb(env)
+          .select()
+          .from(brailleArtifacts)
+          .where(eq(brailleArtifacts.id, a.rollId))
+          .limit(1)
+      )[0];
       if (!row) throw new Error(`No roll with id ${a.rollId}`);
       const files = (row.structure as { files?: unknown[] })?.files;
       if (!Array.isArray(files)) throw new Error("Roll has no files[] to apply.");
@@ -2765,18 +4273,28 @@ export const TOOLS: ToolDef[] = [
       if (mime.includes("presentation")) {
         const slides = new SlidesService(env, account);
         const deck = (await slides.get(a.fileId)) as { slides?: { objectId?: string }[] };
-        const prompt = a.prompt ?? "You are a slide design reviewer. List concrete layout problems: text overflow/cutoff, crowding, tiny or low-contrast text, misaligned or overlapping elements, awkward empty space. If clean, say 'clean'. Be terse.";
+        const prompt =
+          a.prompt ??
+          "You are a slide design reviewer. List concrete layout problems: text overflow/cutoff, crowding, tiny or low-contrast text, misaligned or overlapping elements, awkward empty space. If clean, say 'clean'. Be terse.";
         const findings: unknown[] = [];
         for (const [i, s] of (deck.slides ?? []).slice(0, 10).entries()) {
           if (!s.objectId) continue;
           try {
-            const thumb = (await slides.getThumbnail(a.fileId, s.objectId)) as { contentUrl?: string };
+            const thumb = (await slides.getThumbnail(a.fileId, s.objectId)) as {
+              contentUrl?: string;
+            };
             if (!thumb.contentUrl) continue;
             const img = new Uint8Array(await (await fetch(thumb.contentUrl)).arrayBuffer());
-            const out = (await (env.AI as any).run("@cf/meta/llama-3.2-11b-vision-instruct", { image: Array.from(img), prompt })) as { response?: string; description?: string };
+            const out = (await (env.AI as any).run("@cf/meta/llama-3.2-11b-vision-instruct", {
+              image: Array.from(img),
+              prompt,
+            })) as { response?: string; description?: string };
             findings.push({ slide: i + 1, notes: out?.response ?? out?.description ?? "" });
           } catch (err) {
-            findings.push({ slide: i + 1, error: err instanceof Error ? err.message : String(err) });
+            findings.push({
+              slide: i + 1,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
         return { result: { surface: "slide", slidesReviewed: findings.length, findings } };
@@ -2789,16 +4307,32 @@ export const TOOLS: ToolDef[] = [
       const png = await rasterizePdf(env, pdf);
       if (png) {
         const stored = await storeRender(env, png, { sourceFileId: a.fileId, sub });
-        const prompt = a.prompt ?? "You are a document layout reviewer. The image shows the rendered pages top-to-bottom. List concrete layout problems: a table split across two pages that could fit one, a heading stranded at a page bottom, squished or overflowing tables, awkward text wrapping, uneven spacing. If it looks clean, say 'clean'. Be terse.";
-        const out = (await (env.AI as any).run("@cf/meta/llama-3.2-11b-vision-instruct", { image: Array.from(png), prompt })) as { response?: string; description?: string };
-        return { result: { surface, method: "browser-render + vision", screenshotUrl: stored.url, findings: [{ notes: out?.response ?? out?.description ?? "" }] } };
+        const prompt =
+          a.prompt ??
+          "You are a document layout reviewer. The image shows the rendered pages top-to-bottom. List concrete layout problems: a table split across two pages that could fit one, a heading stranded at a page bottom, squished or overflowing tables, awkward text wrapping, uneven spacing. If it looks clean, say 'clean'. Be terse.";
+        const out = (await (env.AI as any).run("@cf/meta/llama-3.2-11b-vision-instruct", {
+          image: Array.from(png),
+          prompt,
+        })) as { response?: string; description?: string };
+        return {
+          result: {
+            surface,
+            method: "browser-render + vision",
+            screenshotUrl: stored.url,
+            findings: [{ notes: out?.response ?? out?.description ?? "" }],
+          },
+        };
       }
 
       // Fallback: no rasterizer available → render_qc pagination.
       const pages = await pdfToPages(pdf);
       let headings: string[] = [];
       if (mime.includes("document")) {
-        try { headings = collectHeadings(await new DocsService(env, account).getRaw(a.fileId)); } catch { /* no heading access */ }
+        try {
+          headings = collectHeadings(await new DocsService(env, account).getRaw(a.fileId));
+        } catch {
+          /* no heading access */
+        }
       }
       return {
         result: {
@@ -2823,15 +4357,30 @@ export const TOOLS: ToolDef[] = [
       const folderId = await drive.findOrCreateFolder("MCP Scratch");
       const docs = new DocsService(env, account);
       const doc = await docs.create(a.title ?? "Scratch Doc");
-      await docs.insertText(doc.documentId, "⚠️  WORK PRODUCT — DESIGN SCRATCH · not a final document\n\n", 1);
+      await docs.insertText(
+        doc.documentId,
+        "⚠️  WORK PRODUCT — DESIGN SCRATCH · not a final document\n\n",
+        1,
+      );
       await drive.updateFile(doc.documentId, { addParents: folderId });
       const url = `https://docs.google.com/document/d/${doc.documentId}/edit`;
-      return { result: { documentId: doc.documentId, url, folderId }, asset: { assetType: "doc", googleId: doc.documentId, title: doc.title, url, action: "create", detail: { scratch: true } } };
+      return {
+        result: { documentId: doc.documentId, url, folderId },
+        asset: {
+          assetType: "doc",
+          googleId: doc.documentId,
+          title: doc.title,
+          url,
+          action: "create",
+          detail: { scratch: true },
+        },
+      };
     },
   },
   {
     name: "create_scratch_sheet",
-    description: "Create a Google Sheet in the 'MCP Scratch' folder and return its link. Sandbox for sample spreadsheets. Defaults to the signed-in account.",
+    description:
+      "Create a Google Sheet in the 'MCP Scratch' folder and return its link. Sandbox for sample spreadsheets. Defaults to the signed-in account.",
     inputSchema: z.object({ title: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
@@ -2840,12 +4389,22 @@ export const TOOLS: ToolDef[] = [
       const sheet = await new SheetsService(env, account).create(a.title ?? "Scratch Sheet");
       await drive.updateFile(sheet.spreadsheetId, { addParents: folderId });
       const url = `https://docs.google.com/spreadsheets/d/${sheet.spreadsheetId}/edit`;
-      return { result: { spreadsheetId: sheet.spreadsheetId, url, folderId }, asset: { assetType: "sheet", googleId: sheet.spreadsheetId, url, action: "create", detail: { scratch: true } } };
+      return {
+        result: { spreadsheetId: sheet.spreadsheetId, url, folderId },
+        asset: {
+          assetType: "sheet",
+          googleId: sheet.spreadsheetId,
+          url,
+          action: "create",
+          detail: { scratch: true },
+        },
+      };
     },
   },
   {
     name: "create_scratch_slides",
-    description: "Create a Google Slides deck in the 'MCP Scratch' folder and return its link. Sandbox for sample decks. Defaults to the signed-in account.",
+    description:
+      "Create a Google Slides deck in the 'MCP Scratch' folder and return its link. Sandbox for sample decks. Defaults to the signed-in account.",
     inputSchema: z.object({ title: z.string().optional(), ...asUser }),
     async run({ env, sub }, a) {
       const account = acct(sub, a);
@@ -2854,7 +4413,16 @@ export const TOOLS: ToolDef[] = [
       const deck = await new SlidesService(env, account).create(a.title ?? "Scratch Deck");
       await drive.updateFile(deck.presentationId, { addParents: folderId });
       const url = `https://docs.google.com/presentation/d/${deck.presentationId}/edit`;
-      return { result: { presentationId: deck.presentationId, url, folderId }, asset: { assetType: "slide", googleId: deck.presentationId, url, action: "create", detail: { scratch: true } } };
+      return {
+        result: { presentationId: deck.presentationId, url, folderId },
+        asset: {
+          assetType: "slide",
+          googleId: deck.presentationId,
+          url,
+          action: "create",
+          detail: { scratch: true },
+        },
+      };
     },
   },
   // ---- Gmail label registry ---------------------------------------------
@@ -2865,7 +4433,9 @@ export const TOOLS: ToolDef[] = [
     inputSchema: z.object({ account: z.string().email().optional() }),
     async run({ env }, a) {
       if (a.account) {
-        const target = (await listCaptureAccounts(env)).find((x) => x.email === a.account!.toLowerCase());
+        const target = (await listCaptureAccounts(env)).find(
+          (x) => x.email === a.account!.toLowerCase(),
+        );
         if (!target) throw new Error(`Account ${a.account} is not active/available.`);
         return { result: { synced: [await syncLabels(env, target.ref, target.email)] } };
       }
@@ -2888,7 +4458,9 @@ export const TOOLS: ToolDef[] = [
       if (a.activeOnly !== false) conds.push(eq(gmailLabels.isActive, true));
       if (a.captureMode) conds.push(eq(gmailLabels.captureMode, a.captureMode));
       const base = db.select().from(gmailLabels);
-      const rows = await (conds.length ? base.where(and(...conds)) : base).orderBy(gmailLabels.name);
+      const rows = await (conds.length ? base.where(and(...conds)) : base).orderBy(
+        gmailLabels.name,
+      );
       return { result: { labels: rows } };
     },
   },
@@ -2906,13 +4478,25 @@ export const TOOLS: ToolDef[] = [
     async run({ env }, a) {
       const db = getDb(env);
       const accounts = await listCaptureAccounts(env);
-      const target = a.account ? accounts.find((x) => x.email === a.account!.toLowerCase()) : accounts[0];
-      if (!target) throw new Error(`Account ${a.account ?? "(default)"} not active. Available: ${accounts.map((x) => x.email).join(", ") || "none"}.`);
+      const target = a.account
+        ? accounts.find((x) => x.email === a.account!.toLowerCase())
+        : accounts[0];
+      if (!target)
+        throw new Error(
+          `Account ${a.account ?? "(default)"} not active. Available: ${accounts.map((x) => x.email).join(", ") || "none"}.`,
+        );
 
       let fullName = a.name;
       if (a.parentId) {
-        const parent = await db.select({ name: gmailLabels.name }).from(gmailLabels).where(eq(gmailLabels.id, a.parentId)).limit(1);
-        if (!parent[0]) throw new Error(`No registered label with id ${a.parentId} to nest under. Run gmail_labels_sync first.`);
+        const parent = await db
+          .select({ name: gmailLabels.name })
+          .from(gmailLabels)
+          .where(eq(gmailLabels.id, a.parentId))
+          .limit(1);
+        if (!parent[0])
+          throw new Error(
+            `No registered label with id ${a.parentId} to nest under. Run gmail_labels_sync first.`,
+          );
         fullName = `${parent[0].name}/${a.name}`;
       }
 
@@ -2939,7 +4523,12 @@ export const TOOLS: ToolDef[] = [
       });
 
       return {
-        result: { id: label.id, name: fullName, parentId: a.parentId ?? null, filter: filterCriteria ?? null },
+        result: {
+          id: label.id,
+          name: fullName,
+          parentId: a.parentId ?? null,
+          filter: filterCriteria ?? null,
+        },
         asset: { assetType: "gmail-label", googleId: label.id, title: fullName, action: "create" },
       };
     },
@@ -2962,7 +4551,8 @@ export const TOOLS: ToolDef[] = [
       if (a.captureMode !== undefined) patch.captureMode = a.captureMode;
       if (a.captureAttachments !== undefined) patch.captureAttachments = a.captureAttachments;
       if (a.attachmentStore !== undefined) patch.attachmentStore = a.attachmentStore;
-      if (a.attachmentDriveFolderId !== undefined) patch.attachmentDriveFolderId = a.attachmentDriveFolderId;
+      if (a.attachmentDriveFolderId !== undefined)
+        patch.attachmentDriveFolderId = a.attachmentDriveFolderId;
       if (a.description !== undefined) patch.description = a.description;
       await db.update(gmailLabels).set(patch).where(eq(gmailLabels.id, a.labelId));
       const row = await db.select().from(gmailLabels).where(eq(gmailLabels.id, a.labelId)).limit(1);
@@ -2979,9 +4569,15 @@ export const TOOLS: ToolDef[] = [
     }),
     async run({ env }, a) {
       if (a.account) {
-        const target = (await listCaptureAccounts(env)).find((x) => x.email === a.account!.toLowerCase());
+        const target = (await listCaptureAccounts(env)).find(
+          (x) => x.email === a.account!.toLowerCase(),
+        );
         if (!target) throw new Error(`Account ${a.account} is not active/available.`);
-        return { result: { captured: [await captureAccount(env, target.ref, target.email, a.perLabel ?? 25)] } };
+        return {
+          result: {
+            captured: [await captureAccount(env, target.ref, target.email, a.perLabel ?? 25)],
+          },
+        };
       }
       return { result: { captured: await captureAllAccounts(env) } };
     },
@@ -2996,7 +4592,9 @@ export const TOOLS: ToolDef[] = [
       topK: z.number().int().min(1).max(25).optional(),
     }),
     async run({ env }, a) {
-      return { result: { hits: await searchGmail(env, a.query, { account: a.account, topK: a.topK }) } };
+      return {
+        result: { hits: await searchGmail(env, a.query, { account: a.account, topK: a.topK }) },
+      };
     },
   },
   // ---- Code mode (search + execute — the entire toolset in ~1k tokens) ---
@@ -3007,7 +4605,11 @@ export const TOOLS: ToolDef[] = [
       "Example: `const all = codemode.tools(); return all.filter(t => /gmail|draft/.test(t.name)).map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));`. " +
       "Then run the tools you found with code_mode_run. Search is read-only: no tool execution, no network.",
     inputSchema: z.object({
-      code: z.string().describe("JS function body. Use `codemode.tools()` to read the catalog and `return` the filtered subset you need."),
+      code: z
+        .string()
+        .describe(
+          "JS function body. Use `codemode.tools()` to read the catalog and `return` the filtered subset you need.",
+        ),
     }),
     outputSchema: codeModeResultSchema,
     async run({ env }, a) {
@@ -3019,13 +4621,31 @@ export const TOOLS: ToolDef[] = [
     description:
       "EXECUTE a JavaScript snippet in an isolated sandbox (no network, no secrets) that can call any Workspace tool via `await tools.<name>(args)`. Discover tool names + arg schemas first with code_mode_search. Chain many calls, transform results, and `return` a final value; use console.log for debug output. Prefer this over many sequential tool calls when orchestrating multi-step work.",
     inputSchema: z.object({
-      code: z.string().describe("JavaScript function body. Use `await tools.<name>({...})`, `console.log(...)`, and `return <value>`."),
-      cpuMs: z.number().int().min(1000).max(300000).optional().describe("CPU time budget for the sandbox (default 30000)."),
-      subRequests: z.number().int().min(1).max(1000).optional().describe("Subrequest budget for the sandbox (default 50)."),
+      code: z
+        .string()
+        .describe(
+          "JavaScript function body. Use `await tools.<name>({...})`, `console.log(...)`, and `return <value>`.",
+        ),
+      cpuMs: z
+        .number()
+        .int()
+        .min(1000)
+        .max(300000)
+        .optional()
+        .describe("CPU time budget for the sandbox (default 30000)."),
+      subRequests: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .describe("Subrequest budget for the sandbox (default 50)."),
     }),
     outputSchema: codeModeResultSchema,
     async run({ env, sub }, a) {
-      return { result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }) };
+      return {
+        result: await runCodeMode(env, sub, a.code, { cpuMs: a.cpuMs, subRequests: a.subRequests }),
+      };
     },
   },
   // ---- Diagnostics -------------------------------------------------------
@@ -3041,7 +4661,10 @@ export const TOOLS: ToolDef[] = [
         { service: "gmail", run: (r) => new GmailService(env, r).getProfile() },
         { service: "drive", run: (r) => new DriveService(env, r).getStorageFree() },
         { service: "calendar", run: (r) => new CalendarService(env, r).listCalendars() },
-        { service: "contacts", run: (r) => new PeopleService(env, r).getContact("people/me", "names") },
+        {
+          service: "contacts",
+          run: (r) => new PeopleService(env, r).getContact("people/me", "names"),
+        },
         { service: "appsscript", run: (r) => new AppsScriptService(env, r).listProcesses() },
       ];
       // ponytail: probe accounts sequentially, services parallel within each,

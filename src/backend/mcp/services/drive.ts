@@ -1,6 +1,12 @@
 import { googleFetch, googleJson } from "../googleClient";
 
-export type DriveFile = { id: string; name: string; mimeType: string; webViewLink?: string; modifiedTime?: string };
+export type DriveFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink?: string;
+  modifiedTime?: string;
+};
 export type DrivePermission = {
   id: string;
   type: string;
@@ -69,18 +75,21 @@ const EXPORT_MIME: Record<string, string> = {
 };
 
 export class DriveService {
-  constructor(private env: Env, private sub: string) {}
+  constructor(
+    private env: Env,
+    private sub: string,
+  ) {}
 
   async search(q?: string, pageSize = 20): Promise<{ files: DriveFile[] }> {
     const parts = [
       `pageSize=${encodeURIComponent(String(pageSize))}`,
       `fields=${encodeURIComponent(FIELDS)}`,
-      `spaces=${encodeURIComponent("drive")}`
+      `spaces=${encodeURIComponent("drive")}`,
     ];
     if (q) {
       parts.push(`q=${encodeURIComponent(q)}`);
     }
-    const url = `${BASE}/files?${parts.join('&')}`;
+    const url = `${BASE}/files?${parts.join("&")}`;
     return googleJson<{ files: DriveFile[] }>(this.env, this.sub, url);
   }
 
@@ -92,7 +101,11 @@ export class DriveService {
   /** Read a file's `description` field (empty string when unset). */
   async getDescription(fileId: string): Promise<string> {
     const params = new URLSearchParams({ fields: "description", supportsAllDrives: "true" });
-    const m = await googleJson<{ description?: string }>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
+    const m = await googleJson<{ description?: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?${params}`,
+    );
     return m.description ?? "";
   }
 
@@ -108,30 +121,61 @@ export class DriveService {
   /** Parent folder ids of a file (empty when the file lives in My Drive root). */
   async getParents(fileId: string): Promise<string[]> {
     const params = new URLSearchParams({ fields: "parents", supportsAllDrives: "true" });
-    const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
-    return meta.parents ?? [];
-  }
-
-  /** Name / mimeType / byte size / view link — for deciding attach-vs-link. */
-  async getContentMeta(fileId: string): Promise<{ id: string; name: string; mimeType: string; size: number; webViewLink?: string }> {
-    const params = new URLSearchParams({ fields: "id,name,mimeType,size,webViewLink", supportsAllDrives: "true" });
-    const m = await googleJson<{ id: string; name: string; mimeType: string; size?: string; webViewLink?: string }>(
+    const meta = await googleJson<{ parents?: string[] }>(
       this.env,
       this.sub,
       `${BASE}/files/${fileId}?${params}`,
     );
-    return { id: m.id, name: m.name, mimeType: m.mimeType, size: Number(m.size ?? 0), webViewLink: m.webViewLink };
+    return meta.parents ?? [];
+  }
+
+  /** Name / mimeType / byte size / view link — for deciding attach-vs-link. */
+  async getContentMeta(
+    fileId: string,
+  ): Promise<{ id: string; name: string; mimeType: string; size: number; webViewLink?: string }> {
+    const params = new URLSearchParams({
+      fields: "id,name,mimeType,size,webViewLink",
+      supportsAllDrives: "true",
+    });
+    const m = await googleJson<{
+      id: string;
+      name: string;
+      mimeType: string;
+      size?: string;
+      webViewLink?: string;
+    }>(this.env, this.sub, `${BASE}/files/${fileId}?${params}`);
+    return {
+      id: m.id,
+      name: m.name,
+      mimeType: m.mimeType,
+      size: Number(m.size ?? 0),
+      webViewLink: m.webViewLink,
+    };
   }
 
   /** Download a file's raw bytes (alt=media). For binary attachments. */
   async downloadBytes(fileId: string): Promise<Uint8Array> {
-    const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?alt=media&supportsAllDrives=true`);
+    const res = await googleFetch(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?alt=media&supportsAllDrives=true`,
+    );
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /** Export a Google-native file (Doc/Sheet/Slides) to raw bytes of the given mimeType. */
+  async exportBytes(fileId: string, mimeType: string): Promise<Uint8Array> {
+    const params = new URLSearchParams({ mimeType });
+    const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/export?${params}`);
     return new Uint8Array(await res.arrayBuffer());
   }
 
   /** Parents + last-modified time in one call (for export provenance). */
   async getLocationInfo(fileId: string): Promise<{ parents: string[]; modifiedTime?: string }> {
-    const params = new URLSearchParams({ fields: "parents,modifiedTime", supportsAllDrives: "true" });
+    const params = new URLSearchParams({
+      fields: "parents,modifiedTime",
+      supportsAllDrives: "true",
+    });
     const meta = await googleJson<{ parents?: string[]; modifiedTime?: string }>(
       this.env,
       this.sub,
@@ -141,10 +185,19 @@ export class DriveService {
   }
 
   async createFolder(name: string, parentId?: string): Promise<DriveFile> {
-    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,mimeType,webViewLink&supportsAllDrives=true`, {
-      method: "POST",
-      body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: parentId ? [parentId] : undefined }),
-    });
+    return googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${BASE}/files?fields=id,name,mimeType,webViewLink&supportsAllDrives=true`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: parentId ? [parentId] : undefined,
+        }),
+      },
+    );
   }
 
   /** Free Drive bytes for this account (limit − usage; MAX_SAFE for unlimited). */
@@ -169,7 +222,11 @@ export class DriveService {
 
   /** Export a Google file to binary bytes (e.g. application/pdf). */
   async exportBinary(fileId: string, mimeType: string): Promise<Uint8Array> {
-    const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/export?mimeType=${encodeURIComponent(mimeType)}`);
+    const res = await googleFetch(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}/export?mimeType=${encodeURIComponent(mimeType)}`,
+    );
     return new Uint8Array(await res.arrayBuffer());
   }
 
@@ -177,16 +234,29 @@ export class DriveService {
   async convertToGoogle(fileId: string, name?: string, parentId?: string): Promise<DriveFile> {
     const meta = await this.get(fileId);
     const target: Record<string, string> = {
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "application/vnd.google-apps.document",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "application/vnd.google-apps.spreadsheet",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation": "application/vnd.google-apps.presentation",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        "application/vnd.google-apps.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        "application/vnd.google-apps.spreadsheet",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+        "application/vnd.google-apps.presentation",
     };
     const mimeType = target[meta.mimeType ?? ""];
-    if (!mimeType) throw new Error(`Not a convertible Office file (mimeType: ${meta.mimeType ?? "unknown"}).`);
-    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`, {
-      method: "POST",
-      body: JSON.stringify({ name: name ?? meta.name, mimeType, parents: parentId ? [parentId] : undefined }),
-    });
+    if (!mimeType)
+      throw new Error(`Not a convertible Office file (mimeType: ${meta.mimeType ?? "unknown"}).`);
+    return googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: name ?? meta.name,
+          mimeType,
+          parents: parentId ? [parentId] : undefined,
+        }),
+      },
+    );
   }
 
   /**
@@ -197,19 +267,36 @@ export class DriveService {
    * large files are ever needed. If the media PATCH fails we delete the 0-byte
    * metadata file so a failed upload never leaves an orphan behind.
    */
-  async uploadBinary(name: string, mimeType: string, bytes: Uint8Array, parentId?: string): Promise<DriveFile> {
-    const meta = await googleJson<DriveFile>(this.env, this.sub, `${BASE}/files?fields=id,name,webViewLink&supportsAllDrives=true`, {
-      method: "POST",
-      body: JSON.stringify({ name, mimeType, parents: parentId ? [parentId] : undefined }),
-    });
+  async uploadBinary(
+    name: string,
+    mimeType: string,
+    bytes: Uint8Array,
+    parentId?: string,
+  ): Promise<DriveFile> {
+    const meta = await googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${BASE}/files?fields=id,name,webViewLink&supportsAllDrives=true`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name, mimeType, parents: parentId ? [parentId] : undefined }),
+      },
+    );
     try {
-      await googleFetch(this.env, this.sub, `${UPLOAD_BASE}/files/${meta.id}?uploadType=media&supportsAllDrives=true`, {
-        method: "PATCH",
-        headers: { "content-type": mimeType },
-        body: bytes as unknown as BodyInit,
-      });
+      await googleFetch(
+        this.env,
+        this.sub,
+        `${UPLOAD_BASE}/files/${meta.id}?uploadType=media&supportsAllDrives=true`,
+        {
+          method: "PATCH",
+          headers: { "content-type": mimeType },
+          body: bytes as unknown as BodyInit,
+        },
+      );
     } catch (e) {
-      await googleFetch(this.env, this.sub, `${BASE}/files/${meta.id}?supportsAllDrives=true`, { method: "DELETE" }).catch(() => {});
+      await googleFetch(this.env, this.sub, `${BASE}/files/${meta.id}?supportsAllDrives=true`, {
+        method: "DELETE",
+      }).catch(() => {});
       throw e;
     }
     return meta;
@@ -221,9 +308,17 @@ export class DriveService {
    * fidelity — Google handles headings, tables, lists, etc. Creates a new file
    * only; to append Markdown into an existing doc use the Docs batchUpdate path.
    */
-  async createDocFromMarkdown(name: string, markdown: string, parentId?: string): Promise<DriveFile> {
+  async createDocFromMarkdown(
+    name: string,
+    markdown: string,
+    parentId?: string,
+  ): Promise<DriveFile> {
     const boundary = "-------314159265358979323846";
-    const metadata = { name, mimeType: "application/vnd.google-apps.document", parents: parentId ? [parentId] : undefined };
+    const metadata = {
+      name,
+      mimeType: "application/vnd.google-apps.document",
+      parents: parentId ? [parentId] : undefined,
+    };
     const body =
       `--${boundary}\r\n` +
       `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
@@ -232,21 +327,36 @@ export class DriveService {
       `Content-Type: text/markdown; charset=UTF-8\r\n\r\n` +
       `${markdown}\r\n` +
       `--${boundary}--`;
-    return googleJson<DriveFile>(this.env, this.sub, `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink`, {
-      method: "POST",
-      headers: { "content-type": `multipart/related; boundary=${boundary}` },
-      body,
-    });
+    return googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink`,
+      {
+        method: "POST",
+        headers: { "content-type": `multipart/related; boundary=${boundary}` },
+        body,
+      },
+    );
   }
 
   async copy(fileId: string, name: string, parentId?: string): Promise<DriveFile> {
-    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`, {
-      method: "POST",
-      body: JSON.stringify({ name, parents: parentId ? [parentId] : undefined }),
-    });
+    return googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}/copy?fields=id,name,mimeType,webViewLink`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name, parents: parentId ? [parentId] : undefined }),
+      },
+    );
   }
 
-  async createFile(name: string, mimeType: string, content: string, parentId?: string): Promise<DriveFile> {
+  async createFile(
+    name: string,
+    mimeType: string,
+    content: string,
+    parentId?: string,
+  ): Promise<DriveFile> {
     const boundary = "-------314159265358979323846";
     const metadata = { name, mimeType, parents: parentId ? [parentId] : undefined };
     const body =
@@ -257,11 +367,16 @@ export class DriveService {
       `Content-Type: ${mimeType}\r\n\r\n` +
       `${content}\r\n` +
       `--${boundary}--`;
-    return googleJson<DriveFile>(this.env, this.sub, `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink`, {
-      method: "POST",
-      headers: { "content-type": `multipart/related; boundary=${boundary}` },
-      body,
-    });
+    return googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink`,
+      {
+        method: "POST",
+        headers: { "content-type": `multipart/related; boundary=${boundary}` },
+        body,
+      },
+    );
   }
 
   async downloadContent(fileId: string): Promise<{ content: string }> {
@@ -269,11 +384,21 @@ export class DriveService {
     return { content: await res.text() };
   }
 
-  async readContent(fileId: string): Promise<{ content: string; mimeType: string; exported: boolean }> {
-    const meta = await googleJson<{ mimeType: string; name: string }>(this.env, this.sub, `${BASE}/files/${fileId}?fields=mimeType,name`);
+  async readContent(
+    fileId: string,
+  ): Promise<{ content: string; mimeType: string; exported: boolean }> {
+    const meta = await googleJson<{ mimeType: string; name: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?fields=mimeType,name`,
+    );
     if (meta.mimeType.startsWith("application/vnd.google-apps.")) {
       const exportMime = EXPORT_MIME[meta.mimeType] ?? "text/plain";
-      const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/export?mimeType=${encodeURIComponent(exportMime)}`);
+      const res = await googleFetch(
+        this.env,
+        this.sub,
+        `${BASE}/files/${fileId}/export?mimeType=${encodeURIComponent(exportMime)}`,
+      );
       return { content: await res.text(), mimeType: exportMime, exported: true };
     }
     const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?alt=media`);
@@ -288,7 +413,11 @@ export class DriveService {
 
   async getPermissions(fileId: string): Promise<{ permissions: DrivePermission[] }> {
     const fields = `permissions(${PERMISSION_FIELDS})`;
-    return googleJson<{ permissions: DrivePermission[] }>(this.env, this.sub, `${BASE}/files/${fileId}/permissions?fields=${encodeURIComponent(fields)}`);
+    return googleJson<{ permissions: DrivePermission[] }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}/permissions?fields=${encodeURIComponent(fields)}`,
+    );
   }
 
   /**
@@ -312,12 +441,18 @@ export class DriveService {
       spaces: "drive",
     });
     if (opts.pageToken) params.set("pageToken", opts.pageToken);
-    return googleJson<{ files: DriveNode[]; nextPageToken?: string }>(this.env, this.sub, `${BASE}/files?${params}`);
+    return googleJson<{ files: DriveNode[]; nextPageToken?: string }>(
+      this.env,
+      this.sub,
+      `${BASE}/files?${params}`,
+    );
   }
 
   /** Remove a single permission from a file/folder. */
   async deletePermission(fileId: string, permissionId: string): Promise<void> {
-    await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/permissions/${permissionId}`, { method: "DELETE" });
+    await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/permissions/${permissionId}`, {
+      method: "DELETE",
+    });
   }
 
   /** Find a child folder by exact name under a parent, or create it. Returns its id. */
@@ -336,7 +471,10 @@ export class DriveService {
    */
   async resolveFolderPath(path: string, rootId = "root"): Promise<string> {
     let parent = rootId;
-    for (const seg of path.split("/").map((s) => s.trim()).filter(Boolean)) {
+    for (const seg of path
+      .split("/")
+      .map((s) => s.trim())
+      .filter(Boolean)) {
       parent = await this.findOrCreateChildFolder(seg, parent);
     }
     return parent;
@@ -349,11 +487,19 @@ export class DriveService {
     emailAddress?: string,
     sendNotificationEmail = false,
   ): Promise<DrivePermission> {
-    const params = new URLSearchParams({ fields: "id,role,type", sendNotificationEmail: String(sendNotificationEmail) });
-    return googleJson<DrivePermission>(this.env, this.sub, `${BASE}/files/${fileId}/permissions?${params}`, {
-      method: "POST",
-      body: JSON.stringify({ role, type, ...(emailAddress ? { emailAddress } : {}) }),
+    const params = new URLSearchParams({
+      fields: "id,role,type",
+      sendNotificationEmail: String(sendNotificationEmail),
     });
+    return googleJson<DrivePermission>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}/permissions?${params}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ role, type, ...(emailAddress ? { emailAddress } : {}) }),
+      },
+    );
   }
 
   async updateFile(
@@ -371,10 +517,15 @@ export class DriveService {
 
   /** Move a file/folder to the trash (reversible; `trashed=false` restores it). */
   async trashFile(fileId: string, trashed = true): Promise<DriveFile> {
-    return googleJson<DriveFile>(this.env, this.sub, `${BASE}/files/${fileId}?fields=id,name,trashed`, {
-      method: "PATCH",
-      body: JSON.stringify({ trashed }),
-    });
+    return googleJson<DriveFile>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?fields=id,name,trashed`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ trashed }),
+      },
+    );
   }
 
   /**
@@ -386,18 +537,34 @@ export class DriveService {
    * @throws GoogleApiError when Drive rejects the request
    */
   async deleteFile(fileId: string): Promise<void> {
-    await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?supportsAllDrives=true`, { method: "DELETE" });
+    await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}?supportsAllDrives=true`, {
+      method: "DELETE",
+    });
   }
 
   /** Move a file/folder into `targetFolderId`, detaching it from its current parents. */
   async moveFile(fileId: string, targetFolderId: string): Promise<DriveFile> {
-    const meta = await googleJson<{ parents?: string[] }>(this.env, this.sub, `${BASE}/files/${fileId}?fields=parents`);
+    const meta = await googleJson<{ parents?: string[] }>(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}?fields=parents`,
+    );
     const removeParents = (meta.parents ?? []).join(",");
-    return this.updateFile(fileId, { addParents: targetFolderId, removeParents: removeParents || undefined });
+    return this.updateFile(fileId, {
+      addParents: targetFolderId,
+      removeParents: removeParents || undefined,
+    });
   }
 
-  async exportFile(fileId: string, mimeType: string): Promise<{ content: string; mimeType: string }> {
-    const res = await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/export?mimeType=${encodeURIComponent(mimeType)}`);
+  async exportFile(
+    fileId: string,
+    mimeType: string,
+  ): Promise<{ content: string; mimeType: string }> {
+    const res = await googleFetch(
+      this.env,
+      this.sub,
+      `${BASE}/files/${fileId}/export?mimeType=${encodeURIComponent(mimeType)}`,
+    );
     return { content: await res.text(), mimeType };
   }
 }
