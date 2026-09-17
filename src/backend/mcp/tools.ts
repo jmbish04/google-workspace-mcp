@@ -1133,7 +1133,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_edit_text",
     description:
-      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. Throws if the match contains a paragraph break or is not found. Returns { ok:true, range, before, after }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
+      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. If the match contains a non-text element (a footnote reference, inline image, person/date chip, rich link, auto-text, or page break) it writes NOTHING and returns { ok:false, spansNonText:true, runs } — deleting the reconstructed range would also delete that element. Throws if the match contains a paragraph break, the tab doesn't exist, or the text isn't found. Returns { ok:true, range, before, after }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
     inputSchema: z.object({
       documentId: z.string(),
       find: z.string().min(1),
@@ -1146,9 +1146,14 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const docs = new DocsService(env, acct(sub, a));
       const instance = a.instance ?? 1;
-      // getWithTabs (not getRaw) — every tab must be visible so a `tabId` match
-      // resolves against the same content batchUpdate will target.
-      const hit = locateText(await docs.getWithTabs(a.documentId), a.find, instance, {
+      const raw = await docs.getRaw(a.documentId);
+      if (a.tabId) {
+        const tabs = (raw as { tabs?: { tabProperties?: { tabId?: string } }[] })?.tabs ?? [];
+        if (!tabs.some((t) => t?.tabProperties?.tabId === a.tabId)) {
+          throw new Error(`Tab not found: ${a.tabId}`);
+        }
+      }
+      const hit = locateText(raw, a.find, instance, {
         matchCase: a.matchCase ?? true,
         tabId: a.tabId,
       });

@@ -27,6 +27,29 @@ const docJson = {
   ],
 };
 
+const footnoteDocJson = {
+  tabs: [
+    {
+      tabProperties: { tabId: "t.0" },
+      documentTab: {
+        body: {
+          content: [
+            {
+              paragraph: {
+                elements: [
+                  { startIndex: 1, endIndex: 10, textRun: { content: "the claim", textStyle: {} } },
+                  { startIndex: 10, endIndex: 11, footnoteReference: { footnoteId: "fn1" } },
+                  { startIndex: 11, endIndex: 21, textRun: { content: " is valid\n", textStyle: {} } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    },
+  ],
+};
+
 const tool = TOOLS.find((t) => t.name === "docs_edit_text")!;
 const ctx = { env: {} as Env, sub: "s1" };
 let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -67,5 +90,19 @@ describe("docs_edit_text tool", () => {
   it("throws Text not found for an absent match", async () => {
     const args = tool.inputSchema.parse({ documentId: "doc1", find: "nowhere", replace: "x" });
     await expect(tool.run(ctx, args)).rejects.toThrow(/Text not found/);
+  });
+
+  it("returns spansNonText and never calls batchUpdate when a footnote/image sits inside the match", async () => {
+    fetchSpy.mockImplementation(async () => new Response(JSON.stringify(footnoteDocJson), { status: 200 }));
+    const args = tool.inputSchema.parse({ documentId: "doc1", find: "claim is", replace: "assertion holds" });
+    const { result } = (await tool.run(ctx, args)) as { result: any };
+    expect(result.ok).toBe(false);
+    expect(result.spansNonText).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws Tab not found for an unknown tabId", async () => {
+    const args = tool.inputSchema.parse({ documentId: "doc1", find: "ready for review", replace: "x", tabId: "t.9" });
+    await expect(tool.run(ctx, args)).rejects.toThrow(/Tab not found: t\.9/);
   });
 });

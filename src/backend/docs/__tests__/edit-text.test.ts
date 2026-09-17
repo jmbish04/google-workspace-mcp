@@ -76,6 +76,45 @@ describe("planTextEdit", () => {
     expect(() => planTextEdit(hit, "c")).toThrow(/paragraph breaks/);
   });
 
+  it("refuses when the match's runs are not contiguous (a footnote/image/chip sits inside) and writes nothing", () => {
+    // "the claim"[1,10) · footnoteReference[10,11) (not a text run — locateText skips it) · " is valid\n"[11,21)
+    // find="claim is" -> runs [5,10) "claim" and [11,14) " is", with a 1-index gap at [10,11) for the footnote.
+    const hit: LocatedText = {
+      startIndex: 5,
+      endIndex: 14,
+      runs: [
+        { startIndex: 5, endIndex: 10, content: "claim", textStyle: {} },
+        { startIndex: 11, endIndex: 14, content: " is", textStyle: {} },
+      ],
+    };
+    expect(planTextEdit(hit, "assertion holds")).toEqual({ ok: false, spansNonText: true, runs: hit.runs });
+  });
+
+  it("an astral first character (surrogate pair) inserts after both units, not inside them", () => {
+    // "😀 ok" as one run: 😀 is 2 UTF-16 units, so the run spans [10,15) (2 + " ok".length=3).
+    const hit: LocatedText = { startIndex: 10, endIndex: 15, runs: [{ startIndex: 10, endIndex: 15, content: "😀 ok", textStyle: {} }] };
+    const plan = planTextEdit(hit, "yes"); // 3 chars
+    expect(plan).toEqual({
+      ok: true,
+      requests: [
+        { insertText: { location: { index: 12 }, text: "yes" } },
+        { deleteContentRange: { range: { startIndex: 15, endIndex: 18 } } },
+        { deleteContentRange: { range: { startIndex: 10, endIndex: 12 } } },
+      ],
+    });
+  });
+
+  it("a one-character match that is itself a surrogate pair needs no middle delete", () => {
+    const hit: LocatedText = { startIndex: 5, endIndex: 7, runs: [{ startIndex: 5, endIndex: 7, content: "😀", textStyle: {} }] };
+    expect(planTextEdit(hit, "XY")).toEqual({
+      ok: true,
+      requests: [
+        { insertText: { location: { index: 7 }, text: "XY" } },
+        { deleteContentRange: { range: { startIndex: 5, endIndex: 7 } } },
+      ],
+    });
+  });
+
   it("a tabId edit reads that tab's content, not the first tab (locateText + planTextEdit)", () => {
     const doc = {
       tabs: [
