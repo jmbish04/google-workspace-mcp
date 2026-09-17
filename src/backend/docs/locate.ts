@@ -50,3 +50,84 @@ export function findLastTable(rawDoc: any, tabId?: string): LocatedTable | null 
     cells,
   };
 }
+
+/** The covered slice of one Docs text run. */
+export interface TextRun {
+  startIndex: number;
+  endIndex: number;
+  content: string;
+  textStyle: Record<string, unknown>;
+}
+
+/** A located literal match: its UTF-16 document range and the run slices it covers. */
+export interface LocatedText {
+  startIndex: number;
+  endIndex: number;
+  runs: TextRun[];
+}
+
+/**
+ * Find the nth literal occurrence of `find` in a raw Docs document and resolve
+ * its real UTF-16 index range. Walks paragraphs and table cells in order.
+ * Shared by docs_style_text (via GoogleDocsClient.findElement) and docs_edit_text.
+ *
+ * @param rawDoc - `documents.get` JSON (legacy `body` or `includeTabsContent` `tabs`)
+ * @param find - literal text to locate (empty → null)
+ * @param instance - 1-based occurrence (overlapping occurrences count)
+ * @param opts - `matchCase` (default true), `tabId` (default first tab)
+ * @returns the range plus covered run slices, or null when not found
+ * @throws If `matchCase:false` lower-casing changes the text length (offsets would drift)
+ * @example
+ * locateText(doc, "ready for review") // → { startIndex: 22, endIndex: 38, runs: [...] }
+ */
+export function locateText(
+  rawDoc: any,
+  find: string,
+  instance = 1,
+  opts: { matchCase?: boolean; tabId?: string } = {},
+): LocatedText | null {
+  if (!find) return null;
+  const segs: { startIndex: number; content: string; textStyle: Record<string, unknown>; offset: number }[] = [];
+  let full = "";
+  const walk = (content: any[]): void => {
+    for (const el of content ?? []) {
+      for (const pe of el?.paragraph?.elements ?? []) {
+        const c = pe?.textRun?.content;
+        if (typeof c === "string" && typeof pe.startIndex === "number") {
+          segs.push({ startIndex: pe.startIndex, content: c, textStyle: pe.textRun.textStyle ?? {}, offset: full.length });
+          full += c;
+        }
+      }
+      for (const row of el?.table?.tableRows ?? []) {
+        for (const cell of row?.tableCells ?? []) walk(cell?.content);
+      }
+    }
+  };
+  walk(docBodyContent(rawDoc, opts.tabId));
+
+  const caseless = opts.matchCase === false;
+  const hay = caseless ? full.toLowerCase() : full;
+  const needle = caseless ? find.toLowerCase() : find;
+  if (hay.length !== full.length || needle.length !== find.length) {
+    throw new Error("matchCase:false is not supported for this text (lower-casing changes its length); use matchCase:true");
+  }
+
+  let from = 0;
+  for (let n = 1; ; n++) {
+    const hit = hay.indexOf(needle, from);
+    if (hit === -1) return null;
+    if (n === instance) {
+      const end = hit + needle.length;
+      const runs: TextRun[] = [];
+      for (const s of segs) {
+        const sEnd = s.offset + s.content.length;
+        if (sEnd <= hit || s.offset >= end) continue;
+        const a = Math.max(hit, s.offset) - s.offset;
+        const b = Math.min(end, sEnd) - s.offset;
+        runs.push({ startIndex: s.startIndex + a, endIndex: s.startIndex + b, content: s.content.slice(a, b), textStyle: s.textStyle });
+      }
+      return { startIndex: runs[0].startIndex, endIndex: runs[runs.length - 1].endIndex, runs };
+    }
+    from = hit + 1;
+  }
+}

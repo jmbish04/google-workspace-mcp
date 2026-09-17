@@ -16,6 +16,7 @@ import { extractGoogleId } from "@/backend/google/core/ids";
 import { GoogleApiClient } from "@/backend/google/core/client";
 import { convertDocsJsonToMarkdown } from "@/backend/google/core/markdown";
 import { GoogleScope } from "@/backend/lib/google-auth";
+import { locateText } from "@/backend/docs/locate";
 
 const DOCS_BASE = "https://docs.googleapis.com/v1";
 const DRIVE_BASE = "https://www.googleapis.com/drive/v3";
@@ -354,64 +355,9 @@ export class GoogleDocsClient extends GoogleApiClient {
     textToFind: string,
     instance = 1,
   ): Promise<{ startIndex: number; endIndex: number } | null> {
-    const doc = await this.getRaw<{
-      body?: { content?: DocsContentElement[] };
-    }>(docIdInput);
-    if (!doc.body?.content) return null;
-
-    let fullText = "";
-    const segments: { start: number; end: number; len: number }[] = [];
-    const collect = (content: DocsContentElement[]): void => {
-      for (const element of content) {
-        for (const pe of element.paragraph?.elements ?? []) {
-          const c = pe.textRun?.content;
-          if (c && pe.startIndex !== undefined && pe.endIndex !== undefined) {
-            fullText += c;
-            segments.push({ start: pe.startIndex, end: pe.endIndex, len: c.length });
-          }
-        }
-        for (const row of element.table?.tableRows ?? []) {
-          for (const cell of row.tableCells ?? []) {
-            if (cell.content) collect(cell.content);
-          }
-        }
-      }
-    };
-    collect(doc.body.content);
-
-    let searchStart = 0;
-    for (let found = 0; found < instance; ) {
-      const hit = fullText.indexOf(textToFind, searchStart);
-      if (hit === -1) return null;
-      found += 1;
-      if (found === instance) {
-        const targetStart = hit;
-        const targetEnd = hit + textToFind.length;
-        let pos = 0;
-        let startIndex = -1;
-        let endIndex = -1;
-        for (const seg of segments) {
-          const segStart = pos;
-          const segEnd = pos + seg.len;
-          if (startIndex === -1 && targetStart >= segStart && targetStart < segEnd) {
-            startIndex = seg.start + (targetStart - segStart);
-          }
-          if (targetEnd > segStart && targetEnd <= segEnd) {
-            endIndex = seg.start + (targetEnd - segStart);
-            break;
-          }
-          pos = segEnd;
-        }
-        if (startIndex === -1 || endIndex === -1) {
-          searchStart = hit + 1;
-          found -= 1;
-          continue;
-        }
-        return { startIndex, endIndex };
-      }
-      searchStart = hit + 1;
-    }
-    return null;
+    // One resolver for docs_style_text and docs_edit_text — see docs/locate.ts.
+    const hit = locateText(await this.getRaw(docIdInput), textToFind, instance);
+    return hit ? { startIndex: hit.startIndex, endIndex: hit.endIndex } : null;
   }
 
   /**
@@ -568,17 +514,6 @@ export class GoogleDocsClient extends GoogleApiClient {
 }
 
 // --- Internal types & request builders (ported from googleDocsApiHelpers.ts) ---
-
-interface DocsContentElement {
-  paragraph?: {
-    elements?: Array<{
-      startIndex?: number;
-      endIndex?: number;
-      textRun?: { content?: string };
-    }>;
-  };
-  table?: { tableRows?: Array<{ tableCells?: Array<{ content?: DocsContentElement[] }> }> };
-}
 
 interface DocsTab {
   tabProperties?: { tabId?: string; title?: string };
