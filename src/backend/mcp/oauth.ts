@@ -4,7 +4,7 @@
  *
  * This lets spec-compliant MCP clients (e.g. the claude.ai web "custom
  * connector") authorize automatically: discover metadata → dynamically register
- * → /authorize (which authenticates the user via Google) → /token → call /mcp
+ * → /authorize (a page offering Passcode or Google sign-in) → /token → call /mcp
  * with the issued Bearer access token.
  *
  * The access token we mint is opaque and maps (in KV) to the user's Google
@@ -19,8 +19,10 @@
  *   oauthrt:<refresh_token>   refresh token → { sub, scope, clientId } (~13 mo)
  */
 
-import { toBase64Url } from "../lib/crypto";
-import { getSecret } from "../utils/secrets";
+import { resolveAccount } from "@/backend/auth/provider";
+
+import { constantTimeEqual, toBase64Url } from "../lib/crypto";
+import { getSecret, getWorkerApiKey } from "../utils/secrets";
 import { SCOPES as SCOPES_SUPPORTED } from "./scopes";
 
 const ACCESS_TTL = 60 * 60 * 24 * 365; // 1 year — MCP clients shouldn't re-auth often
@@ -199,6 +201,32 @@ export async function handleOAuth(request: Request, env: Env): Promise<Response 
     );
   }
 
+  // --- Authorization endpoint: Passcode submit ----------------------------
+  // The passcode is WORKER_API_KEY (never named on the page or in errors). A
+  // correct one completes the pending request bound to the default Workspace
+  // identity; a wrong one re-renders the page and keeps the request alive.
+  if (p === "/authorize" && request.method === "POST") {
+    const form = new URLSearchParams(await request.text());
+    const reqId = form.get("req") ?? "";
+    const pending = await getJson<AuthReq>(env, `oauthreq:${reqId}`);
+    if (!pending) return oauthError("invalid_request", "Authorization request expired — please retry.");
+    const key = await getWorkerApiKey(env);
+    if (!key || !constantTimeEqual(form.get("passcode") ?? "", key)) {
+      return authorizePage(
+        {
+          host: new URL(pending.redirectUri).host,
+          reqId,
+          googleUrl: await googleAuthorizeUrl(env, base, reqId),
+          error: "That passcode is not right.",
+        },
+        401,
+      );
+    }
+    const redirectTo = await completeMcpAuthorize(env, reqId, resolveAccount(env));
+    if (!redirectTo) return oauthError("invalid_request", "Authorization request expired — please retry.");
+    return new Response(null, { status: 303, headers: { location: redirectTo, "cache-control": "no-store" } });
+  }
+
   // --- Authorization endpoint ---------------------------------------------
   if (p === "/authorize") {
     const q = url.searchParams;
@@ -227,25 +255,17 @@ export async function handleOAuth(request: Request, env: Env): Promise<Response 
     if (responseType !== "code") return back("unsupported_response_type");
     if (!codeChallenge || method !== "S256") return back("invalid_request", "PKCE S256 required");
 
-    // Store the pending request; authenticate the user via Google, carrying the
-    // req id through Google's `state` (prefixed so the callback can branch).
+    // Store the pending request, then let the person choose: Passcode (POST
+    // /authorize) or Google sign-in (req id rides Google's `state`).
     const reqId = randomToken(18);
     const req: AuthReq = { clientId, redirectUri, codeChallenge, clientState: state, scope };
     await kv(env).put(`oauthreq:${reqId}`, JSON.stringify(req), { expirationTtl: REQ_TTL });
 
-    const clientIdG = await getSecret(env, "GOOGLE_CLIENT_ID");
-    if (!clientIdG) return back("server_error", "GOOGLE_CLIENT_ID not configured");
-    const googleParams = new URLSearchParams({
-      client_id: clientIdG,
-      redirect_uri: `${base}/auth/google/callback`,
-      response_type: "code",
-      access_type: "offline",
-      prompt: "consent",
-      include_granted_scopes: "true",
-      scope: SCOPES_SUPPORTED.join(" "),
-      state: `mcp:${reqId}`,
+    return authorizePage({
+      host: new URL(redirectUri).host,
+      reqId,
+      googleUrl: await googleAuthorizeUrl(env, base, reqId),
     });
-    return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${googleParams}`, 302);
   }
 
   // --- Token endpoint ------------------------------------------------------
@@ -328,11 +348,89 @@ function isValidRedirect(u: string): boolean {
   try {
     const parsed = new URL(u);
     if (parsed.protocol === "https:") return true;
-    // Allow loopback for native/desktop clients.
-    if (parsed.protocol === "http:" && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")) return true;
-    return false;
+    // Plain http only to loopback, where native/CLI clients listen.
+    return parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
   } catch {
     return false;
   }
+}
+
+/**
+ * Google consent URL that completes pending request `reqId` via
+ * /auth/google/callback (`state = mcp:<reqId>`).
+ *
+ * @param env - Worker env
+ * @param base - public origin of this Worker
+ * @param reqId - pending authorize request id
+ * @returns the URL, or null when Google sign-in is not configured
+ */
+async function googleAuthorizeUrl(env: Env, base: string, reqId: string): Promise<string | null> {
+  const clientId = await getSecret(env, "GOOGLE_CLIENT_ID");
+  if (!clientId) return null;
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: `${base}/auth/google/callback`,
+    response_type: "code",
+    access_type: "offline",
+    prompt: "consent",
+    include_granted_scopes: "true",
+    scope: SCOPES_SUPPORTED.join(" "),
+    state: `mcp:${reqId}`,
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+}
+
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/**
+ * The consent page. Registration is open, so it names the host that will
+ * receive the grant (a phishing link reads "connect evil.example" before the
+ * passcode goes in). It says "Passcode" and never names the credential.
+ *
+ * @param o - receiving host, pending request id, optional Google URL and error
+ * @param status - HTTP status (401 after a wrong passcode)
+ * @returns the HTML response
+ */
+function authorizePage(
+  o: { host: string; reqId: string; googleUrl: string | null; error?: string },
+  status = 200,
+): Response {
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect · Google Workspace MCP</title>
+<style>
+:root{color-scheme:dark}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#131313;color:#fafafa;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.card{width:100%;max-width:360px;background:#1c1c1c;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:28px}
+h1{margin:0 0 6px;font-size:19px;font-weight:600}
+p.sub{margin:0 0 22px;font-size:13.5px;color:#a1a1a1}
+label{display:block;font-size:13px;font-weight:500;margin-bottom:7px}
+input[type=password]{width:100%;box-sizing:border-box;padding:10px 12px;font-size:15px;color:inherit;background:#141414;border:1px solid rgba(255,255,255,.16);border-radius:9px}
+input[type=password]:focus{outline:none;border-color:#4ade80;box-shadow:0 0 0 3px rgba(74,222,128,.16)}
+button,a.alt{display:block;width:100%;box-sizing:border-box;margin-top:14px;padding:10px 12px;font-size:15px;font-weight:600;text-align:center;border:0;border-radius:9px;cursor:pointer;text-decoration:none}
+button{color:#06240f;background:#4ade80}
+a.alt{color:#fafafa;background:#262626}
+.err{margin:0 0 16px;padding:9px 11px;font-size:13px;border-radius:9px;color:#fecaca;background:rgba(239,68,68,.13);border:1px solid rgba(239,68,68,.3)}
+.or{margin:18px 0 0;text-align:center;font-size:12px;color:#7d7d7d}
+</style></head><body><main class="card">
+<h1>Google Workspace MCP</h1>
+<p class="sub">Enter the passcode to connect ${esc(o.host)}. It stays connected for one year.</p>
+${o.error ? `<p class="err" role="alert">${esc(o.error)}</p>` : ""}
+<form method="post" action="/authorize">
+<input type="hidden" name="req" value="${esc(o.reqId)}">
+<label for="passcode">Passcode</label>
+<input id="passcode" name="passcode" type="password" required autofocus autocomplete="current-password">
+<button type="submit">Authorize</button>
+</form>
+${o.googleUrl ? `<p class="or">or</p><a class="alt" href="${esc(o.googleUrl)}">Sign in with Google</a>` : ""}
+</main></body></html>`;
+  return new Response(html, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "frame-ancestors 'none'",
+    },
+  });
 }
 

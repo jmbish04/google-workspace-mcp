@@ -13,7 +13,12 @@ function kvMock() {
 
 let env: Env;
 beforeEach(() => {
-  env = { SESSIONS: kvMock(), GOOGLE_CLIENT_ID: "gcid", PUBLIC_BASE_URL: "https://mcp.example.dev" } as unknown as Env;
+  env = {
+    SESSIONS: kvMock(),
+    GOOGLE_CLIENT_ID: "gcid",
+    PUBLIC_BASE_URL: "https://mcp.example.dev",
+    WORKER_API_KEY: "test-key-0123456789abcdef",
+  } as unknown as Env;
 });
 
 function req(path: string, init: RequestInit = {}): Request {
@@ -27,6 +32,21 @@ async function challengeFor(verifier: string): Promise<string> {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
+}
+
+/** The pending-request id the authorize page carries in its passcode form. */
+function reqIdFrom(page: string): string {
+  const m = page.match(/name="req" value="([^"]+)"/);
+  if (!m) throw new Error("authorize page has no req field");
+  return m[1];
+}
+
+function formPost(path: string, fields: Record<string, string>): Request {
+  return req(path, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(fields).toString(),
+  });
 }
 
 describe("MCP OAuth discovery", () => {
@@ -80,12 +100,11 @@ describe("MCP OAuth full flow", () => {
       ),
       env,
     );
-    expect(authRes!.status).toBe(302);
-    const googleLoc = authRes!.headers.get("location")!;
-    expect(googleLoc).toContain("accounts.google.com");
-    const googleState = new URL(googleLoc).searchParams.get("state")!;
-    expect(googleState).toMatch(/^mcp:/);
-    const reqId = googleState.slice(4);
+    expect(authRes!.status).toBe(200);
+    const page = await authRes!.text();
+    expect(page).toContain("accounts.google.com");
+    expect(page).toContain("state=mcp%3A");
+    const reqId = reqIdFrom(page);
 
     // Google callback would call this after authenticating the user
     const clientRedirect = await completeMcpAuthorize(env, reqId, "sub-999");
@@ -146,7 +165,7 @@ describe("MCP OAuth full flow", () => {
       ),
       env,
     );
-    const reqId = new URL(authRes!.headers.get("location")!).searchParams.get("state")!.slice(4);
+    const reqId = reqIdFrom(await authRes!.text());
     const code = new URL((await completeMcpAuthorize(env, reqId, "sub-1"))!).searchParams.get("code")!;
 
     const tokRes = await handleOAuth(
@@ -180,7 +199,7 @@ describe("MCP OAuth full flow", () => {
       ),
       env,
     );
-    const reqId = new URL(authRes!.headers.get("location")!).searchParams.get("state")!.slice(4);
+    const reqId = reqIdFrom(await authRes!.text());
     const code = new URL((await completeMcpAuthorize(env, reqId, "sub-1"))!).searchParams.get("code")!;
     const tok = (await (await handleOAuth(
       req("/token", {
@@ -218,5 +237,105 @@ describe("MCP OAuth full flow", () => {
 
   it("returns null for non-OAuth paths (falls through)", async () => {
     expect(await handleOAuth(req("/gws"), env)).toBeNull();
+  });
+});
+
+describe("MCP OAuth passcode door", () => {
+  const cb = "https://claude.ai/api/mcp/auth_callback";
+  const verifier = "verifier-passcode-0123456789-0123456789-0123";
+
+  async function openPage(): Promise<{ clientId: string; res: Response; page: string }> {
+    const reg = await handleOAuth(
+      req("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [cb] }),
+      }),
+      env,
+    );
+    const clientId = ((await reg!.json()) as any).client_id as string;
+    const res = (await handleOAuth(
+      req(
+        `/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(cb)}` +
+          `&code_challenge=${await challengeFor(verifier)}&code_challenge_method=S256&state=s1`,
+      ),
+      env,
+    ))!;
+    return { clientId, res, page: await res.text() };
+  }
+
+  it("page names the receiving host, says Passcode, never names the secret, refuses framing", async () => {
+    const { res, page } = await openPage();
+    expect(res.status).toBe(200);
+    expect(page).toContain("Enter the passcode to connect claude.ai");
+    expect(page).toContain("Passcode");
+    expect(page).not.toMatch(/WORKER_API_KEY/i);
+    expect(page).not.toContain("test-key-0123456789abcdef");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+
+  it("wrong passcode → 401 with no redirect; the pending request survives for a retry", async () => {
+    const { page } = await openPage();
+    const reqId = reqIdFrom(page);
+    const bad = (await handleOAuth(formPost("/authorize", { req: reqId, passcode: "wrong" }), env))!;
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get("location")).toBeNull();
+    const badPage = await bad.text();
+    expect(badPage).toContain("That passcode is not right.");
+    expect(badPage).not.toMatch(/WORKER_API_KEY/i);
+    const ok = (await handleOAuth(formPost("/authorize", { req: reqId, passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(ok.status).toBe(303);
+  });
+
+  it("right passcode → 303 code+state → 1-year token bound to the default identity", async () => {
+    const { clientId, page } = await openPage();
+    const ok = (await handleOAuth(
+      formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }),
+      env,
+    ))!;
+    expect(ok.status).toBe(303);
+    const loc = new URL(ok.headers.get("location")!);
+    expect(loc.origin + loc.pathname).toBe(cb);
+    expect(loc.searchParams.get("state")).toBe("s1");
+    const code = loc.searchParams.get("code")!;
+
+    const tokRes = (await handleOAuth(
+      formPost("/token", { grant_type: "authorization_code", code, redirect_uri: cb, client_id: clientId, code_verifier: verifier }),
+      env,
+    ))!;
+    expect(tokRes.status).toBe(200);
+    const tok = (await tokRes.json()) as any;
+    expect(tok.expires_in).toBe(31536000);
+    expect(await resolveAccessToken(env, tok.access_token)).toBe("justin@126colby.com");
+  });
+
+  it("POST /authorize with an unknown request id → 400", async () => {
+    const res = (await handleOAuth(formPost("/authorize", { req: "nope", passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(res.status).toBe(400);
+  });
+
+  it("registration allows http only to loopback, including [::1]", async () => {
+    const reg = (uri: string) =>
+      handleOAuth(
+        req("/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [uri] }) }),
+        env,
+      );
+    expect((await reg("http://evil.example/cb"))!.status).toBe(400);
+    expect((await reg("http://localhost:33418/cb"))!.status).toBe(201);
+    expect((await reg("http://[::1]:33418/cb"))!.status).toBe(201);
+  });
+
+  it("authorize without PKCE, or with plain PKCE, is refused", async () => {
+    const reg = await handleOAuth(
+      req("/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [cb] }) }),
+      env,
+    );
+    const clientId = ((await reg!.json()) as any).client_id as string;
+    const base = `/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(cb)}&state=s`;
+    for (const extra of ["", "&code_challenge=abc&code_challenge_method=plain"]) {
+      const res = (await handleOAuth(req(base + extra), env))!;
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get("location")!).searchParams.get("error")).toBe("invalid_request");
+    }
   });
 });
