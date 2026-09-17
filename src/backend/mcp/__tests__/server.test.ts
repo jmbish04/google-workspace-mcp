@@ -2,6 +2,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createSessionCookie } from "@/backend/lib/cookies";
 import { handleMcpRequest } from "../server";
 
+// Capture the resolved sub without running a real tool or touching D1.
+vi.mock("../tool-runner", () => ({
+  runTool: vi.fn(async (_tool: unknown, ctx: { sub: string }) => ({ result: { sub: ctx.sub } })),
+}));
+vi.mock("../logging", () => ({
+  logOperation: vi.fn(async () => {}),
+  logAssetTouch: vi.fn(async () => {}),
+}));
+
 // ponytail: SESSIONS is a KV binding. getCookieSigningKey reads the
 // COOKIE_SIGNING_KEY key; the OAuth token lookup reads oauthtok:* — return the
 // signing key only for its key, null otherwise (a naive "return X for all keys"
@@ -156,5 +165,74 @@ describe("handleMcpRequest", () => {
     const body = await rpcJson(res);
     expect(body.error).toBeDefined();
     expect(body.error!.code).toBe(-32700);
+  });
+});
+
+const KEY = "test-key-0123456789abcdef";
+
+function envWith(vars: Record<string, unknown> = {}, kv: Record<string, string> = {}): Env {
+  return {
+    SESSIONS: {
+      get: async (k: string) => (k === "COOKIE_SIGNING_KEY" ? "test-key-please-change" : (kv[k] ?? null)),
+    },
+    WORKER_API_KEY: KEY,
+    GOOGLE_WORKSPACE_ACCOUNT_EMAIL: "",
+    GOOGLE_USER_TO_IMPERSONATE: "",
+    ...vars,
+  } as unknown as Env;
+}
+
+const runCall = {
+  jsonrpc: "2.0",
+  id: 9,
+  method: "tools/call",
+  params: { name: "code_mode_run", arguments: { code: "return 1" } },
+};
+
+async function subOf(res: Response): Promise<string> {
+  const body = await rpcJson(res);
+  return JSON.parse(body.result.content[0].text).sub;
+}
+
+describe("/mcp auth doors", () => {
+  it("Bearer WORKER_API_KEY resolves to the default Workspace identity (empty vars fall back)", async () => {
+    const res = await handleMcpRequest(rpc(runCall, { authorization: `Bearer ${KEY}` }), envWith(), ctx);
+    expect(res.status).toBe(200);
+    expect(await subOf(res)).toBe("justin@126colby.com");
+  });
+
+  it("default identity prefers GOOGLE_WORKSPACE_ACCOUNT_EMAIL, then GOOGLE_USER_TO_IMPERSONATE", async () => {
+    const a = await handleMcpRequest(
+      rpc(runCall, { authorization: `Bearer ${KEY}` }),
+      envWith({ GOOGLE_WORKSPACE_ACCOUNT_EMAIL: "Ops@126colby.com", GOOGLE_USER_TO_IMPERSONATE: "x@126colby.com" }),
+      ctx,
+    );
+    expect(await subOf(a)).toBe("ops@126colby.com");
+    const b = await handleMcpRequest(
+      rpc(runCall, { authorization: `Bearer ${KEY}` }),
+      envWith({ GOOGLE_USER_TO_IMPERSONATE: "x@126colby.com" }),
+      ctx,
+    );
+    expect(await subOf(b)).toBe("x@126colby.com");
+  });
+
+  it("a wrong key is HTTP 401 with WWW-Authenticate and never names the secret", async () => {
+    const res = await handleMcpRequest(
+      rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" }, { authorization: "Bearer not-the-key" }),
+      envWith(),
+      ctx,
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toContain(
+      'resource_metadata="https://example.workers.dev/.well-known/oauth-protected-resource"',
+    );
+    expect(await res.text()).not.toMatch(/WORKER_API_KEY/i);
+  });
+
+  it("a Google-sign-in OAuth access token still resolves to its Google sub", async () => {
+    const env2 = envWith({}, { "oauthtok:at_google": JSON.stringify({ sub: "google-sub-1", clientId: "c1" }) });
+    const res = await handleMcpRequest(rpc(runCall, { authorization: "Bearer at_google" }), env2, ctx);
+    expect(res.status).toBe(200);
+    expect(await subOf(res)).toBe("google-sub-1");
   });
 });

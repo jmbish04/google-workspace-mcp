@@ -56,11 +56,16 @@ export const DEFAULT_ACCOUNT: GoogleAccount = "workspace";
  */
 export function resolveAccount(env: Env, input?: string): GoogleAccount {
   const v = (input ?? "").trim().toLowerCase();
+  // `||`, not `??`: wrangler.jsonc ships these vars as "" and `"" ?? x` is "".
   if (!v || v === "workspace" || v === "justin") {
-    return (env.GOOGLE_WORKSPACE_ACCOUNT_EMAIL ?? "justin@126colby.com").toLowerCase();
+    return (
+      env.GOOGLE_WORKSPACE_ACCOUNT_EMAIL ||
+      env.GOOGLE_USER_TO_IMPERSONATE ||
+      "justin@126colby.com"
+    ).toLowerCase();
   }
   if (v === "personal" || v === "jmbish04") {
-    return (env.GOOGLE_PERSONAL_ACCOUNT_EMAIL ?? "jmbish04@gmail.com").toLowerCase();
+    return (env.GOOGLE_PERSONAL_ACCOUNT_EMAIL || "jmbish04@gmail.com").toLowerCase();
   }
   return v;
 }
