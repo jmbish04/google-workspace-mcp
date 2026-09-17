@@ -16,6 +16,7 @@ import { z } from "zod";
 import { resolveAccount } from "@/backend/auth/provider";
 import { verifySessionCookie } from "@/backend/lib/cookies";
 import { constantTimeEqual } from "@/backend/lib/crypto";
+import { apiGuide } from "@/backend/mcp/code-mode";
 import { getWorkerApiKey } from "@/backend/utils/secrets";
 import { logOperation, logAssetTouch } from "./logging";
 import { resolveAccessToken, oauthBaseUrl } from "./oauth";
@@ -116,6 +117,7 @@ async function dispatch(req: JsonRpcRequest, env: Env, sub: string | null): Prom
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
         serverInfo: { name: "google-workspace-mcp", version: "1.0.0" },
+        instructions: apiGuide(),
       });
 
     case "ping":

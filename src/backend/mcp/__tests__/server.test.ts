@@ -82,6 +82,13 @@ describe("handleMcpRequest", () => {
     expect(body.result.serverInfo).toEqual({ name: "google-workspace-mcp", version: "1.0.0" });
   });
 
+  it("initialize (authed) returns the Preserve/Redesign/Clarify editing policy as instructions", async () => {
+    const res = await handleMcpRequest(await authed({ jsonrpc: "2.0", id: 1, method: "initialize" }), env, ctx);
+    expect(res.status).toBe(200);
+    const body = await rpcJson(res);
+    expect(body.result.instructions).toContain("Preserve (default)");
+  });
+
   it("tools/list (authed) returns only the code-mode catalog with JSON Schema input/output shapes", async () => {
     const res = await handleMcpRequest(await authed({ jsonrpc: "2.0", id: 2, method: "tools/list" }), env, ctx);
     expect(res.status).toBe(200);

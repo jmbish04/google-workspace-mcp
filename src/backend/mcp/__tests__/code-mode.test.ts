@@ -70,6 +70,12 @@ describe("apiGuide", () => {
       expect(g).toContain(tool);
     }
   });
+
+  it("documents the spansNonText refusal alongside mixedStyles", () => {
+    const g = apiGuide();
+    expect(g).toContain("spansNonText");
+    expect(g).toContain("footnote reference");
+  });
 });
 
 describe("toolCatalogDetailed", () => {

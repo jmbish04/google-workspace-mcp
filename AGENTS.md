@@ -67,9 +67,13 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   default identity, 1-year access tokens. Live check: `scripts/auth-check.mjs`.
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
-  `{ok:false,mixedStyles:true,runs}`; resolver `docs/locate.ts#locateText`) and
-  `sheets_update_values` (values.update, USER_ENTERED). The Preserve/Redesign/Clarify
-  editing policy lives in `mcp/code-mode.ts#apiGuide`.
+  `{ok:false,mixedStyles:true,runs}`; non-text-element match →
+  `{ok:false,spansNonText:true,runs}`; resolver `docs/locate.ts#locateText`, shared
+  with `docs_style_text` via `GoogleDocsClient.findElement` — which calls
+  `locateText` with no options, so `docs_style_text` always matches case-sensitively
+  in the first tab, with no `matchCase`/`tabId` control) and `sheets_update_values`
+  (values.update, USER_ENTERED). The Preserve/Redesign/Clarify editing policy lives
+  in `mcp/code-mode.ts#apiGuide`.
 - **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
   `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
   Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,

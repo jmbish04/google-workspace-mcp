@@ -79,8 +79,9 @@ export function apiGuide(): string {
     "- Redesign: only when the user explicitly asks for the look to change (\"make it look better\", \"prettier\", \"redesign\", \"restyle\", \"modernize the layout\", \"be creative with formatting\"). Styling tools, raw batch updates and templates are allowed. Wording stays unless the user also asks for a rewrite.",
     "- Clarify: when intent is unclear (\"improve this section\"), ask one short question (content only, or the look too) and write nothing until answered.",
     "- Redesign-only tools (never in Preserve): docs_create_from_markdown, html_to_doc, docs_append_markdown, docs_batch_update, slides_create_from_markdown, slides_batch_update, sheets_batch_update, docs_style_text, slides_style_text, slides_style_shape, slides_set_slide_background, docs_qc_fix, instantiate_from_template.",
-    "- Preserve check: before a write, read `docs_get_json` for the target range; after it, read again and confirm each affected text run's `textStyle` and each paragraph's `namedStyleType` are unchanged. If anything drifted, say so in the reply and point to version history.",
+    "- Preserve check: before a write, read `docs_get_json` (the whole document) and inspect the target range within it; after the write, read again and confirm each affected text run's `textStyle` and each paragraph's `namedStyleType` are unchanged. If anything drifted, say so in the reply and point to version history.",
     "- Mixed styles: when `docs_edit_text` returns `{ ok:false, mixedStyles:true, runs }`, edit each run separately so bold stays bold and plain stays plain. It throws on a match containing a paragraph break — edit within one paragraph.",
+    "- Non-text spans: when `docs_edit_text` returns `{ ok:false, spansNonText:true, runs }`, the match contains something other than text (a footnote reference, inline image, person or date chip, rich link, auto-text or page break) and nothing was written. Pick a match that avoids the element — don't retry the same match, and don't fall back to rewriting the whole range.",
   ].join("\n");
 }
 
