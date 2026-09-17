@@ -240,7 +240,10 @@ export async function handleOAuth(request: Request, env: Env): Promise<Response 
         403,
       );
     }
-    const key = await getWorkerApiKey(env);
+    // An unreadable key is treated as absent rather than thrown: a Secret Store
+    // hiccup should re-render the page, not 500. Still fail-closed — absent can
+    // never match, so nothing is issued.
+    const key = await getWorkerApiKey(env).catch(() => undefined);
     if (!key || !constantTimeEqual(form.get("passcode") ?? "", key)) {
       // A brute-force run against production is otherwise invisible. Neither
       // the credential's name nor the submitted value is logged.

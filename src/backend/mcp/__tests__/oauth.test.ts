@@ -330,6 +330,25 @@ describe("MCP OAuth passcode door", () => {
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
+  it("a Secret Store failure fails the passcode closed — 401, same error, nothing issued, no 500", async () => {
+    const { page } = await openPage();
+    const reqId = reqIdFrom(page);
+    (env as any).WORKER_API_KEY = {
+      get: async () => {
+        throw new Error("secrets store unavailable");
+      },
+    };
+    const res = (await handleOAuth(formPost("/authorize", { req: reqId, passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(res.status).toBe(401);
+    expect(res.headers.get("location")).toBeNull();
+    const body = await res.text();
+    expect(body).toContain("That passcode is not right.");
+    expect(body).not.toMatch(/WORKER_API_KEY/i);
+    // Nothing minted: the pending request is still pending, no code, no token.
+    const keys = [...(env.SESSIONS as any).store.keys()] as string[];
+    expect(keys.some((k) => k.startsWith("oauthcode:") || k.startsWith("oauthtok:"))).toBe(false);
+  });
+
   it("a replayed req after a successful authorize is refused (single use)", async () => {
     const { page } = await openPage();
     const reqId = reqIdFrom(page);
