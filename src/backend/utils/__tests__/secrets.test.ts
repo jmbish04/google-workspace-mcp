@@ -4,8 +4,35 @@ import {
   accountSecretSuffix,
   getGoogleOAuthClientIdForAccount,
   getSeedRefreshTokenForAccount,
+  getWorkerApiKey,
   hasDedicatedOAuthClient,
 } from "../secrets";
+
+describe("getWorkerApiKey", () => {
+  it("awaits the Secret Store binding's .get()", async () => {
+    const env = { WORKER_API_KEY: { get: async () => "from-secret-store" } } as unknown as Env;
+    expect(await getWorkerApiKey(env)).toBe("from-secret-store");
+  });
+
+  it("reads a plain string binding (local/dev fallback)", async () => {
+    expect(await getWorkerApiKey({ WORKER_API_KEY: "plain" } as unknown as Env)).toBe("plain");
+  });
+
+  it("is undefined when nothing is configured, so callers fail closed", async () => {
+    expect(await getWorkerApiKey({} as unknown as Env)).toBeUndefined();
+  });
+
+  it("propagates a Secret Store failure — callers decide whether to fail closed", async () => {
+    const env = {
+      WORKER_API_KEY: {
+        get: async () => {
+          throw new Error("secrets store unavailable");
+        },
+      },
+    } as unknown as Env;
+    await expect(getWorkerApiKey(env)).rejects.toThrow("secrets store unavailable");
+  });
+});
 
 describe("accountSecretSuffix", () => {
   it("normalizes an email to an uppercase underscore suffix", () => {

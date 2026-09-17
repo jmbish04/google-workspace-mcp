@@ -64,7 +64,12 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   (`GOOGLE_WORKSPACE_ACCOUNT_EMAIL || GOOGLE_USER_TO_IMPERSONATE || justin@126colby.com`
   — `||`, the vars ship as ""). OAuth `/authorize` renders a page offering **Passcode**
   (same secret, never named in UI/errors) or Google sign-in; passcode grants bind to the
-  default identity, 1-year access tokens. Live check: `scripts/auth-check.mjs`.
+  default identity, 1-year access tokens. Registration is open, so the **Passcode POST
+  only completes for a redirect host on `oauth.ts#PASSCODE_REDIRECT_HOSTS`** (claude.ai,
+  `*.claude.ai`, loopback) — otherwise a phishing link could trade one passcode entry for
+  a year of full Workspace access. Google sign-in stays open to any host: it binds the
+  signer's own identity. Failed passcodes are `console.warn`ed (host + client_id only).
+  Live check: `scripts/auth-check.mjs`.
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →

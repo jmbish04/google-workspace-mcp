@@ -242,4 +242,41 @@ describe("/mcp auth doors", () => {
     expect(res.status).toBe(200);
     expect(await subOf(res)).toBe("google-sub-1");
   });
+
+  it("an unresolvable key fails closed: no key configured → 401, never an open door", async () => {
+    const res = await handleMcpRequest(
+      rpc(runCall, { authorization: "Bearer anything-at-all" }),
+      envWith({ WORKER_API_KEY: undefined }),
+      ctx,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("a Secret Store failure does not 500 a valid OAuth token", async () => {
+    const env2 = envWith(
+      {
+        WORKER_API_KEY: {
+          get: async () => {
+            throw new Error("secrets store unavailable");
+          },
+        },
+      },
+      { "oauthtok:at_google": JSON.stringify({ sub: "google-sub-1", clientId: "c1" }) },
+    );
+    const res = await handleMcpRequest(rpc(runCall, { authorization: "Bearer at_google" }), env2, ctx);
+    expect(res.status).toBe(200);
+    expect(await subOf(res)).toBe("google-sub-1");
+  });
+
+  it("a Secret Store failure still refuses an unknown bearer (fails closed)", async () => {
+    const env2 = envWith({
+      WORKER_API_KEY: {
+        get: async () => {
+          throw new Error("secrets store unavailable");
+        },
+      },
+    });
+    const res = await handleMcpRequest(rpc(runCall, { authorization: "Bearer not-a-token" }), env2, ctx);
+    expect(res.status).toBe(401);
+  });
 });

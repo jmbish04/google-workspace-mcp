@@ -53,7 +53,10 @@ async function resolveSub(request: Request, env: Env): Promise<string | null> {
   const auth = request.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) {
     const token = auth.slice(7);
-    const workerKey = await getWorkerApiKey(env);
+    // A Secret Store hiccup must not 500 a request a later door would have
+    // authenticated: an unreadable key is treated as "no key" and we fall
+    // through. The check itself stays fail-closed — absent means no match.
+    const workerKey = await getWorkerApiKey(env).catch(() => undefined);
     if (workerKey && constantTimeEqual(token, workerKey)) return resolveAccount(env);
     const oauthSub = await resolveAccessToken(env, token);
     if (oauthSub) return oauthSub;

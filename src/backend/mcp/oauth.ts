@@ -7,13 +7,15 @@
  * → /authorize (a page offering Passcode or Google sign-in) → /token → call /mcp
  * with the issued Bearer access token.
  *
- * The access token we mint is opaque and maps (in KV) to the user's Google
- * `sub`. Tool calls then use the Google refresh token already stored in KV
- * (see tokenProvider). We never expose Google tokens to the MCP client.
+ * The access token we mint is opaque and maps (in KV) to an account ref: the
+ * user's Google `sub` after a Google sign-in, or the default Workspace email
+ * after a Passcode grant. Tool calls then use the Google refresh token already
+ * stored in KV (see tokenProvider). We never expose Google tokens to the MCP
+ * client.
  *
  * All state lives in the existing `SESSIONS` KV, namespaced by prefix:
- *   oauthclient:<client_id>   registered client (long-lived)
- *   oauthreq:<req_id>         pending /authorize awaiting Google login (10 min)
+ *   oauthclient:<client_id>   registered client (long-lived, no TTL)
+ *   oauthreq:<req_id>         pending /authorize awaiting Passcode or Google (10 min)
  *   oauthcode:<code>          issued authorization code (5 min, single-use)
  *   oauthtok:<access_token>   access token → { sub, scope, clientId } (1 y)
  *   oauthrt:<refresh_token>   refresh token → { sub, scope, clientId } (~13 mo)
@@ -86,16 +88,22 @@ const getJson = async <T>(env: Env, key: string): Promise<T | null> => {
 // Public API used by the rest of the worker
 // ---------------------------------------------------------------------------
 
-/** Resolve an issued MCP access token to its Google `sub`, or null. */
+/** Resolve an issued MCP access token to its account ref (Google `sub`, or an email), or null. */
 export async function resolveAccessToken(env: Env, token: string): Promise<string | null> {
   const rec = await getJson<TokRec>(env, `oauthtok:${token}`);
   return rec?.sub ?? null;
 }
 
 /**
- * Complete a pending /authorize after the user has authenticated with Google.
- * Called from the Google callback when it detects an `mcp:<reqId>` state.
- * Returns the client redirect URL (with code+state) or null if reqId invalid.
+ * Complete a pending /authorize once the person has authenticated — from the
+ * Google callback when it detects an `mcp:<reqId>` state, or from the Passcode
+ * POST above (which passes the default Workspace identity). Consumes `reqId`,
+ * so a replay of the same request is refused.
+ *
+ * @param env - Worker env
+ * @param reqId - pending authorize request id
+ * @param sub - account ref to bind the grant to (Google `sub`, or an email)
+ * @returns the client redirect URL (with code+state), or null if reqId is unknown/expired
  */
 export async function completeMcpAuthorize(env: Env, reqId: string, sub: string): Promise<string | null> {
   const req = await getJson<AuthReq>(env, `oauthreq:${reqId}`);
@@ -204,17 +212,42 @@ export async function handleOAuth(request: Request, env: Env): Promise<Response 
   // --- Authorization endpoint: Passcode submit ----------------------------
   // The passcode is WORKER_API_KEY (never named on the page or in errors). A
   // correct one completes the pending request bound to the default Workspace
-  // identity; a wrong one re-renders the page and keeps the request alive.
+  // identity, but only for a host on PASSCODE_REDIRECT_HOSTS; a wrong one
+  // re-renders the page and keeps the request alive.
   if (p === "/authorize" && request.method === "POST") {
     const form = new URLSearchParams(await request.text());
     const reqId = form.get("req") ?? "";
     const pending = await getJson<AuthReq>(env, `oauthreq:${reqId}`);
     if (!pending) return oauthError("invalid_request", "Authorization request expired — please retry.");
-    const key = await getWorkerApiKey(env);
-    if (!key || !constantTimeEqual(form.get("passcode") ?? "", key)) {
+    const pendingUrl = new URL(pending.redirectUri);
+    // Registration is open, so anyone can register their own redirect_uri and
+    // mail the /authorize link. The passcode door grants a year of full
+    // Workspace access, so it opens only for the hosts we actually ship to;
+    // Google sign-in stays open to everyone, since it binds the signer's own
+    // identity rather than the default one.
+    if (!isPasscodeRedirectHost(pendingUrl.hostname)) {
+      console.warn("[mcp-oauth] passcode refused for an unlisted redirect host", {
+        host: pendingUrl.host,
+        clientId: pending.clientId,
+      });
       return authorizePage(
         {
-          host: new URL(pending.redirectUri).host,
+          host: pendingUrl.host,
+          reqId,
+          googleUrl: await googleAuthorizeUrl(env, base, reqId),
+          error: "This site can't be connected with a passcode. Sign in with Google instead.",
+        },
+        403,
+      );
+    }
+    const key = await getWorkerApiKey(env);
+    if (!key || !constantTimeEqual(form.get("passcode") ?? "", key)) {
+      // A brute-force run against production is otherwise invisible. Neither
+      // the credential's name nor the submitted value is logged.
+      console.warn("[mcp-oauth] failed passcode attempt", { host: pendingUrl.host, clientId: pending.clientId });
+      return authorizePage(
+        {
+          host: pendingUrl.host,
           reqId,
           googleUrl: await googleAuthorizeUrl(env, base, reqId),
           error: "That passcode is not right.",
@@ -344,6 +377,24 @@ async function issueTokens(
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Hosts whose pending request the Passcode door will complete. Everything else
+ * has to use Google sign-in. Any client may still register and use Google
+ * sign-in — this list only gates the door that hands out the DEFAULT
+ * Workspace identity to whoever holds the passcode.
+ */
+const PASSCODE_REDIRECT_HOSTS = ["claude.ai", "localhost", "127.0.0.1", "[::1]"];
+
+/**
+ * Whether the Passcode door may complete a request redirecting to this host.
+ *
+ * @param hostname - `URL.hostname` of the pending redirect_uri (no port; IPv6 in brackets)
+ * @returns true for claude.ai, any `*.claude.ai` subdomain, and loopback
+ */
+function isPasscodeRedirectHost(hostname: string): boolean {
+  return PASSCODE_REDIRECT_HOSTS.includes(hostname) || hostname.endsWith(".claude.ai");
+}
+
 function isValidRedirect(u: string): boolean {
   try {
     const parsed = new URL(u);
@@ -430,6 +481,7 @@ ${o.googleUrl ? `<p class="or">or</p><a class="alt" href="${esc(o.googleUrl)}">S
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "content-security-policy": "frame-ancestors 'none'",
+      "x-content-type-options": "nosniff",
     },
   });
 }

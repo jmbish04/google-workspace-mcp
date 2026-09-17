@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { handleOAuth, completeMcpAuthorize, resolveAccessToken } from "../oauth";
 
 function kvMock() {
@@ -244,19 +244,19 @@ describe("MCP OAuth passcode door", () => {
   const cb = "https://claude.ai/api/mcp/auth_callback";
   const verifier = "verifier-passcode-0123456789-0123456789-0123";
 
-  async function openPage(): Promise<{ clientId: string; res: Response; page: string }> {
+  async function openPage(redirectUri = cb): Promise<{ clientId: string; res: Response; page: string }> {
     const reg = await handleOAuth(
       req("/register", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ redirect_uris: [cb] }),
+        body: JSON.stringify({ redirect_uris: [redirectUri] }),
       }),
       env,
     );
     const clientId = ((await reg!.json()) as any).client_id as string;
     const res = (await handleOAuth(
       req(
-        `/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(cb)}` +
+        `/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}` +
           `&code_challenge=${await challengeFor(verifier)}&code_challenge_method=S256&state=s1`,
       ),
       env,
@@ -323,6 +323,63 @@ describe("MCP OAuth passcode door", () => {
     expect((await reg("http://evil.example/cb"))!.status).toBe(400);
     expect((await reg("http://localhost:33418/cb"))!.status).toBe(201);
     expect((await reg("http://[::1]:33418/cb"))!.status).toBe(201);
+  });
+
+  it("the authorize page is sent with nosniff", async () => {
+    const { res } = await openPage();
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("a replayed req after a successful authorize is refused (single use)", async () => {
+    const { page } = await openPage();
+    const reqId = reqIdFrom(page);
+    const first = (await handleOAuth(formPost("/authorize", { req: reqId, passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(first.status).toBe(303);
+    const replay = (await handleOAuth(formPost("/authorize", { req: reqId, passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(replay.status).toBe(400);
+    expect(replay.headers.get("location")).toBeNull();
+  });
+
+  it("logs a warning on a failed passcode, naming neither the credential nor the submitted value", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { page } = await openPage();
+    await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "hunter2" }), env);
+    expect(warn).toHaveBeenCalled();
+    const logged = warn.mock.calls.flat().map((a) => JSON.stringify(a)).join(" ");
+    expect(logged).not.toMatch(/WORKER_API_KEY/i);
+    expect(logged).not.toContain("hunter2");
+    expect(logged).not.toContain("test-key-0123456789abcdef");
+    warn.mockRestore();
+  });
+
+  it("refuses the passcode for a redirect host that is not claude.ai or loopback, and issues nothing", async () => {
+    const evil = "https://evil.example/cb";
+    const { page } = await openPage(evil);
+    const res = (await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(res.status).not.toBe(303);
+    expect(res.headers.get("location")).toBeNull();
+    const body = await res.text();
+    expect(body).toContain("Sign in with Google instead.");
+    expect(body).not.toMatch(/WORKER_API_KEY/i);
+    expect(body).not.toContain("test-key-0123456789abcdef");
+    // Nothing was minted: no authorization code, no token.
+    const keys = [...(env.SESSIONS as any).store.keys()] as string[];
+    expect(keys.some((k) => k.startsWith("oauthcode:") || k.startsWith("oauthtok:"))).toBe(false);
+  });
+
+  it("still accepts the passcode for claude.ai, a claude.ai subdomain and loopback", async () => {
+    for (const uri of ["https://claude.ai/api/mcp/auth_callback", "https://foo.claude.ai/cb", "http://localhost:33418/cb", "http://127.0.0.1:33418/cb", "http://[::1]:33418/cb"]) {
+      const { page } = await openPage(uri);
+      const res = (await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }), env))!;
+      expect(`${uri} → ${res.status}`).toBe(`${uri} → 303`);
+      expect(new URL(res.headers.get("location")!).searchParams.get("code")).toBeTruthy();
+    }
+  });
+
+  it("a lookalike host is not treated as a claude.ai subdomain", async () => {
+    const { page } = await openPage("https://notclaude.ai/cb");
+    const res = (await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(res.status).not.toBe(303);
   });
 
   it("authorize without PKCE, or with plain PKCE, is refused", async () => {
