@@ -46,7 +46,8 @@ import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-c
 import { buildDocPreview, type DocPreview } from "@/backend/docs/doc-preview";
 import { htmlToRequests } from "@/backend/docs/html-to-braille";
 import { findLastTable } from "@/backend/docs/locate";
-import { docBodyContent } from "@/backend/docs/locate";
+import { docBodyContent, locateText } from "@/backend/docs/locate";
+import { planTextEdit } from "@/backend/docs/edit-text";
 import { markdownToRequests } from "@/backend/docs/markdown-to-requests";
 import { putPreview } from "@/backend/docs/preview-store";
 import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
@@ -1102,7 +1103,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "docs_replace_text",
-    description: "Replace all occurrences of a string in a Google Doc.",
+    description:
+      "Find-and-replace in a Google Doc (Docs replaceAllText). Replaces ALL occurrences. For one location, use docs_edit_text.",
     inputSchema: z.object({
       documentId: z.string(),
       find: z.string(),
@@ -1124,6 +1126,48 @@ export const TOOLS: ToolDef[] = [
           googleId: a.documentId,
           action: "modify",
           detail: { replace: a.find },
+        },
+      };
+    },
+  },
+  {
+    name: "docs_edit_text",
+    description:
+      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. Throws if the match contains a paragraph break or is not found. Returns { ok:true, range, before, after }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
+    inputSchema: z.object({
+      documentId: z.string(),
+      find: z.string().min(1),
+      replace: z.string(),
+      instance: z.number().int().min(1).optional(),
+      matchCase: z.boolean().optional().describe("Default true (exact match)."),
+      tabId: z.string().optional().describe("Document tab id; omit for the first tab."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const docs = new DocsService(env, acct(sub, a));
+      const instance = a.instance ?? 1;
+      // getWithTabs (not getRaw) — every tab must be visible so a `tabId` match
+      // resolves against the same content batchUpdate will target.
+      const hit = locateText(await docs.getWithTabs(a.documentId), a.find, instance, {
+        matchCase: a.matchCase ?? true,
+        tabId: a.tabId,
+      });
+      if (!hit) throw new Error(`Text not found: ${JSON.stringify(a.find)} (instance ${instance})`);
+      const plan = planTextEdit(hit, a.replace, a.tabId);
+      if (!plan.ok) return { result: plan };
+      await docs.batchUpdate(a.documentId, plan.requests);
+      return {
+        result: {
+          ok: true,
+          range: { startIndex: hit.startIndex, endIndex: hit.startIndex + a.replace.length },
+          before: hit.runs.map((r) => r.content).join(""),
+          after: a.replace,
+        },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { editedText: a.find.slice(0, 40) },
         },
       };
     },

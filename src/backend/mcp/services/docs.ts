@@ -22,6 +22,19 @@ export class DocsService {
     return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}?includeTabsContent=true`);
   }
 
+  /**
+   * Alias of {@link getRaw}, named to match `GoogleDocsClient#getWithTabs`
+   * (src/backend/google/docs.ts) — `getRaw` here already hardcodes
+   * `includeTabsContent=true`, so callers that need every tab (e.g.
+   * docs_edit_text locating a `tabId`) can call this name explicitly.
+   *
+   * @param documentId - bare doc ID or any Docs URL
+   * @returns the full raw `documents.get` JSON, all tabs included
+   */
+  async getWithTabs<T = unknown>(documentId: string): Promise<T> {
+    return this.getRaw<T>(documentId);
+  }
+
   /** Run an arbitrary array of Docs API requests atomically (the full grammar). */
   async batchUpdate<T = unknown>(documentId: string, requests: unknown[]): Promise<T> {
     return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {

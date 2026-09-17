@@ -5,6 +5,26 @@
  * synthetic doc JSON.
  */
 
+/**
+ * Lower-case a string one UTF-16 code unit at a time, preserving length exactly.
+ * `String.prototype.toLowerCase()` on the whole string can change length (e.g.
+ * "İ" → "i̇", 1 code unit → 2), which would desync every index computed against
+ * the original string. Folding per unit and leaving a unit unchanged whenever
+ * its own lower-case form is a different length keeps every index exact; the
+ * only cost is that those rare characters match case-sensitively.
+ *
+ * @param s - text to fold
+ * @returns `s` with each length-preserving code unit lower-cased
+ */
+function foldCase(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const lower = s[i].toLowerCase();
+    out += lower.length === 1 ? lower : s[i];
+  }
+  return out;
+}
+
 export interface TableCell {
   rowIndex: number;
   colIndex: number;
@@ -76,7 +96,6 @@ export interface LocatedText {
  * @param instance - 1-based occurrence (overlapping occurrences count)
  * @param opts - `matchCase` (default true), `tabId` (default first tab)
  * @returns the range plus covered run slices, or null when not found
- * @throws If `matchCase:false` lower-casing changes the text length (offsets would drift)
  * @example
  * locateText(doc, "ready for review") // → { startIndex: 22, endIndex: 38, runs: [...] }
  */
@@ -106,11 +125,8 @@ export function locateText(
   walk(docBodyContent(rawDoc, opts.tabId));
 
   const caseless = opts.matchCase === false;
-  const hay = caseless ? full.toLowerCase() : full;
-  const needle = caseless ? find.toLowerCase() : find;
-  if (hay.length !== full.length || needle.length !== find.length) {
-    throw new Error("matchCase:false is not supported for this text (lower-casing changes its length); use matchCase:true");
-  }
+  const hay = caseless ? foldCase(full) : full;
+  const needle = caseless ? foldCase(find) : find;
 
   let from = 0;
   for (let n = 1; ; n++) {

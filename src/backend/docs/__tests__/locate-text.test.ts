@@ -75,4 +75,20 @@ describe("locateText", () => {
     expect(locateText(doc, "missing")).toBeNull();
     expect(locateText(doc, "")).toBeNull();
   });
+
+  it("matchCase:false never throws — a length-changing lower-case char (İ, ß) elsewhere still resolves correct indices", () => {
+    // "İstanbul draft is " [1,19) · "READY" (bold) [19,24) · " İ ß\n" [24,29)
+    const d = {
+      body: {
+        content: [
+          para(1, [["İstanbul draft is "], ["READY", { bold: true }], [" İ ß\n"]]),
+        ],
+      },
+    };
+    expect(() => locateText(d, "ready", 1, { matchCase: false })).not.toThrow();
+    const hit = locateText(d, "ready", 1, { matchCase: false })!;
+    expect(hit.startIndex).toBe(19);
+    expect(hit.endIndex).toBe(24);
+    expect(hit.runs).toEqual([{ startIndex: 19, endIndex: 24, content: "READY", textStyle: { bold: true } }]);
+  });
 });
