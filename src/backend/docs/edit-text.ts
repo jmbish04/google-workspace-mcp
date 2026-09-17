@@ -18,7 +18,8 @@ import type { LocatedText, TextRun } from "@/backend/docs/locate";
 export type EditTextPlan =
   | { ok: true; requests: Record<string, unknown>[] }
   | { ok: false; mixedStyles: true; runs: TextRun[] }
-  | { ok: false; spansNonText: true; runs: TextRun[] };
+  | { ok: false; spansNonText: true; runs: TextRun[] }
+  | { ok: false; hasSuggestions: true; runs: TextRun[] };
 
 /**
  * Plan a formatting-preserving replacement of one located match.
@@ -26,7 +27,7 @@ export type EditTextPlan =
  * @param hit - the match from {@link locateText}
  * @param replace - replacement text ("" deletes the match)
  * @param tabId - document tab the match lives in (omit for the first tab)
- * @returns the batchUpdate requests, `mixedStyles` when the match spans more than one text style, or `spansNonText` when the runs are not contiguous (a footnote reference, inline image, chip, or similar non-text element sits inside the match)
+ * @returns the batchUpdate requests, `hasSuggestions` when a covered run carries a pending tracked change, `mixedStyles` when the match spans more than one text style, or `spansNonText` when the runs are not contiguous (a footnote reference, inline image, chip, or similar non-text element sits inside the match)
  * @throws If the match contains a paragraph break (deleting it would merge paragraphs)
  * @example
  * planTextEdit(locateText(doc, "ready for review")!, "approved and final")
@@ -34,6 +35,11 @@ export type EditTextPlan =
 export function planTextEdit(hit: LocatedText, replace: string, tabId?: string): EditTextPlan {
   if (hit.runs.some((r) => r.content.includes("\n"))) {
     throw new Error("docs_edit_text cannot change paragraph breaks — edit within one paragraph");
+  }
+  // Pending suggestions first: the rendered content reads as though every
+  // suggestion were accepted, so both indices and text are untrustworthy.
+  if (hit.runs.some((r) => r.hasSuggestions)) {
+    return { ok: false, hasSuggestions: true, runs: hit.runs };
   }
   if (!isContiguous(hit)) {
     return { ok: false, spansNonText: true, runs: hit.runs };

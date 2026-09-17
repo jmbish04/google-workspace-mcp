@@ -57,4 +57,12 @@ describe("SheetsService", () => {
     expect(init.method).toBe("PUT");
     expect(JSON.parse(init.body as string)).toEqual({ values: [["1", "=A1"]] });
   });
+
+  it("updateValues honours RAW, so untrusted text is stored literally instead of parsed as a formula", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    await new SheetsService({} as any, "s1").updateValues("sh1", "Sheet1!B2", [["=IMPORTXML(1,2)"]], "RAW");
+    const url = decodeURIComponent(spy.mock.calls[0][0] as string);
+    expect(url).toContain("?valueInputOption=RAW");
+    expect(url).not.toContain("USER_ENTERED");
+  });
 });

@@ -68,12 +68,19 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →
-  `{ok:false,spansNonText:true,runs}`; resolver `docs/locate.ts#locateText`, shared
+  `{ok:false,spansNonText:true,runs}`; tracked-change match →
+  `{ok:false,hasSuggestions:true,runs}` (the raw content reads as if every suggestion
+  were accepted — the agent must ask the user to accept/reject them first); the batch
+  is pinned to the `revisionId` of the read via `writeControl.requiredRevisionId`, so a
+  concurrent edit fails the batch instead of deleting the wrong range; headers and
+  footers are NOT searched; resolver `docs/locate.ts#locateText`, shared
   with `docs_style_text` via `GoogleDocsClient.findElement` — which calls
   `locateText` with no options, so `docs_style_text` always matches case-sensitively
-  in the first tab, with no `matchCase`/`tabId` control) and `sheets_update_values`
-  (values.update, USER_ENTERED). The Preserve/Redesign/Clarify editing policy lives
-  in `mcp/code-mode.ts#apiGuide`.
+  in the first tab, with no `matchCase`/`tabId` control. Tab ids resolve through
+  `docs/locate.ts#flattenTabs`, so nested `childTabs` ids work) and `sheets_update_values`
+  (values.update; `valueInputOption` defaults to USER_ENTERED, pass RAW for text from an
+  untrusted or third-party source so `=IMPORTXML(...)` is stored, not executed).
+  The Preserve/Redesign/Clarify editing policy lives in `mcp/code-mode.ts#apiGuide`.
 - **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
   `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
   Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,

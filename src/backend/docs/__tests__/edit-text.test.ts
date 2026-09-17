@@ -90,6 +90,15 @@ describe("planTextEdit", () => {
     expect(planTextEdit(hit, "assertion holds")).toEqual({ ok: false, spansNonText: true, runs: hit.runs });
   });
 
+  it("refuses when any covered run carries a pending suggestion, and writes nothing", () => {
+    const hit: LocatedText = {
+      startIndex: 22,
+      endIndex: 38,
+      runs: [{ startIndex: 22, endIndex: 38, content: "ready for review", textStyle: bold, hasSuggestions: true }],
+    };
+    expect(planTextEdit(hit, "approved")).toEqual({ ok: false, hasSuggestions: true, runs: hit.runs });
+  });
+
   it("an astral first character (surrogate pair) inserts after both units, not inside them", () => {
     // "😀 ok" as one run: 😀 is 2 UTF-16 units, so the run spans [10,15) (2 + " ok".length=3).
     const hit: LocatedText = { startIndex: 10, endIndex: 15, runs: [{ startIndex: 10, endIndex: 15, content: "😀 ok", textStyle: {} }] };

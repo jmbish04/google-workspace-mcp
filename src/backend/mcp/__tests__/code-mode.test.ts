@@ -55,6 +55,8 @@ describe("apiGuide", () => {
       "slides_replace_all_text",
       "only when `find` occurs exactly once",
       "mixedStyles",
+      "hasSuggestions",
+      "accept or reject the suggestions",
       "docs_get_json",
       "namedStyleType",
       "version history",

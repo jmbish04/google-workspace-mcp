@@ -46,7 +46,7 @@ import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-c
 import { buildDocPreview, type DocPreview } from "@/backend/docs/doc-preview";
 import { htmlToRequests } from "@/backend/docs/html-to-braille";
 import { findLastTable } from "@/backend/docs/locate";
-import { docBodyContent, locateText } from "@/backend/docs/locate";
+import { docBodyContent, flattenTabs, locateText } from "@/backend/docs/locate";
 import { planTextEdit } from "@/backend/docs/edit-text";
 import { markdownToRequests } from "@/backend/docs/markdown-to-requests";
 import { putPreview } from "@/backend/docs/preview-store";
@@ -1133,7 +1133,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_edit_text",
     description:
-      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. If the match contains a non-text element (a footnote reference, inline image, person/date chip, rich link, auto-text, or page break) it writes NOTHING and returns { ok:false, spansNonText:true, runs } — deleting the reconstructed range would also delete that element. Throws if the match contains a paragraph break, the tab doesn't exist, or the text isn't found. Returns { ok:true, range, before, after }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
+      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. If the match contains a non-text element (a footnote reference, inline image, person/date chip, rich link, auto-text, or page break) it writes NOTHING and returns { ok:false, spansNonText:true, runs } — deleting the reconstructed range would also delete that element. If the match carries a pending suggestion (tracked change) it writes NOTHING and returns { ok:false, hasSuggestions:true, runs } — ask the user to accept or reject the suggestions first, because the text reads as if every suggestion were accepted. The write is pinned to the revision it read, so a concurrent edit fails the batch instead of deleting the wrong text. Headers and footers are not searched. Throws if the match contains a paragraph break, the tab doesn't exist, or the text isn't found. Returns { ok:true, range, before, after }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
     inputSchema: z.object({
       documentId: z.string(),
       find: z.string().min(1),
@@ -1146,10 +1146,10 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const docs = new DocsService(env, acct(sub, a));
       const instance = a.instance ?? 1;
-      const raw = await docs.getRaw(a.documentId);
+      const raw = await docs.getRaw<{ revisionId?: string }>(a.documentId);
       if (a.tabId) {
-        const tabs = (raw as { tabs?: { tabProperties?: { tabId?: string } }[] })?.tabs ?? [];
-        if (!tabs.some((t) => t?.tabProperties?.tabId === a.tabId)) {
+        // Child tabs count: docs_list_tabs flattens them, so their ids are valid here.
+        if (!flattenTabs(raw).some((t) => t?.tabProperties?.tabId === a.tabId)) {
           throw new Error(`Tab not found: ${a.tabId}`);
         }
       }
@@ -1157,10 +1157,18 @@ export const TOOLS: ToolDef[] = [
         matchCase: a.matchCase ?? true,
         tabId: a.tabId,
       });
-      if (!hit) throw new Error(`Text not found: ${JSON.stringify(a.find)} (instance ${instance})`);
+      if (!hit) {
+        throw new Error(
+          `Text not found: ${JSON.stringify(a.find)} (instance ${instance}) — headers and footers are not searched.`,
+        );
+      }
       const plan = planTextEdit(hit, a.replace, a.tabId);
       if (!plan.ok) return { result: plan };
-      await docs.batchUpdate(a.documentId, plan.requests);
+      // Pin the batch to the revision the indices were computed against: without
+      // it, an edit landing above the match between the read and the write makes
+      // this delete the wrong text and still report ok.
+      const revisionId = raw?.revisionId;
+      await docs.batchUpdate(a.documentId, plan.requests, revisionId ? { requiredRevisionId: revisionId } : undefined);
       return {
         result: {
           ok: true,
@@ -1373,16 +1381,25 @@ export const TOOLS: ToolDef[] = [
   {
     name: "sheets_update_values",
     description:
-      "Overwrite the VALUES of an existing A1 range in a spreadsheet (values.update, valueInputOption USER_ENTERED, so formulas and numbers parse as if typed). Writes values only — cell formats, borders and conditional formats are untouched. The Preserve-mode way to change existing cells; use sheets_append_values to add rows. Accepts a spreadsheet id or URL.",
+      "Overwrite the VALUES of an existing A1 range in a spreadsheet (values.update). Writes values only — cell formats, borders and conditional formats are untouched. The Preserve-mode way to change existing cells; use sheets_append_values to add rows. Accepts a spreadsheet id or URL. valueInputOption (default USER_ENTERED) parses each value as if a person typed it, so a leading '=' becomes a formula and a leading '-', a leading '0' or a date-like string ('3/4', '1-2') is reinterpreted; prefix a value with an apostrophe (') to force it to stay literal. Use RAW to store every value exactly as given — that is the right choice for text from an untrusted or third-party source (an email body, a web page, a Drive file someone else wrote), where a value like =IMPORTXML(...) would otherwise run as a formula and exfiltrate data when the sheet is opened.",
     inputSchema: z.object({
       spreadsheetId: z.string(),
       range: z.string().describe("A1 notation, e.g. Sheet1!B2:D4."),
       values: z.array(z.array(z.string())),
+      valueInputOption: z
+        .enum(["USER_ENTERED", "RAW"])
+        .optional()
+        .describe("Default USER_ENTERED (parses formulas/numbers/dates). RAW stores text literally — use it for third-party content."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
       const spreadsheetId = extractGoogleId(a.spreadsheetId);
-      await new SheetsService(env, acct(sub, a)).updateValues(spreadsheetId, a.range, a.values);
+      await new SheetsService(env, acct(sub, a)).updateValues(
+        spreadsheetId,
+        a.range,
+        a.values,
+        a.valueInputOption,
+      );
       return {
         result: { ok: true, range: a.range, rows: a.values.length },
         asset: {

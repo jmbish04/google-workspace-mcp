@@ -76,6 +76,51 @@ describe("locateText", () => {
     expect(locateText(doc, "")).toBeNull();
   });
 
+  it("reads a nested child tab by id (docs_list_tabs flattens childTabs, so its ids must resolve)", () => {
+    const d = {
+      tabs: [
+        {
+          tabProperties: { tabId: "t.0" },
+          documentTab: { body: { content: [para(1, [["parent tab\n"]])] } },
+          childTabs: [
+            {
+              tabProperties: { tabId: "t.0.1" },
+              documentTab: { body: { content: [para(1, [["child tab text\n"]])] } },
+            },
+          ],
+        },
+      ],
+    };
+    expect(locateText(d, "child tab text")).toBeNull(); // not in the default (first top-level) tab
+    expect(locateText(d, "child tab text", 1, { tabId: "t.0.1" })!.startIndex).toBe(1);
+  });
+
+  it("flags runs carrying tracked-change suggestions, and leaves clean runs unflagged", () => {
+    const suggested = (extra: Record<string, unknown>) => ({
+      body: {
+        content: [
+          {
+            paragraph: {
+              elements: [
+                { startIndex: 1, endIndex: 6, textRun: { content: "clean", textStyle: {} } },
+                { startIndex: 6, endIndex: 15, textRun: { content: " proposed", textStyle: {}, ...extra } },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    for (const extra of [
+      { suggestedInsertionIds: ["sug.1"] },
+      { suggestedDeletionIds: ["sug.2"] },
+      { suggestedTextStyleChanges: { "sug.3": {} } },
+    ]) {
+      const d = suggested(extra);
+      expect(locateText(d, "clean")!.runs[0].hasSuggestions).toBeUndefined();
+      expect(locateText(d, "proposed")!.runs[0].hasSuggestions).toBe(true);
+    }
+  });
+
   it("matchCase:false never throws — a length-changing lower-case char (İ, ß) elsewhere still resolves correct indices", () => {
     // "İstanbul draft is " [1,19) · "READY" (bold) [19,24) · " İ ß\n" [24,29)
     const d = {

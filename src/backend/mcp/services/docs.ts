@@ -22,11 +22,26 @@ export class DocsService {
     return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}?includeTabsContent=true`);
   }
 
-  /** Run an arbitrary array of Docs API requests atomically (the full grammar). */
-  async batchUpdate<T = unknown>(documentId: string, requests: unknown[]): Promise<T> {
+  /**
+   * Run an arbitrary array of Docs API requests atomically (the full grammar).
+   *
+   * @param documentId - bare doc ID or any Docs URL
+   * @param requests - Docs API request objects, applied in order
+   * @param writeControl - optional optimistic-concurrency guard. Pass the
+   *   `revisionId` read from {@link getRaw} as `requiredRevisionId` and the API
+   *   rejects the batch if the document changed in between, instead of applying
+   *   indices computed against content that has since moved. Omit it and the
+   *   body stays a bare `{ requests }`, exactly as before.
+   * @returns the batchUpdate response
+   */
+  async batchUpdate<T = unknown>(
+    documentId: string,
+    requests: unknown[],
+    writeControl?: { requiredRevisionId: string },
+  ): Promise<T> {
     return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {
       method: "POST",
-      body: JSON.stringify({ requests }),
+      body: JSON.stringify(writeControl ? { requests, writeControl } : { requests }),
     });
   }
 

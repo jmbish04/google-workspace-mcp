@@ -49,17 +49,29 @@ export class SheetsService {
     return { valueRanges: out.valueRanges ?? [] };
   }
 
+  /**
+   * Overwrite the values of an A1 range (values.update).
+   *
+   * @param spreadsheetId - spreadsheet id
+   * @param range - A1 notation, e.g. `Sheet1!B2:D4`
+   * @param values - row-major cell values
+   * @param valueInputOption - `USER_ENTERED` (default) parses each value as if
+   *   typed, so a leading `=`, `-`, `0` or a date-like string is reinterpreted;
+   *   `RAW` stores every value literally, which is what third-party text needs.
+   * @returns nothing
+   */
   async updateValues(
     spreadsheetId: string,
     range: string,
-    values: string[][]
+    values: string[][],
+    valueInputOption: "USER_ENTERED" | "RAW" = "USER_ENTERED"
   ): Promise<void> {
     await googleJson(
       this.env,
       this.sub,
       `${BASE}/${spreadsheetId}/values/${encodeURIComponent(
         range
-      )}?valueInputOption=USER_ENTERED`,
+      )}?valueInputOption=${valueInputOption}`,
       {
         method: "PUT",
         body: JSON.stringify({ values }),

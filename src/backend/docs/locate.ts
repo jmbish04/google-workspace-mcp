@@ -39,10 +39,32 @@ export interface LocatedTable {
   cells: TableCell[];
 }
 
-/** Body content for a tab (with includeTabsContent) or the legacy root body. */
+/**
+ * Every tab of a raw document, each parent before its `childTabs`, depth-first.
+ * `docs_list_tabs` flattens `childTabs` the same way, so a tab id it handed the
+ * agent must resolve here too — scanning only the top-level `tabs` rejects a
+ * valid child-tab id with "Tab not found".
+ *
+ * @param rawDoc - `documents.get` JSON (the `includeTabsContent` shape)
+ * @returns the flattened tab list; empty for a legacy `body`-only document
+ */
+export function flattenTabs(rawDoc: any): any[] {
+  const out: any[] = [];
+  const walk = (tabs: any[]): void => {
+    for (const tab of tabs ?? []) {
+      out.push(tab);
+      walk(tab?.childTabs ?? []);
+    }
+  };
+  walk(Array.isArray(rawDoc?.tabs) ? rawDoc.tabs : []);
+  return out;
+}
+
+/** Body content for a tab (with includeTabsContent, child tabs included) or the legacy root body. */
 export function docBodyContent(rawDoc: any, tabId?: string): any[] {
-  if (Array.isArray(rawDoc?.tabs) && rawDoc.tabs.length) {
-    const tab = tabId ? rawDoc.tabs.find((t: any) => t?.tabProperties?.tabId === tabId) : rawDoc.tabs[0];
+  const tabs = flattenTabs(rawDoc);
+  if (tabs.length) {
+    const tab = tabId ? tabs.find((t: any) => t?.tabProperties?.tabId === tabId) : tabs[0];
     return tab?.documentTab?.body?.content ?? [];
   }
   return Array.isArray(rawDoc?.body?.content) ? rawDoc.body.content : [];
@@ -77,6 +99,25 @@ export interface TextRun {
   endIndex: number;
   content: string;
   textStyle: Record<string, unknown>;
+  /** Set only when the run carries a pending tracked-change suggestion. */
+  hasSuggestions?: true;
+}
+
+/**
+ * Whether a raw `textRun` carries a pending tracked change — a suggested
+ * insertion, a suggested deletion, or a suggested style change. The rendered
+ * `content` reads as if every suggestion were accepted, so an edit planned
+ * against it would write against text the document owner has not agreed to.
+ *
+ * @param textRun - a raw `paragraph.elements[].textRun`
+ * @returns true when the run has at least one pending suggestion
+ */
+function runHasSuggestions(textRun: any): boolean {
+  return Boolean(
+    textRun?.suggestedInsertionIds?.length ||
+      textRun?.suggestedDeletionIds?.length ||
+      (textRun?.suggestedTextStyleChanges && Object.keys(textRun.suggestedTextStyleChanges).length),
+  );
 }
 
 /** A located literal match: its UTF-16 document range and the run slices it covers. */
@@ -106,14 +147,26 @@ export function locateText(
   opts: { matchCase?: boolean; tabId?: string } = {},
 ): LocatedText | null {
   if (!find) return null;
-  const segs: { startIndex: number; content: string; textStyle: Record<string, unknown>; offset: number }[] = [];
+  const segs: {
+    startIndex: number;
+    content: string;
+    textStyle: Record<string, unknown>;
+    offset: number;
+    hasSuggestions: boolean;
+  }[] = [];
   let full = "";
   const walk = (content: any[]): void => {
     for (const el of content ?? []) {
       for (const pe of el?.paragraph?.elements ?? []) {
         const c = pe?.textRun?.content;
         if (typeof c === "string" && typeof pe.startIndex === "number") {
-          segs.push({ startIndex: pe.startIndex, content: c, textStyle: pe.textRun.textStyle ?? {}, offset: full.length });
+          segs.push({
+            startIndex: pe.startIndex,
+            content: c,
+            textStyle: pe.textRun.textStyle ?? {},
+            offset: full.length,
+            hasSuggestions: runHasSuggestions(pe.textRun),
+          });
           full += c;
         }
       }
@@ -140,7 +193,9 @@ export function locateText(
         if (sEnd <= hit || s.offset >= end) continue;
         const a = Math.max(hit, s.offset) - s.offset;
         const b = Math.min(end, sEnd) - s.offset;
-        runs.push({ startIndex: s.startIndex + a, endIndex: s.startIndex + b, content: s.content.slice(a, b), textStyle: s.textStyle });
+        const run: TextRun = { startIndex: s.startIndex + a, endIndex: s.startIndex + b, content: s.content.slice(a, b), textStyle: s.textStyle };
+        if (s.hasSuggestions) run.hasSuggestions = true;
+        runs.push(run);
       }
       return { startIndex: runs[0].startIndex, endIndex: runs[runs.length - 1].endIndex, runs };
     }

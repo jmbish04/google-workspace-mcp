@@ -37,6 +37,22 @@ describe("DocsService", () => {
     expect(body.requests[0].replaceAllText.replaceText).toBe("bar");
   });
 
+  it("batchUpdate sends a bare { requests } when no writeControl is given (existing callers unchanged)", async () => {
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    const requests = [{ insertText: { location: { index: 1 }, text: "hi" } }];
+    await new DocsService({} as any, "s1").batchUpdate("d1", requests);
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({ requests });
+  });
+
+  it("batchUpdate sends writeControl.requiredRevisionId when one is given", async () => {
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    const requests = [{ insertText: { location: { index: 1 }, text: "hi" } }];
+    await new DocsService({} as any, "s1").batchUpdate("d1", requests, { requiredRevisionId: "rev-7" });
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({ requests, writeControl: { requiredRevisionId: "rev-7" } });
+  });
+
   it("insertImage posts insertInlineImage request", async () => {
     fetchSpy.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
     await new DocsService({} as any, "s1").insertImage("d1", "https://example.com/img.png");
