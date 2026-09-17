@@ -43,6 +43,33 @@ describe("apiGuide", () => {
     expect(g).toContain("await tools.");
     expect(g).toContain("return");
   });
+
+  it("carries the Preserve / Redesign / Clarify editing policy", () => {
+    const g = apiGuide();
+    for (const s of [
+      "Preserve (default)",
+      "Redesign",
+      "Clarify",
+      "docs_edit_text",
+      "sheets_update_values",
+      "slides_replace_all_text",
+      "only when `find` occurs exactly once",
+      "mixedStyles",
+      "docs_get_json",
+      "namedStyleType",
+      "version history",
+    ]) {
+      expect(g).toContain(s);
+    }
+    for (const tool of [
+      "docs_create_from_markdown", "html_to_doc", "docs_append_markdown", "docs_batch_update",
+      "slides_create_from_markdown", "slides_batch_update", "sheets_batch_update", "docs_style_text",
+      "slides_style_text", "slides_style_shape", "slides_set_slide_background", "docs_qc_fix",
+      "instantiate_from_template",
+    ]) {
+      expect(g).toContain(tool);
+    }
+  });
 });
 
 describe("toolCatalogDetailed", () => {

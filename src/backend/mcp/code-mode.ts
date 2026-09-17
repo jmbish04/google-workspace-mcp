@@ -73,6 +73,14 @@ export function apiGuide(): string {
     "- `docs_create_from_markdown({ name, markdown })` — Method 1: Drive's native importer turns a WHOLE Markdown string into a NEW doc (high fidelity: tables, lists, links). New doc only.",
     "- `docs_append_markdown({ documentId, markdown })` — Method 2: our own Markdown→batchUpdate mapping APPENDS to an EXISTING doc (headings/bold/italic/code/lists; no tables/images).",
     "  Pick by intent: creating a doc from Markdown → method 1; adding Markdown into a doc that already exists → method 2.",
+    "",
+    "## Editing existing files — pick a mode BEFORE any write, and say which",
+    "- Preserve (default): review, proofread, finalize, tighten, fix, update facts, \"I made changes, check them\". Use only formatting-safe tools: `docs_edit_text` (one occurrence, keeps its style); `docs_replace_text` only when `find` occurs exactly once (it replaces ALL occurrences); `slides_replace_all_text`; `sheets_update_values` and `sheets_append_values` (values only). Never recreate the document, delete and re-insert sections, apply markdown, change fonts, colours or heading styles, or reorder content the user did not ask to move.",
+    "- Redesign: only when the user explicitly asks for the look to change (\"make it look better\", \"prettier\", \"redesign\", \"restyle\", \"modernize the layout\", \"be creative with formatting\"). Styling tools, raw batch updates and templates are allowed. Wording stays unless the user also asks for a rewrite.",
+    "- Clarify: when intent is unclear (\"improve this section\"), ask one short question (content only, or the look too) and write nothing until answered.",
+    "- Redesign-only tools (never in Preserve): docs_create_from_markdown, html_to_doc, docs_append_markdown, docs_batch_update, slides_create_from_markdown, slides_batch_update, sheets_batch_update, docs_style_text, slides_style_text, slides_style_shape, slides_set_slide_background, docs_qc_fix, instantiate_from_template.",
+    "- Preserve check: before a write, read `docs_get_json` for the target range; after it, read again and confirm each affected text run's `textStyle` and each paragraph's `namedStyleType` are unchanged. If anything drifted, say so in the reply and point to version history.",
+    "- Mixed styles: when `docs_edit_text` returns `{ ok:false, mixedStyles:true, runs }`, edit each run separately so bold stays bold and plain stays plain. It throws on a match containing a paragraph break — edit within one paragraph.",
   ].join("\n");
 }
 
