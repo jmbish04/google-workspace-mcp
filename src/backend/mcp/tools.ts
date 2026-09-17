@@ -86,6 +86,7 @@ import { exportSheetsToJson } from "@/backend/google/sheet-export";
 import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
 import { getDb } from "@/db";
 
+import { GoogleApiError } from "./googleClient";
 import type { AssetAction } from "./logging";
 
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
@@ -153,6 +154,24 @@ function addrList(v: string | string[] | undefined): string | undefined {
   if (v == null) return undefined;
   const s = Array.isArray(v) ? v.filter(Boolean).join(", ") : v;
   return s.trim() ? s : undefined;
+}
+
+/**
+ * Whether a batchUpdate failure was Google rejecting a pinned
+ * `writeControl.requiredRevisionId` (the document moved between the read and
+ * the write) rather than some other 400 (e.g. a genuinely malformed request).
+ *
+ * @param err - the value caught from `DocsService.batchUpdate`
+ * @returns true only for a `GoogleApiError` whose body carries `error.status === "FAILED_PRECONDITION"`
+ */
+function isRevisionConflict(err: unknown): boolean {
+  if (!(err instanceof GoogleApiError) || err.status !== 400) return false;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: { status?: string } };
+    return parsed.error?.status === "FAILED_PRECONDITION";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1133,7 +1152,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "docs_edit_text",
     description:
-      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. If the match contains a non-text element (a footnote reference, inline image, person/date chip, rich link, auto-text, or page break) it writes NOTHING and returns { ok:false, spansNonText:true, runs } — deleting the reconstructed range would also delete that element. If the match carries a pending suggestion (tracked change) it writes NOTHING and returns { ok:false, hasSuggestions:true, runs } — ask the user to accept or reject the suggestions first, because the text reads as if every suggestion were accepted. The write is pinned to the revision it read, so a concurrent edit fails the batch instead of deleting the wrong text. Headers and footers are not searched. Throws if the match contains a paragraph break, the tab doesn't exist, or the text isn't found. Returns { ok:true, range, before, after }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
+      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. If the match contains a non-text element (a footnote reference, inline image, person/date chip, rich link, auto-text, or page break) it writes NOTHING and returns { ok:false, spansNonText:true, runs } — deleting the reconstructed range would also delete that element. If the match carries a pending suggestion (tracked change) it writes NOTHING and returns { ok:false, hasSuggestions:true, runs } — the matched text carries a pending suggestion, so editing it would rewrite text whose author has not had their suggestion accepted or rejected; ask the user to resolve the suggestions first. The write is pinned to the revision it read (reported back as `pinnedRevision`, or null when the document carried no revisionId to pin to), so a concurrent edit fails the batch — the caller then sees a clear error saying the document changed and to retry, not a raw Google API 400. Headers and footers are not searched. Throws if the match contains a paragraph break, the tab doesn't exist, or the text isn't found. Returns { ok:true, range, before, after, pinnedRevision }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
     inputSchema: z.object({
       documentId: z.string(),
       find: z.string().min(1),
@@ -1168,13 +1187,23 @@ export const TOOLS: ToolDef[] = [
       // it, an edit landing above the match between the read and the write makes
       // this delete the wrong text and still report ok.
       const revisionId = raw?.revisionId;
-      await docs.batchUpdate(a.documentId, plan.requests, revisionId ? { requiredRevisionId: revisionId } : undefined);
+      try {
+        await docs.batchUpdate(a.documentId, plan.requests, revisionId ? { requiredRevisionId: revisionId } : undefined);
+      } catch (err) {
+        if (revisionId && isRevisionConflict(err)) {
+          throw new Error(
+            "The document changed between the read and the write, so nothing was written — run docs_edit_text again.",
+          );
+        }
+        throw err;
+      }
       return {
         result: {
           ok: true,
           range: { startIndex: hit.startIndex, endIndex: hit.startIndex + a.replace.length },
           before: hit.runs.map((r) => r.content).join(""),
           after: a.replace,
+          pinnedRevision: revisionId ?? null,
         },
         asset: {
           assetType: "doc",

@@ -123,6 +123,7 @@ describe("docs_edit_text tool", () => {
       range: { startIndex: 22, endIndex: 40 },
       before: "ready for review",
       after: "approved and final",
+      pinnedRevision: "rev-abc",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     const [url, init] = fetchSpy.mock.calls[1] as [string, RequestInit];
@@ -161,12 +162,13 @@ describe("docs_edit_text tool", () => {
 
   it("pins the batch to the revision it read (writeControl.requiredRevisionId)", async () => {
     const args = tool.inputSchema.parse({ documentId: "doc1", find: "ready for review", replace: "approved" });
-    await tool.run(ctx, args);
+    const { result } = (await tool.run(ctx, args)) as { result: any };
     const [, init] = fetchSpy.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(init.body as string).writeControl).toEqual({ requiredRevisionId: "rev-abc" });
+    expect(result.pinnedRevision).toBe("rev-abc");
   });
 
-  it("sends no writeControl when the document has no revisionId", async () => {
+  it("sends no writeControl when the document has no revisionId, and reports pinnedRevision: null", async () => {
     const { revisionId: _drop, ...noRevision } = docJson;
     fetchSpy.mockImplementation(
       async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify(init?.method === "POST" ? {} : noRevision), { status: 200 }),
@@ -174,8 +176,36 @@ describe("docs_edit_text tool", () => {
     const args = tool.inputSchema.parse({ documentId: "doc1", find: "ready for review", replace: "approved" });
     const { result } = (await tool.run(ctx, args)) as { result: any };
     expect(result.ok).toBe(true);
+    expect(result.pinnedRevision).toBeNull();
     const [, init] = fetchSpy.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).not.toHaveProperty("writeControl");
+  });
+
+  it("gives a clear retry error when the pinned revision no longer matches (FAILED_PRECONDITION)", async () => {
+    fetchSpy.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ error: { code: 400, status: "FAILED_PRECONDITION", message: "revision mismatch" } }), {
+          status: 400,
+        });
+      }
+      return new Response(JSON.stringify(docJson), { status: 200 });
+    });
+    const args = tool.inputSchema.parse({ documentId: "doc1", find: "ready for review", replace: "approved" });
+    await expect(tool.run(ctx, args)).rejects.toThrow(/document changed between the read and the write.*run docs_edit_text again/i);
+  });
+
+  it("does not disguise a genuinely malformed-request 400 as a revision conflict", async () => {
+    fetchSpy.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ error: { code: 400, status: "INVALID_ARGUMENT", message: "bad request" } }), {
+          status: 400,
+        });
+      }
+      return new Response(JSON.stringify(docJson), { status: 200 });
+    });
+    const args = tool.inputSchema.parse({ documentId: "doc1", find: "ready for review", replace: "approved" });
+    await expect(tool.run(ctx, args)).rejects.toThrow(/Google API 400/);
+    await expect(tool.run(ctx, args)).rejects.not.toThrow(/document changed between the read and the write/i);
   });
 
   it("returns hasSuggestions and never calls batchUpdate when the match carries a pending suggestion", async () => {

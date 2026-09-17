@@ -66,7 +66,7 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   (same secret, never named in UI/errors) or Google sign-in; passcode grants bind to the
   default identity, 1-year access tokens. Registration is open, so the **Passcode POST
   only completes for a redirect host on `oauth.ts#PASSCODE_REDIRECT_HOSTS`** (claude.ai,
-  `*.claude.ai`, loopback) — otherwise a phishing link could trade one passcode entry for
+  `*.claude.ai`, claude.com, `*.claude.com`, loopback) — otherwise a phishing link could trade one passcode entry for
   a year of full Workspace access. Google sign-in stays open to any host: it binds the
   signer's own identity. Failed passcodes are `console.warn`ed (host + client_id only).
   Live check: `scripts/auth-check.mjs`.
@@ -74,11 +74,14 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →
   `{ok:false,spansNonText:true,runs}`; tracked-change match →
-  `{ok:false,hasSuggestions:true,runs}` (the raw content reads as if every suggestion
-  were accepted — the agent must ask the user to accept/reject them first); the batch
-  is pinned to the `revisionId` of the read via `writeControl.requiredRevisionId`, so a
-  concurrent edit fails the batch instead of deleting the wrong range; headers and
-  footers are NOT searched; resolver `docs/locate.ts#locateText`, shared
+  `{ok:false,hasSuggestions:true,runs}` (the matched text carries a pending suggestion,
+  so editing it would rewrite text whose author has not had it accepted/rejected — the
+  agent must ask the user to resolve the suggestions first; this is only about the
+  matched text, not the rest of the document's indices); the batch
+  is pinned to the `revisionId` of the read via `writeControl.requiredRevisionId`
+  (reported back as `pinnedRevision`), so a concurrent edit throws a clear "document
+  changed, retry" error instead of a raw Google API 400 or deleting the wrong range;
+  headers and footers are NOT searched; resolver `docs/locate.ts#locateText`, shared
   with `docs_style_text` via `GoogleDocsClient.findElement` — which calls
   `locateText` with no options, so `docs_style_text` always matches case-sensitively
   in the first tab, with no `matchCase`/`tabId` control. Tab ids resolve through

@@ -386,16 +386,25 @@ async function issueTokens(
  * sign-in — this list only gates the door that hands out the DEFAULT
  * Workspace identity to whoever holds the passcode.
  */
-const PASSCODE_REDIRECT_HOSTS = ["claude.ai", "localhost", "127.0.0.1", "[::1]"];
+const PASSCODE_REDIRECT_HOSTS = ["claude.ai", "claude.com", "localhost", "127.0.0.1", "[::1]"];
+
+/** Subdomain suffixes accepted alongside the exact hosts above. */
+const PASSCODE_REDIRECT_SUFFIXES = [".claude.ai", ".claude.com"];
 
 /**
  * Whether the Passcode door may complete a request redirecting to this host.
  *
  * @param hostname - `URL.hostname` of the pending redirect_uri (no port; IPv6 in brackets)
- * @returns true for claude.ai, any `*.claude.ai` subdomain, and loopback
+ * @returns true for claude.ai/claude.com, any `*.claude.ai`/`*.claude.com` subdomain, and loopback
  */
 function isPasscodeRedirectHost(hostname: string): boolean {
-  return PASSCODE_REDIRECT_HOSTS.includes(hostname) || hostname.endsWith(".claude.ai");
+  return (
+    PASSCODE_REDIRECT_HOSTS.includes(hostname) ||
+    // hostname.length > suffix.length excludes a bare/empty leading label
+    // (e.g. "https://.claude.ai/" → hostname ".claude.ai") that would
+    // otherwise satisfy endsWith() while being an unresolvable host.
+    PASSCODE_REDIRECT_SUFFIXES.some((suffix) => hostname.length > suffix.length && hostname.endsWith(suffix))
+  );
 }
 
 function isValidRedirect(u: string): boolean {
@@ -434,7 +443,14 @@ async function googleAuthorizeUrl(env: Env, base: string, reqId: string): Promis
   return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/**
+ * Escape a string for safe interpolation into HTML text content or a
+ * double-quoted attribute value on the passcode page.
+ *
+ * @param s - untrusted string (host, error message, req id, or URL)
+ * @returns `s` with `& < > " '` replaced by numeric character references
+ */
+export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /**
  * The consent page. Registration is open, so it names the host that will

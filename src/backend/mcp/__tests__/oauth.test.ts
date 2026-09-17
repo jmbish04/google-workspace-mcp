@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { handleOAuth, completeMcpAuthorize, resolveAccessToken } from "../oauth";
+import { handleOAuth, completeMcpAuthorize, resolveAccessToken, esc } from "../oauth";
 
 function kvMock() {
   const m = new Map<string, string>();
@@ -395,10 +395,26 @@ describe("MCP OAuth passcode door", () => {
     }
   });
 
+  it("also accepts the passcode for claude.com and a claude.com subdomain", async () => {
+    for (const uri of ["https://claude.com/api/mcp/auth_callback", "https://foo.claude.com/cb"]) {
+      const { page } = await openPage(uri);
+      const res = (await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }), env))!;
+      expect(`${uri} → ${res.status}`).toBe(`${uri} → 303`);
+      expect(new URL(res.headers.get("location")!).searchParams.get("code")).toBeTruthy();
+    }
+  });
+
   it("a lookalike host is not treated as a claude.ai subdomain", async () => {
     const { page } = await openPage("https://notclaude.ai/cb");
     const res = (await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }), env))!;
     expect(res.status).not.toBe(303);
+  });
+
+  it("an empty leading label does not satisfy the subdomain suffix check", async () => {
+    const { page } = await openPage("https://.claude.ai/cb");
+    const res = (await handleOAuth(formPost("/authorize", { req: reqIdFrom(page), passcode: "test-key-0123456789abcdef" }), env))!;
+    expect(res.status).not.toBe(303);
+    expect(res.headers.get("location")).toBeNull();
   });
 
   it("authorize without PKCE, or with plain PKCE, is refused", async () => {
@@ -413,5 +429,26 @@ describe("MCP OAuth passcode door", () => {
       expect(res.status).toBe(302);
       expect(new URL(res.headers.get("location")!).searchParams.get("error")).toBe("invalid_request");
     }
+  });
+});
+
+describe("esc()", () => {
+  it("escapes &, <, >, \", and '", () => {
+    expect(esc(`&<>"'`)).toBe("&#38;&#60;&#62;&#34;&#39;");
+  });
+
+  it("leaves ordinary text untouched", () => {
+    expect(esc("claude.ai")).toBe("claude.ai");
+  });
+
+  it("an escaped value cannot break out of the attribute or element it is interpolated into", () => {
+    // A payload that would close a double-quoted attribute and open a new element.
+    const payload = `"><script>alert(1)</script>`;
+    const escaped = esc(payload);
+    // Every numeric character reference is well-formed...
+    expect(escaped).toBe("&#34;&#62;&#60;script&#62;alert(1)&#60;/script&#62;");
+    // ...so once real entities are stripped, no raw &, <, >, " or ' remains to
+    // terminate the surrounding attribute/tag.
+    expect(escaped.replace(/&#\d+;/g, "")).not.toMatch(/[&<>"']/);
   });
 });

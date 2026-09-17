@@ -36,8 +36,9 @@ export function planTextEdit(hit: LocatedText, replace: string, tabId?: string):
   if (hit.runs.some((r) => r.content.includes("\n"))) {
     throw new Error("docs_edit_text cannot change paragraph breaks — edit within one paragraph");
   }
-  // Pending suggestions first: the rendered content reads as though every
-  // suggestion were accepted, so both indices and text are untrustworthy.
+  // Pending suggestions first: the matched text carries a pending suggestion
+  // (tracked change), so editing it would rewrite text whose author has not
+  // had that suggestion accepted or rejected yet.
   if (hit.runs.some((r) => r.hasSuggestions)) {
     return { ok: false, hasSuggestions: true, runs: hit.runs };
   }
