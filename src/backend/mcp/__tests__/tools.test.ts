@@ -19,4 +19,11 @@ describe("tool catalog", () => {
       expect(tool.outputSchema).toBeDefined();
     }
   });
+
+  it("ships the formatting-safe edit tools and steers docs_replace_text to docs_edit_text", () => {
+    const names = TOOLS.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["docs_edit_text", "sheets_update_values"]));
+    const replace = TOOLS.find((t) => t.name === "docs_replace_text")!;
+    expect(replace.description).toContain("Replaces ALL occurrences. For one location, use docs_edit_text.");
+  });
 });

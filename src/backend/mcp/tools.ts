@@ -1371,6 +1371,30 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "sheets_update_values",
+    description:
+      "Overwrite the VALUES of an existing A1 range in a spreadsheet (values.update, valueInputOption USER_ENTERED, so formulas and numbers parse as if typed). Writes values only — cell formats, borders and conditional formats are untouched. The Preserve-mode way to change existing cells; use sheets_append_values to add rows. Accepts a spreadsheet id or URL.",
+    inputSchema: z.object({
+      spreadsheetId: z.string(),
+      range: z.string().describe("A1 notation, e.g. Sheet1!B2:D4."),
+      values: z.array(z.array(z.string())),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const spreadsheetId = extractGoogleId(a.spreadsheetId);
+      await new SheetsService(env, acct(sub, a)).updateValues(spreadsheetId, a.range, a.values);
+      return {
+        result: { ok: true, range: a.range, rows: a.values.length },
+        asset: {
+          assetType: "sheet",
+          googleId: spreadsheetId,
+          action: "update",
+          detail: { range: a.range, rows: a.values.length },
+        },
+      };
+    },
+  },
+  {
     name: "sheets_get_metadata",
     description: "Get a spreadsheet's metadata: title + the list of tabs (sheetId, title, index).",
     inputSchema: z.object({ spreadsheetId: z.string(), ...asUser }),

@@ -47,4 +47,14 @@ describe("SheetsService", () => {
     const body = JSON.parse(init.body as string);
     expect(body.requests[0].addSheet.properties.title).toBe("New Tab");
   });
+
+  it("updateValues PUTs values only, with valueInputOption=USER_ENTERED", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    await new SheetsService({} as any, "s1").updateValues("sh1", "Sheet1!B2:C2", [["1", "=A1"]]);
+    const url = decodeURIComponent(spy.mock.calls[0][0] as string);
+    const init = spy.mock.calls[0][1] as RequestInit;
+    expect(url).toContain("/values/Sheet1!B2:C2?valueInputOption=USER_ENTERED");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ values: [["1", "=A1"]] });
+  });
 });
