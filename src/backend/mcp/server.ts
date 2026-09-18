@@ -13,7 +13,11 @@
  */
 import { z } from "zod";
 
+import { resolveAccount } from "@/backend/auth/provider";
 import { verifySessionCookie } from "@/backend/lib/cookies";
+import { constantTimeEqual } from "@/backend/lib/crypto";
+import { apiGuide } from "@/backend/mcp/code-mode";
+import { getWorkerApiKey } from "@/backend/utils/secrets";
 import { logOperation, logAssetTouch } from "./logging";
 import { resolveAccessToken, oauthBaseUrl } from "./oauth";
 import { MCP_EXPOSED_TOOLS } from "./tools";
@@ -32,15 +36,28 @@ const CORS_HEADERS = {
 const JSON_HEADERS = { "content-type": "application/json", ...CORS_HEADERS };
 
 /**
- * Resolves the authenticated Google `sub` from either:
- *   1. an OAuth access token we issued (the claude.ai web-connector flow), or
- *   2. a session-cookie value passed as a bearer (Claude Code / Desktop), or
- *   3. the browser session cookie itself.
+ * Resolves the caller's account ref, checked in this order:
+ *   1. `Bearer <WORKER_API_KEY>` (constant-time) → the default Workspace identity,
+ *      a bare email from {@link resolveAccount}. Bare, not `dwd:<email>`:
+ *      GoogleDocsClient-based tools resolve accounts via auth/provider, which
+ *      would treat a `dwd:` prefix as part of the email.
+ *   2. an OAuth access token we issued (Passcode or Google sign-in grant),
+ *   3. a session-cookie value passed as a bearer (Claude Code / Desktop),
+ *   4. the browser session cookie itself.
+ *
+ * @param request - the incoming /mcp request
+ * @param env - Worker env
+ * @returns the account ref tools act as, or null when unauthenticated
  */
 async function resolveSub(request: Request, env: Env): Promise<string | null> {
   const auth = request.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) {
     const token = auth.slice(7);
+    // A Secret Store hiccup must not 500 a request a later door would have
+    // authenticated: an unreadable key is treated as "no key" and we fall
+    // through. The check itself stays fail-closed — absent means no match.
+    const workerKey = await getWorkerApiKey(env).catch(() => undefined);
+    if (workerKey && constantTimeEqual(token, workerKey)) return resolveAccount(env);
     const oauthSub = await resolveAccessToken(env, token);
     if (oauthSub) return oauthSub;
     const payload = await verifySessionCookie(env, `cr_session=${token}`);
@@ -103,6 +120,7 @@ async function dispatch(req: JsonRpcRequest, env: Env, sub: string | null): Prom
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
         serverInfo: { name: "google-workspace-mcp", version: "1.0.0" },
+        instructions: apiGuide(),
       });
 
     case "ping":

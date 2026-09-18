@@ -46,7 +46,8 @@ import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-c
 import { buildDocPreview, type DocPreview } from "@/backend/docs/doc-preview";
 import { htmlToRequests } from "@/backend/docs/html-to-braille";
 import { findLastTable } from "@/backend/docs/locate";
-import { docBodyContent } from "@/backend/docs/locate";
+import { docBodyContent, flattenTabs, locateText } from "@/backend/docs/locate";
+import { planTextEdit } from "@/backend/docs/edit-text";
 import { markdownToRequests } from "@/backend/docs/markdown-to-requests";
 import { putPreview } from "@/backend/docs/preview-store";
 import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
@@ -85,6 +86,7 @@ import { exportSheetsToJson } from "@/backend/google/sheet-export";
 import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
 import { getDb } from "@/db";
 
+import { GoogleApiError } from "./googleClient";
 import type { AssetAction } from "./logging";
 
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
@@ -152,6 +154,24 @@ function addrList(v: string | string[] | undefined): string | undefined {
   if (v == null) return undefined;
   const s = Array.isArray(v) ? v.filter(Boolean).join(", ") : v;
   return s.trim() ? s : undefined;
+}
+
+/**
+ * Whether a batchUpdate failure was Google rejecting a pinned
+ * `writeControl.requiredRevisionId` (the document moved between the read and
+ * the write) rather than some other 400 (e.g. a genuinely malformed request).
+ *
+ * @param err - the value caught from `DocsService.batchUpdate`
+ * @returns true only for a `GoogleApiError` whose body carries `error.status === "FAILED_PRECONDITION"`
+ */
+function isRevisionConflict(err: unknown): boolean {
+  if (!(err instanceof GoogleApiError) || err.status !== 400) return false;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: { status?: string } };
+    return parsed.error?.status === "FAILED_PRECONDITION";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1102,7 +1122,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "docs_replace_text",
-    description: "Replace all occurrences of a string in a Google Doc.",
+    description:
+      "Find-and-replace in a Google Doc (Docs replaceAllText). Replaces ALL occurrences. For one location, use docs_edit_text.",
     inputSchema: z.object({
       documentId: z.string(),
       find: z.string(),
@@ -1124,6 +1145,71 @@ export const TOOLS: ToolDef[] = [
           googleId: a.documentId,
           action: "modify",
           detail: { replace: a.find },
+        },
+      };
+    },
+  },
+  {
+    name: "docs_edit_text",
+    description:
+      "Formatting-preserving edit of ONE occurrence in a Google Doc. Finds the nth literal `find` (`instance`, default 1; `matchCase` default true; optional `tabId`) and replaces just that text; the new text keeps the style of the text it replaces (no style requests are sent). If the match spans more than one text style it writes NOTHING and returns { ok:false, mixedStyles:true, runs } — edit each run separately. If the match contains a non-text element (a footnote reference, inline image, person/date chip, rich link, auto-text, or page break) it writes NOTHING and returns { ok:false, spansNonText:true, runs } — deleting the reconstructed range would also delete that element. If the match carries a pending suggestion (tracked change) it writes NOTHING and returns { ok:false, hasSuggestions:true, runs } — the matched text carries a pending suggestion, so editing it would rewrite text whose author has not had their suggestion accepted or rejected; ask the user to resolve the suggestions first. The write is pinned to the revision it read (reported back as `pinnedRevision`, or null when the document carried no revisionId to pin to), so a concurrent edit fails the batch — the caller then sees a clear error saying the document changed and to retry, not a raw Google API 400. Headers and footers are not searched. Throws if the match contains a paragraph break, the tab doesn't exist, or the text isn't found. Returns { ok:true, range, before, after, pinnedRevision }. Use this instead of docs_replace_text (which replaces ALL occurrences) for proofreading and finalizing.",
+    inputSchema: z.object({
+      documentId: z.string(),
+      find: z.string().min(1),
+      replace: z.string(),
+      instance: z.number().int().min(1).optional(),
+      matchCase: z.boolean().optional().describe("Default true (exact match)."),
+      tabId: z.string().optional().describe("Document tab id; omit for the first tab."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const docs = new DocsService(env, acct(sub, a));
+      const instance = a.instance ?? 1;
+      const raw = await docs.getRaw<{ revisionId?: string }>(a.documentId);
+      if (a.tabId) {
+        // Child tabs count: docs_list_tabs flattens them, so their ids are valid here.
+        if (!flattenTabs(raw).some((t) => t?.tabProperties?.tabId === a.tabId)) {
+          throw new Error(`Tab not found: ${a.tabId}`);
+        }
+      }
+      const hit = locateText(raw, a.find, instance, {
+        matchCase: a.matchCase ?? true,
+        tabId: a.tabId,
+      });
+      if (!hit) {
+        throw new Error(
+          `Text not found: ${JSON.stringify(a.find)} (instance ${instance}) — headers and footers are not searched.`,
+        );
+      }
+      const plan = planTextEdit(hit, a.replace, a.tabId);
+      if (!plan.ok) return { result: plan };
+      // Pin the batch to the revision the indices were computed against: without
+      // it, an edit landing above the match between the read and the write makes
+      // this delete the wrong text and still report ok.
+      const revisionId = raw?.revisionId;
+      try {
+        await docs.batchUpdate(a.documentId, plan.requests, revisionId ? { requiredRevisionId: revisionId } : undefined);
+      } catch (err) {
+        if (revisionId && isRevisionConflict(err)) {
+          throw new Error(
+            "The document changed between the read and the write, so nothing was written — run docs_edit_text again.",
+          );
+        }
+        throw err;
+      }
+      return {
+        result: {
+          ok: true,
+          range: { startIndex: hit.startIndex, endIndex: hit.startIndex + a.replace.length },
+          before: hit.runs.map((r) => r.content).join(""),
+          after: a.replace,
+          pinnedRevision: revisionId ?? null,
+        },
+        asset: {
+          assetType: "doc",
+          googleId: a.documentId,
+          action: "modify",
+          detail: { editedText: a.find.slice(0, 40) },
         },
       };
     },
@@ -1317,6 +1403,39 @@ export const TOOLS: ToolDef[] = [
           googleId: a.spreadsheetId,
           action: "update",
           detail: { rows: a.values.length },
+        },
+      };
+    },
+  },
+  {
+    name: "sheets_update_values",
+    description:
+      "Overwrite the VALUES of an existing A1 range in a spreadsheet (values.update). Writes values only — cell formats, borders and conditional formats are untouched. The Preserve-mode way to change existing cells; use sheets_append_values to add rows. Accepts a spreadsheet id or URL. valueInputOption (default USER_ENTERED) parses each value as if a person typed it, so a leading '=' becomes a formula and a leading '-', a leading '0' or a date-like string ('3/4', '1-2') is reinterpreted; prefix a value with an apostrophe (') to force it to stay literal. Use RAW to store every value exactly as given — that is the right choice for text from an untrusted or third-party source (an email body, a web page, a Drive file someone else wrote), where a value like =IMPORTXML(...) would otherwise run as a formula and exfiltrate data when the sheet is opened.",
+    inputSchema: z.object({
+      spreadsheetId: z.string(),
+      range: z.string().describe("A1 notation, e.g. Sheet1!B2:D4."),
+      values: z.array(z.array(z.string())),
+      valueInputOption: z
+        .enum(["USER_ENTERED", "RAW"])
+        .optional()
+        .describe("Default USER_ENTERED (parses formulas/numbers/dates). RAW stores text literally — use it for third-party content."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const spreadsheetId = extractGoogleId(a.spreadsheetId);
+      await new SheetsService(env, acct(sub, a)).updateValues(
+        spreadsheetId,
+        a.range,
+        a.values,
+        a.valueInputOption,
+      );
+      return {
+        result: { ok: true, range: a.range, rows: a.values.length },
+        asset: {
+          assetType: "sheet",
+          googleId: spreadsheetId,
+          action: "update",
+          detail: { range: a.range, rows: a.values.length },
         },
       };
     },

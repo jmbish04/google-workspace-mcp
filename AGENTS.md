@@ -58,6 +58,37 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   routes through `runTool` → **input sanitization** (`mcp/text-sanitize.ts`: mojibake
   + HTML-entity repair on content-key fields; `code` is deliberately NOT a content key)
   + **mandatory cross-account shadow search** for read-only tools in `SHADOW_TOOLS`.
+- **`/mcp` auth — both doors** (`mcp/server.ts#resolveSub`, `mcp/oauth.ts`):
+  `Authorization: Bearer <WORKER_API_KEY>` (constant-time) resolves to the default
+  Workspace identity, the bare email from `auth/provider.ts#resolveAccount`
+  (`GOOGLE_WORKSPACE_ACCOUNT_EMAIL || GOOGLE_USER_TO_IMPERSONATE || justin@126colby.com`
+  — `||`, the vars ship as ""). OAuth `/authorize` renders a page offering **Passcode**
+  (same secret, never named in UI/errors) or Google sign-in; passcode grants bind to the
+  default identity, 1-year access tokens. Registration is open, so the **Passcode POST
+  only completes for a redirect host on `oauth.ts#PASSCODE_REDIRECT_HOSTS`** (claude.ai,
+  `*.claude.ai`, claude.com, `*.claude.com`, loopback) — otherwise a phishing link could trade one passcode entry for
+  a year of full Workspace access. Google sign-in stays open to any host: it binds the
+  signer's own identity. Failed passcodes are `console.warn`ed (host + client_id only).
+  Live check: `scripts/auth-check.mjs`.
+- **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
+  match + `deleteContentRange`, no style requests; mixed-style match →
+  `{ok:false,mixedStyles:true,runs}`; non-text-element match →
+  `{ok:false,spansNonText:true,runs}`; tracked-change match →
+  `{ok:false,hasSuggestions:true,runs}` (the matched text carries a pending suggestion,
+  so editing it would rewrite text whose author has not had it accepted/rejected — the
+  agent must ask the user to resolve the suggestions first; this is only about the
+  matched text, not the rest of the document's indices); the batch
+  is pinned to the `revisionId` of the read via `writeControl.requiredRevisionId`
+  (reported back as `pinnedRevision`), so a concurrent edit throws a clear "document
+  changed, retry" error instead of a raw Google API 400 or deleting the wrong range;
+  headers and footers are NOT searched; resolver `docs/locate.ts#locateText`, shared
+  with `docs_style_text` via `GoogleDocsClient.findElement` — which calls
+  `locateText` with no options, so `docs_style_text` always matches case-sensitively
+  in the first tab, with no `matchCase`/`tabId` control. Tab ids resolve through
+  `docs/locate.ts#flattenTabs`, so nested `childTabs` ids work) and `sheets_update_values`
+  (values.update; `valueInputOption` defaults to USER_ENTERED, pass RAW for text from an
+  untrusted or third-party source so `=IMPORTXML(...)` is stored, not executed).
+  The Preserve/Redesign/Clarify editing policy lives in `mcp/code-mode.ts#apiGuide`.
 - **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
   `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
   Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,
