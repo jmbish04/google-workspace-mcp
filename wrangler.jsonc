@@ -118,8 +118,10 @@
     // for Google Workspace domain users — it can NOT impersonate consumer
     // @gmail.com accounts (e.g. jmbish04@gmail.com), so those must use OAuth.
     "GOOGLE_USER_TO_IMPERSONATE": "",
-    // Display email for the default Workspace (DWD) account.
-    "GOOGLE_WORKSPACE_ACCOUNT_EMAIL": "",
+    // Default account for callers that name none (the "workspace" alias), and
+    // the identity behind the Passcode door. OAuth only — this is a consumer
+    // account, so DWD does not apply; its refresh token is already in KV.
+    "GOOGLE_WORKSPACE_ACCOUNT_EMAIL": "jmbish04@gmail.com",
     // Email for the consumer/personal Google account (OAuth2, not DWD).
     "GOOGLE_PERSONAL_ACCOUNT_EMAIL": "",
     // AI Gateway + model defaults (Workers AI via AI Gateway, Phase 2 port).

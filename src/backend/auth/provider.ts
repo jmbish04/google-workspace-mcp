@@ -12,7 +12,7 @@
  * happens. OAuth-ONLY (DWD and the service account were removed):
  *
  *  1. empty / `"workspace"` / `"justin"` → the Workspace OAuth account
- *     (`GOOGLE_WORKSPACE_ACCOUNT_EMAIL`, default justin@126colby.com).
+ *     (`GOOGLE_WORKSPACE_ACCOUNT_EMAIL`; jmbish04@gmail.com in production).
  *  2. `"personal"` / `"jmbish04"`        → the consumer OAuth account
  *     (`GOOGLE_PERSONAL_ACCOUNT_EMAIL`, default jmbish04@gmail.com).
  *  3. any other value                    → treated as a literal email.
@@ -34,7 +34,7 @@ import { getOAuthAccessToken, hasOAuthRefreshToken } from "./oauth-google";
 
 /**
  * Which Google account a request targets: an email address, or one of the
- * aliases `"workspace"`/`"justin"` (→ justin@126colby.com) and
+ * aliases `"workspace"`/`"justin"` (→ GOOGLE_WORKSPACE_ACCOUNT_EMAIL) and
  * `"personal"`/`"jmbish04"` (→ jmbish04@gmail.com). OAuth-only — no DWD, no
  * service account.
  */
@@ -42,9 +42,10 @@ export type GoogleAccount = string;
 
 /**
  * Default account when a caller does not specify one — the `"workspace"` alias,
- * which now resolves to a real OAuth account (justin@126colby.com), NOT a service
- * account or DWD impersonation. Background agents (orchestrator, RPC) rely on
- * this default; it is just another OAuth identity.
+ * which resolves to a real OAuth account (whatever `GOOGLE_WORKSPACE_ACCOUNT_EMAIL`
+ * names; `jmbish04@gmail.com` in production), NOT a service account or DWD
+ * impersonation. Background agents (orchestrator, RPC) rely on this default; it
+ * is just another OAuth identity.
  */
 export const DEFAULT_ACCOUNT: GoogleAccount = "workspace";
 
