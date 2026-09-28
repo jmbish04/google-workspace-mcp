@@ -80,7 +80,6 @@ import {
 import { buildThreadHtml, toRenderMessage } from "@/backend/gmail/thread-pdf";
 import { findEmailRecords } from "@/backend/gmail/tracking";
 import { GoogleDocsClient } from "@/backend/google";
-import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-collab";
 import {
   renderPdfBuffer,
   listPdfTemplates,
