@@ -1,0 +1,1 @@
+{"action": "create", "reason": "Docs_append_markdown fails with 403 for DWD accounts; insert_text works as workaround and confirms entity decoding (PR #19) is live and functional.", "evidence": "references/evidence-4af1dfba.md"}

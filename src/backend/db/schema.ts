@@ -51,6 +51,8 @@ export * from "./schemas/scheduled-sends";
 export * from "./schemas/scheduled-emails";
 export * from "./schemas/email-previews";
 export * from "./schemas/email-templates";
+export * from "./schemas/pdf-templates";
+export * from "./schemas/pdf-generation-logs";
 
 // ---------------------------------------------------------------------------
 // Agents SDK platform tables (ported from core-gsuite-tools, Phase 2)
@@ -58,3 +60,4 @@ export * from "./schemas/email-templates";
 export * from "./schemas/agents";
 export * from "./schemas/agent-chat";
 export * from "./schemas/google-artifacts";
+

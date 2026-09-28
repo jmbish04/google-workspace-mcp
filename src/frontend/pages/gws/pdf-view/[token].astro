@@ -1,0 +1,35 @@
+---
+/**
+ * `/gws/pdf-view/:token` — Locked-Down Recipient PDF Viewer.
+ * Secure standalone viewer that restricts recipient access exclusively
+ * to the shared document. No app headers, footers, navigation, or data leaks.
+ */
+import HeadSEO from "@/components/HeadSEO.astro";
+import { PdfViewerIsland } from "@/components/pdf/PdfViewerIsland";
+import "@/styles/global.css";
+
+const { token } = Astro.params;
+---
+
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <HeadSEO
+      title="Secure PDF Viewer"
+      description="View shared document with secure locked-down access."
+    />
+    <script is:inline>
+      (() => {
+        try {
+          const stored = localStorage.getItem("theme");
+          const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const dark = stored ? stored === "dark" : prefersDark;
+          document.documentElement.classList.toggle("dark", dark);
+        } catch {}
+      })();
+    </script>
+  </head>
+  <body class="bg-neutral-950 text-neutral-100 antialiased selection:bg-sky-500/30 overflow-x-hidden min-h-screen">
+    <PdfViewerIsland token={token || ""} client:load />
+  </body>
+</html>

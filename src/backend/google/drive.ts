@@ -328,4 +328,95 @@ export class GoogleDriveClient extends GoogleApiClient {
     );
     return res.permissions ?? [];
   }
+
+  /**
+   * Add a permission to a file or folder (e.g. anyone with link can view).
+   *
+   * @param idInput - File or folder ID/URL
+   * @param permission - Permission object (role: "reader"|"commenter"|"writer", type: "anyone"|"user"|"domain")
+   */
+  async createPermission(
+    idInput: string,
+    permission: { role: string; type: string; emailAddress?: string; sendNotificationEmail?: boolean }
+  ): Promise<DrivePermission> {
+    const id = extractGoogleId(idInput);
+    const query: Record<string, string> = {
+      fields: "id,type,role,emailAddress,displayName,domain",
+    };
+    if (permission.sendNotificationEmail !== undefined) {
+      query.sendNotificationEmail = String(permission.sendNotificationEmail);
+    }
+    return this.request<DrivePermission>(`${DRIVE_BASE}/files/${id}/permissions`, {
+      method: "POST",
+      query,
+      body: {
+        role: permission.role,
+        type: permission.type,
+        emailAddress: permission.emailAddress,
+      },
+      scopes: [GoogleScope.Drive],
+    });
+  }
+
+  /**
+   * Upload raw binary bytes (such as a generated PDF) using multipart/related upload.
+   *
+   * @param name - File name
+   * @param mimeType - Content MIME type (e.g. "application/pdf")
+   * @param bytes - Raw binary bytes
+   * @param parentIdInput - Optional parent folder ID or URL
+   */
+  async uploadBinaryFile(
+    name: string,
+    mimeType: string,
+    bytes: Uint8Array | ArrayBuffer,
+    parentIdInput?: string
+  ): Promise<DriveFile> {
+    const parentId = parentIdInput ? extractGoogleId(parentIdInput) : undefined;
+    const boundary = "-------pdfme314159265358979323846";
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelimiter = `\r\n--${boundary}--`;
+
+    const metadata = {
+      name,
+      parents: parentId ? [parentId] : undefined,
+    };
+
+    const uint8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const metaBytes = new TextEncoder().encode(
+      `${delimiter}Content-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}${delimiter}Content-Type: ${mimeType}\r\n\r\n`
+    );
+    const closeBytes = new TextEncoder().encode(closeDelimiter);
+
+    // Concatenate metadata header, binary body, and boundary closing
+    const fullBody = new Uint8Array(metaBytes.length + uint8.length + closeBytes.length);
+    fullBody.set(metaBytes, 0);
+    fullBody.set(uint8, metaBytes.length);
+    fullBody.set(closeBytes, metaBytes.length + uint8.length);
+
+    return this.request<DriveFile>(`${UPLOAD_BASE}/files`, {
+      method: "POST",
+      query: { uploadType: "multipart", fields: FILE_FIELDS },
+      raw: fullBody,
+      headers: { "content-type": `multipart/related; boundary=${boundary}` },
+      scopes: [GoogleScope.Drive],
+    });
+  }
+
+  /**
+   * Export a Google Doc, Sheet, or Slide to a standard binary format (default: application/pdf).
+   *
+   * @param idInput - Google Workspace file ID or URL
+   * @param mimeType - Export MIME type (default "application/pdf")
+   */
+  async exportFile(idInput: string, mimeType = "application/pdf"): Promise<ArrayBuffer> {
+    const id = extractGoogleId(idInput);
+    const res = await this.request<Response>(`${DRIVE_BASE}/files/${id}/export`, {
+      query: { mimeType },
+      scopes: [GoogleScope.Drive],
+      rawResponse: true,
+    });
+    return res.arrayBuffer();
+  }
 }
+

@@ -1,0 +1,1 @@
+The gmail_create_draft tool was updated to accept `recipients` (array or comma-separated string) for `to`, `cc`, `bcc`, and the schema was extended with `as:"inline"` + `contentId` on attachments for embedding images in the HTML body via `<img src="cid:contentId">`. The MIME builder automatically nests multipart/related when inline images are present.

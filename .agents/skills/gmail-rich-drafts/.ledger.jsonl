@@ -1,0 +1,1 @@
+{"action": "create", "reason": "Composing email drafts with the gmail_create_draft tool now supports multiple recipients, inline images via Content-ID, links, and attachments. Future sessions on this codebase will need this interface and the MIME nesting structure.", "evidence": "references/evidence-cbf7bf90.md"}
