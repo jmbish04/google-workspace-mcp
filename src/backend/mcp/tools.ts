@@ -84,6 +84,10 @@ import { extractGoogleId } from "@/backend/google/core/ids";
 import { exportDocsToFiles } from "@/backend/google/doc-export";
 import { exportSheetsToJson } from "@/backend/google/sheet-export";
 import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
+import {
+  countLiveSubscriptions,
+  syncWorkspaceSubscriptions,
+} from "@/backend/workspace-events/subscription-manager";
 import { getDb } from "@/db";
 
 import { GoogleApiError } from "./googleClient";
@@ -1332,6 +1336,47 @@ export const TOOLS: ToolDef[] = [
     async run({ env }, a) {
       const run = await runWorkspaceEventsE2e(env, { trigger: "agent", account: a.as_user });
       return { result: run };
+    },
+  },
+  {
+    name: "sync_workspace_subscriptions",
+    description:
+      "Create-or-renew the standing Workspace Events subscription for every top-level Drive folder on every active account, and report what changed. Normally runs on the hourly cron; this is the manual lever for after a deploy or a re-consent. Idempotent — subscriptions far from expiry are skipped, so a no-op run is one cheap folder listing per account. Note: files loose in My Drive root are NOT covered, because Google refuses a subscription on the Drive root itself.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({
+      accounts: z.array(
+        z.object({
+          account: z.string(),
+          folders: z.number(),
+          created: z.number(),
+          renewed: z.number(),
+          skipped: z.number(),
+          pruned: z.number(),
+          errors: z.array(z.object({ folderId: z.string(), error: z.string() })),
+        }),
+      ),
+    }),
+    async run({ env }) {
+      return { result: { accounts: await syncWorkspaceSubscriptions(env) } };
+    },
+  },
+  {
+    name: "list_workspace_subscriptions",
+    description:
+      "List the standing Workspace Events subscriptions this Worker maintains, per account: how many are LIVE right now (ACTIVE and not past their expiry) versus how many rows exist, and when the soonest one expires. An expired row is not coverage and is not counted as live.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({
+      accounts: z.array(
+        z.object({
+          account: z.string(),
+          live: z.number(),
+          total: z.number(),
+          nextExpiry: z.string().nullable(),
+        }),
+      ),
+    }),
+    async run({ env }) {
+      return { result: { accounts: await countLiveSubscriptions(env) } };
     },
   },
   {
