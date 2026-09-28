@@ -27,8 +27,22 @@ import {
 } from "@/backend/pdf/storage";
 import { sendEmailWithAttachmentOrDriveLink } from "@/backend/pdf/delivery";
 import type { PdfmeTemplateDefinition } from "@/backend/pdf/types";
+import { agentAuthMiddleware } from "@/backend/api/middleware/agent-auth";
 
 export const pdfRouter = new OpenAPIHono<AppBindings>();
+
+// ---------------------------------------------------------------------------
+// Security: Gate private audit, mutation, and distribution routes behind session/API key.
+// The public recipient endpoints (/view/:token and /raw/:token) and read-only
+// template discovery remain accessible.
+// ---------------------------------------------------------------------------
+pdfRouter.use("/logs", agentAuthMiddleware);
+pdfRouter.use("/logs/*", agentAuthMiddleware);
+pdfRouter.use("/render", agentAuthMiddleware);
+pdfRouter.use("/drive-convert", agentAuthMiddleware);
+pdfRouter.use("/sharing", agentAuthMiddleware);
+pdfRouter.use("/email-send", agentAuthMiddleware);
+pdfRouter.use("/r2/*", agentAuthMiddleware);
 
 // ---------------------------------------------------------------------------
 // Templates CRUD
@@ -71,7 +85,7 @@ pdfRouter.get("/templates/:id", async (c) => {
 /**
  * POST /templates — Create a new custom template.
  */
-pdfRouter.post("/templates", async (c) => {
+pdfRouter.post("/templates", agentAuthMiddleware, async (c) => {
   const body = await c.req.json();
   const schema = z.object({
     id: z.string().optional(),
@@ -99,8 +113,9 @@ pdfRouter.post("/templates", async (c) => {
 /**
  * PUT /templates/:id — Update a custom template.
  */
-pdfRouter.put("/templates/:id", async (c) => {
+pdfRouter.put("/templates/:id", agentAuthMiddleware, async (c) => {
   const id = c.req.param("id");
+  if (!id) return c.json({ error: "Missing template id" }, 400);
   const body = await c.req.json();
   try {
     const updated = await updatePdfTemplate(c.env.DB, id, body);
@@ -113,8 +128,9 @@ pdfRouter.put("/templates/:id", async (c) => {
 /**
  * DELETE /templates/:id — Delete a custom template.
  */
-pdfRouter.delete("/templates/:id", async (c) => {
+pdfRouter.delete("/templates/:id", agentAuthMiddleware, async (c) => {
   const id = c.req.param("id");
+  if (!id) return c.json({ error: "Missing template id" }, 400);
   try {
     const ok = await deletePdfTemplate(c.env.DB, id);
     if (!ok) return c.json({ error: "Template not found" }, 404);
@@ -357,10 +373,13 @@ pdfRouter.get("/raw/:token", async (c) => {
 });
 
 /**
- * GET /r2/:key — Direct stream from R2 files bucket.
+ * GET /r2/:key — Direct stream from R2 files bucket (strictly restricted to pdfs/* objects).
  */
-pdfRouter.get("/r2/:key", async (c) => {
+pdfRouter.get("/r2/:key{.+}", async (c) => {
   const key = c.req.param("key");
+  if (!key || !key.startsWith("pdfs/") || key.includes("..")) {
+    return c.text("Forbidden: only pdfs/ objects may be accessed through this endpoint", 403);
+  }
   if (!c.env.R2_FILES_BUCKET) return c.text("R2 bucket not bound", 500);
 
   const obj = await c.env.R2_FILES_BUCKET.get(key);
