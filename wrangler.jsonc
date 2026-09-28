@@ -96,6 +96,17 @@
     // spends AI on docs that carry an open comment mentioning this tag.
     // ---------------------------------------------------------------------
     "AGENT_CALL_SIGN": "@colby-app",
+    // ---------------------------------------------------------------------
+    // Account that owns every Workspace Events subscription (Pub/Sub pipeline).
+    // Pinned to the CONSUMER account on purpose: a managed Workspace account is
+    // subject to Google Cloud session control, which periodically kills its
+    // refresh token (invalid_grant / invalid_rapt) and would take the event
+    // pipeline down with it. A consumer account has no admin policy. Both
+    // accounts share Drive at the root, so events for shared files arrive
+    // either way. Empty string = fall back to the first active account.
+    // Verified 2026-09-28: E2E probe healthy end-to-end as jmbish04@gmail.com.
+    // ---------------------------------------------------------------------
+    "WORKSPACE_EVENTS_ACCOUNT": "jmbish04@gmail.com",
     // Minutes back the sweep looks for modified Google Docs to scan for comments.
     "COMMENT_SWEEP_WINDOW_MIN": "30",
     // Deployed Worker URL, used to build the Google OAuth redirect_uri.
