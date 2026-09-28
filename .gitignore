@@ -25,3 +25,10 @@ pnpm-debug.log*
 # impeccable per-run caches / local config
 .impeccable/hook.cache.json
 .impeccable/config.local.json
+
+# Local agent scratch & caches
+.claude/
+.codex/
+.juno_task/
+create_service_token.py
+apps.json

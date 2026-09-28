@@ -62,7 +62,25 @@ import { FormsService } from "./services/forms";
 import { queryCorpus } from "@/backend/ai/rag";
 import { GoogleDocsClient } from "@/backend/google";
 import { reviewDoc, sweepComments, collabConfig } from "@/backend/docs/comment-collab";
+import {
+  renderPdfBuffer,
+  listPdfTemplates,
+  getPdfTemplate,
+  createPdfTemplate,
+  updatePdfTemplate,
+  deletePdfTemplate,
+  listPdfGenerationLogs,
+  convertLogToTemplate,
+  seedBuiltinTemplates as seedBuiltinPdfTemplates,
+} from "@/backend/pdf/service";
+import {
+  savePdfFullWorkflow,
+  exportDriveFileToPdfInSameFolder,
+  updateDriveSharing,
+} from "@/backend/pdf/storage";
+import { sendEmailWithAttachmentOrDriveLink } from "@/backend/pdf/delivery";
 import type { AssetAction } from "./logging";
+
 
 export type ToolCtx = { env: Env; sub: string };
 
@@ -2744,7 +2762,279 @@ export const TOOLS: ToolDef[] = [
       };
     },
   },
+
+  // -------------------------------------------------------------------------
+  // PDF Generation, Templates & Drive/R2 Sharing Tools
+  // -------------------------------------------------------------------------
+  {
+    name: "pdf_render",
+    description:
+      "Render a high-fidelity PDF from a pdfme template (or templateId) and input variables. Can save to Cloudflare R2, save to Google Drive with configurable folder and permissions ('anyone-viewer', etc.), generate a locked-down Worker view token, and record the run in D1.",
+    inputSchema: z.object({
+      templateId: z.string().optional().describe("ID of built-in or custom template"),
+      template: z.any().optional().describe("Raw pdfme template object with { basePdf, schemas: [[...]] }"),
+      inputs: z.array(z.record(z.string(), z.any())).default([{}]).describe("Array of key-value replacement data per page"),
+      title: z.string().optional().describe("Title of the generated PDF document"),
+      filename: z.string().optional().describe("Output filename (e.g. invoice.pdf)"),
+      saveToR2: z.boolean().default(true).describe("Store in Cloudflare R2 files bucket"),
+      saveToDrive: z.boolean().default(false).describe("Upload to Google Drive"),
+      driveAccountRef: z.string().optional().describe("Drive account reference ('workspace' or 'personal')"),
+      driveFolderId: z.string().optional().describe("Destination Google Drive folder ID"),
+      driveFolderName: z.string().optional().describe("Create or resolve folder by name"),
+      driveParentFolderId: z.string().optional().describe("Parent folder ID if creating folder by name"),
+      driveSharingRole: z.enum(["restricted", "anyone-viewer", "anyone-commenter", "anyone-editor"]).optional().describe("Drive sharing setting"),
+      workerViewMode: z.enum(["direct-worker", "drive-embed"]).default("direct-worker").describe("Worker view presentation mode"),
+      allowDownload: z.boolean().default(true).describe("Whether recipient can download PDF or only view"),
+    }),
+    async run({ env }, args) {
+      let targetTemplate = args.template;
+      let templateTitle = args.title || "Generated PDF Document";
+
+      if (!targetTemplate && args.templateId) {
+        const tmpl = await getPdfTemplate(env.DB, args.templateId);
+        if (!tmpl) throw new Error(`Template not found: ${args.templateId}`);
+        targetTemplate = JSON.parse(tmpl.schemaJson);
+        if (!args.title) templateTitle = tmpl.name;
+      }
+
+      if (!targetTemplate) {
+        throw new Error("Must specify either templateId or template definition");
+      }
+
+      const rendered = await renderPdfBuffer({
+        template: targetTemplate,
+        inputs: args.inputs,
+      });
+
+      const stored = await savePdfFullWorkflow(env, {
+        title: templateTitle,
+        filename: args.filename,
+        pdfBytes: rendered.pdfBytes,
+        templateId: args.templateId,
+        inputData: args.inputs,
+        schemaSnapshot: targetTemplate,
+        saveToR2: args.saveToR2,
+        saveToDrive: args.saveToDrive,
+        driveAccountRef: args.driveAccountRef,
+        driveFolderId: args.driveFolderId,
+        driveFolderName: args.driveFolderName,
+        driveParentFolderId: args.driveParentFolderId,
+        driveSharingRole: args.driveSharingRole,
+        workerViewMode: args.workerViewMode,
+        allowDownload: args.allowDownload,
+      });
+
+      return {
+        result: {
+          success: true,
+          title: templateTitle,
+          byteSize: rendered.byteSize,
+          pageCount: rendered.pageCount,
+          recordId: stored.id,
+          workerViewUrl: stored.workerViewUrl,
+          driveUrl: stored.driveUrl,
+          driveFileId: stored.driveFileId,
+          driveFolderName: stored.driveFolderName,
+          driveSharingRole: stored.driveSharingRole,
+          r2ShareUrl: stored.r2ShareUrl,
+        },
+      };
+    },
+  },
+
+  {
+    name: "pdf_templates_list",
+    description:
+      "List all available PDF templates (both built-in and user-created custom templates) with their names, descriptions, categories, and sample schemas for reference.",
+    inputSchema: z.object({
+      category: z.string().optional().describe("Filter by category: invoice, certificate, report, receipt, contract, shipping, ticket, or custom"),
+      search: z.string().optional().describe("Search keyword across name and description"),
+    }),
+    async run({ env }, args) {
+      let list = await listPdfTemplates(env.DB, args);
+      if (list.length === 0 && !args.category && !args.search) {
+        await seedBuiltinPdfTemplates(env.DB);
+        list = await listPdfTemplates(env.DB);
+      }
+      return {
+        result: {
+          count: list.length,
+          templates: list.map((t) => ({
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            category: t.category,
+            isBuiltin: t.isBuiltin,
+            createdAt: t.createdAt,
+          })),
+        },
+      };
+    },
+  },
+
+  {
+    name: "pdf_template_get",
+    description:
+      "Get full schema definition and sample input data for one PDF template by ID to inspect its layout or use as a starting blueprint.",
+    inputSchema: z.object({
+      id: z.string().describe("Template ID (e.g. tmpl_invoice_modern)"),
+    }),
+    async run({ env }, args) {
+      const tmpl = await getPdfTemplate(env.DB, args.id);
+      if (!tmpl) throw new Error(`Template not found: ${args.id}`);
+      return {
+        result: {
+          ...tmpl,
+          schema: JSON.parse(tmpl.schemaJson),
+          sampleData: tmpl.sampleDataJson ? JSON.parse(tmpl.sampleDataJson) : null,
+        },
+      };
+    },
+  },
+
+  {
+    name: "pdf_template_create",
+    description: "Create a new repeatable custom PDF template in the database.",
+    inputSchema: z.object({
+      id: z.string().optional().describe("Optional custom ID"),
+      name: z.string().min(1).describe("Human-readable template name"),
+      description: z.string().optional().describe("Template purpose and description"),
+      category: z.string().optional().describe("Category slug (e.g. invoice, contract, report, custom)"),
+      schema: z.union([z.string(), z.record(z.string(), z.any())]).describe("pdfme template definition { basePdf, schemas: [[...]] }"),
+      sampleData: z.union([z.string(), z.array(z.record(z.string(), z.any()))]).optional().describe("Sample inputs array"),
+    }),
+    async run({ env }, args) {
+      const created = await createPdfTemplate(env.DB, args as any);
+      return { result: { success: true, template: created } };
+    },
+  },
+
+  {
+    name: "pdf_template_update",
+    description: "Update an existing custom PDF template.",
+    inputSchema: z.object({
+      id: z.string().describe("Template ID to update"),
+      name: z.string().optional(),
+      description: z.string().optional(),
+      category: z.string().optional(),
+      schema: z.union([z.string(), z.record(z.string(), z.any())]).optional(),
+      sampleData: z.union([z.string(), z.array(z.record(z.string(), z.any()))]).optional(),
+    }),
+    async run({ env }, args) {
+      const updated = await updatePdfTemplate(env.DB, args.id, args);
+      return { result: { success: true, template: updated } };
+    },
+  },
+
+  {
+    name: "pdf_template_delete",
+    description: "Delete a custom PDF template (built-in templates cannot be deleted).",
+    inputSchema: z.object({
+      id: z.string().describe("Template ID to delete"),
+    }),
+    async run({ env }, args) {
+      const ok = await deletePdfTemplate(env.DB, args.id);
+      return { result: { success: ok, id: args.id } };
+    },
+  },
+
+  {
+    name: "pdf_logs_list",
+    description:
+      "Query historical PDF generation logs from D1, including Drive URLs, R2 keys, page counts, worker view links, and sharing permissions.",
+    inputSchema: z.object({
+      search: z.string().optional().describe("Search term matching title, Drive folder, or account"),
+      limit: z.number().int().positive().max(100).default(50),
+      offset: z.number().int().min(0).default(0),
+    }),
+    async run({ env }, args) {
+      const logs = await listPdfGenerationLogs(env.DB, args);
+      return {
+        result: {
+          count: logs.length,
+          logs: logs.map((l) => ({
+            id: l.id,
+            title: l.title,
+            templateId: l.templateId,
+            byteSize: l.byteSize,
+            pageCount: l.pageCount,
+            driveUrl: l.driveUrl,
+            driveFolderName: l.driveFolderName,
+            driveSharingRole: l.driveSharingRole,
+            r2ShareUrl: l.r2ShareUrl,
+            workerViewToken: l.workerViewToken,
+            allowDownload: l.allowDownload,
+            createdAt: l.createdAt,
+          })),
+        },
+      };
+    },
+  },
+
+  {
+    name: "pdf_log_to_template",
+    description:
+      "Convert any previously generated PDF log from D1 into a repeatable template by extracting its schema snapshot.",
+    inputSchema: z.object({
+      logId: z.string().describe("The ID of the generated PDF log (e.g. pdf_...)"),
+      name: z.string().min(1).describe("Name for the new repeatable template"),
+      description: z.string().optional().describe("Description for the new template"),
+      category: z.string().optional().describe("Category for the new template"),
+    }),
+    async run({ env }, args) {
+      const tmpl = await convertLogToTemplate(env.DB, args);
+      return { result: { success: true, template: tmpl } };
+    },
+  },
+
+  {
+    name: "drive_file_to_pdf",
+    description:
+      "Export any Google Doc, Google Sheet, or Google Slide to PDF and automatically save the generated PDF into the exact same Drive folder as the original file.",
+    inputSchema: z.object({
+      sourceFileId: z.string().describe("ID or URL of Google Doc, Sheet, Slide, or Drive file"),
+      accountRef: z.string().optional().describe("Account ref ('workspace' or 'personal')"),
+      sharingRole: z.enum(["restricted", "anyone-viewer", "anyone-commenter", "anyone-editor"]).optional().describe("Sharing permissions to grant"),
+      newFileName: z.string().optional().describe("Optional custom name for the PDF file"),
+      saveToR2Also: z.boolean().default(true).describe("Also backup to Cloudflare R2"),
+    }),
+    async run({ env }, args) {
+      const record = await exportDriveFileToPdfInSameFolder(env, args);
+      return { result: { success: true, record } };
+    },
+  },
+
+  {
+    name: "email_send_with_pdf",
+    description:
+      "Direct path to attach a generated PDF (or existing Drive file) to an email via Gmail API or upload to Drive + set public view + drop shareable link into email body.",
+    inputSchema: z.object({
+      to: z.string().email().describe("Recipient email address"),
+      subject: z.string().min(1).describe("Email subject line"),
+      bodyText: z.string().optional().describe("Plain text body"),
+      bodyHtml: z.string().optional().describe("HTML body"),
+      accountRef: z.string().optional().describe("Account to send from ('personal' or 'workspace')"),
+      filename: z.string().optional().describe("Attachment filename (e.g. invoice.pdf)"),
+      pdfBase64: z.string().optional().describe("Base64 string of PDF bytes if sending directly"),
+      driveFileId: z.string().optional().describe("Drive file ID to attach or link"),
+      deliveryMode: z.enum(["mime-attachment", "drive-link", "both"]).default("mime-attachment").describe("Attachment delivery mode"),
+    }),
+    async run({ env }, args) {
+      let pdfBytes: Uint8Array | undefined;
+      if (args.pdfBase64) {
+        const bin = atob(args.pdfBase64.replace(/\s/g, ""));
+        pdfBytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) pdfBytes[i] = bin.charCodeAt(i);
+      }
+      const sent = await sendEmailWithAttachmentOrDriveLink(env, {
+        ...args,
+        pdfBytes,
+      });
+      return { result: { success: true, ...sent } };
+    },
+  },
 ];
+
 
 /**
  * The public MCP surface is intentionally **code-mode-only** — only these two

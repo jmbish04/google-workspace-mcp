@@ -1,0 +1,18 @@
+---
+/**
+ * `/gws/pdf-studio` — PDF Studio & Drive Explorer.
+ * Retrofits @reui/solution-files-1 for browsing, generating, sharing,
+ * and converting PDF documents and Google Drive files.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { PdfStudio } from "@/components/pdf/PdfStudio";
+---
+
+<BaseLayout
+  title="PDF & Drive Studio"
+  description="Generate, browse, store, and share PDF documents via pdfme and Google Drive with locked-down recipient view links."
+>
+  <div class="w-full h-full flex-1">
+    <PdfStudio client:load />
+  </div>
+</BaseLayout>

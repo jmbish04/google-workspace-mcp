@@ -1,0 +1,1 @@
+Run dead — orchestrator spawned claude with `--permission-prompt-tool stdio`, first tool call (git diff) blocks on a permission prompt nobody answers (the MCP call that would answer it already timed out). Hung, not working. jsonl frozen at 857 bytes for 3+ min. Killing it and pivoting to an in-process reviewer to honor the actual goal: review → fix → merge.

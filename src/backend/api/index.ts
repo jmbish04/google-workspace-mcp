@@ -55,6 +55,8 @@ import { accountsRouter } from "./routes/gsuite/accounts";
 import { authGoogleOauthRouter } from "./routes/gsuite/auth-google-oauth";
 import { agentSessionRouter } from "./routes/gsuite/agent-session";
 import { gsuiteHealthRouter } from "./routes/gsuite/gsuite-health";
+import { pdfRouter } from "./routes/pdf";
+
 
 // ---------------------------------------------------------------------------
 // App type — shared by all routers
@@ -187,6 +189,8 @@ app.route("/api/gws/notifications", gwsNotificationsRouter);
 app.route("/api/gws/templates", gwsTemplatesRouter);
 app.route("/api/gws/drive-webhook", driveWebhookRouter);
 app.route("/api/seed", seedRouter);
+app.route("/api/pdf", pdfRouter);
+
 
 // Ported chat/tasks-scheduler surfaces (core-gsuite-tools Phase 3). Open —
 // same "feature APIs" convention as above — except the OAuth consent routes,
