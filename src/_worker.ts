@@ -39,6 +39,7 @@ import { purgeExpiredPreviews } from "./backend/docs/preview-store";
 import { sweepComments } from "./backend/docs/comment-collab";
 import { sweepScheduledSends } from "./backend/gmail/scheduled-send";
 import { sweepScheduledEmails } from "./backend/gmail/scheduled-email";
+import { keepaliveGoogleTokens } from "./backend/auth/oauth-keepalive";
 import { handleGoogleAuth } from "./backend/api/routes/auth-google"; // added in Task 6
 import { handleOAuth } from "./backend/mcp/oauth"; // MCP OAuth authorization server
 
@@ -257,6 +258,15 @@ function makeHandler(): ExportedHandler<Env> {
       // Reconcile labels, then ingest messages for capture-enabled labels.
       ctx.waitUntil(
         (async () => {
+          // Exercise every stored Google refresh token BEFORE the rest of the
+          // weekly work: it keeps tokens clear of Google's ~6-month
+          // revoke-on-disuse rule and flags any account that can no longer
+          // refresh, instead of letting it read "active" until a tool call
+          // fails. Failures are recorded on the row, not thrown.
+          const keepalive = await keepaliveGoogleTokens(env);
+          for (const r of keepalive.filter((x) => !x.ok)) {
+            console.warn(`[oauth-keepalive] ${r.email} status=${r.status}: ${r.error ?? ""}`);
+          }
           await syncLabelsForAllAccounts(env);
           await captureAllAccounts(env);
           await purgeOldRenders(env); // drop QC screenshots older than 90 days

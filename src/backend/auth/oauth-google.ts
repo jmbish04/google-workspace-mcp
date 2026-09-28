@@ -81,7 +81,11 @@ export async function buildConsentUrl(env: Env, state: string, email?: string): 
     response_type: "code",
     scope: ALL_GOOGLE_SCOPES.join(" "),
     access_type: "offline",
-    include_granted_scopes: "true",
+    // MUST stay "false". With "true" Google merges every scope this client was
+    // EVER granted into the new token — which is how `cloud-platform` kept
+    // coming back and putting the token under Workspace Google Cloud session
+    // control (400 invalid_grant / invalid_rapt). See lib/google-auth.ts.
+    include_granted_scopes: "false",
     prompt: "consent",
     state,
   });
@@ -204,12 +208,61 @@ async function upsertAccountRow(env: Env, email: string, scopes: string[]): Prom
 }
 
 /**
+ * Account lifecycle status written when a refresh attempt is rejected by Google
+ * with `invalid_grant`. Distinct from `"revoked"` (an explicit revoke by us):
+ * the account is still registered, it just needs the operator to re-consent.
+ */
+export const NEEDS_REAUTH = "needs_reauth";
+
+/** Read the registry status for an email, or null when there is no row. */
+async function readAccountStatus(env: Env, email: string): Promise<string | null> {
+  try {
+    const rows = await getDb(env)
+      .select({ status: googleAccounts.status })
+      .from(googleAccounts)
+      .where(eq(googleAccounts.email, email))
+      .limit(1);
+    return rows[0]?.status ?? null;
+  } catch {
+    // D1 unavailable must never take down token issuance.
+    return null;
+  }
+}
+
+/**
+ * Record the outcome of a refresh attempt on the registry row so that the
+ * account list, `/api/gsuite-health` and the UI stop reporting "active" for an
+ * account whose token no longer refreshes.
+ *
+ * @param env - Worker env
+ * @param email - Account email
+ * @param status - `"active"` on success, {@link NEEDS_REAUTH} on invalid_grant
+ */
+async function markAccountStatus(env: Env, email: string, status: string): Promise<void> {
+  try {
+    await getDb(env)
+      .update(googleAccounts)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(googleAccounts.email, email));
+  } catch {
+    // Best-effort bookkeeping; never fail a token call over it.
+  }
+}
+
+/**
  * Resolve the stored refresh token for an email, falling back to the legacy
  * personal seed secret for `GOOGLE_PERSONAL_ACCOUNT_EMAIL`.
  */
 async function resolveRefreshToken(env: Env, email: string): Promise<string | undefined> {
   const stored = await env.SESSIONS.get(refreshTokenKey(email));
   if (stored) return stored;
+
+  // Seed secrets are a BOOTSTRAP, not a fallback. Once an account has been
+  // revoked or flagged needs_reauth, re-seeding from the secret would silently
+  // restore the very token that just failed (and, for the seeds minted by
+  // gcloud/clasp, re-introduce the Cloud scopes that trigger invalid_rapt).
+  const status = await readAccountStatus(env, email);
+  if (status && status !== "active" && status !== "pending") return undefined;
 
   // Per-account seed secret (e.g. GOOGLE_OAUTH_REFRESH_TOKEN_JUSTIN_126COLBY_COM),
   // set from the account's creds JSON before any interactive consent has run.
@@ -295,9 +348,35 @@ export async function getOAuthAccessToken(
   });
 
   if (!response.ok) {
-    throw new Error(
-      `OAuth refresh failed for ${email}: ${response.status} ${await response.text()}. The account may need re-authorization at /api/auth/google/oauth/start.`,
-    );
+    const body = await response.text();
+    let error = "";
+    let subtype = "";
+    try {
+      const parsed = JSON.parse(body) as { error?: string; error_subtype?: string };
+      error = parsed.error ?? "";
+      subtype = parsed.error_subtype ?? "";
+    } catch {
+      // non-JSON error body — fall through with the raw text below
+    }
+
+    // `invalid_grant` is terminal: the refresh token will never work again
+    // without a fresh consent. Flag the row so every surface stops claiming the
+    // account is active (a check that records a failure but leaves the verdict
+    // green is worse than no check).
+    if (error === "invalid_grant") {
+      await markAccountStatus(env, email, NEEDS_REAUTH);
+    }
+
+    // `invalid_rapt` means the refresh token is FINE and Google is demanding
+    // reauthentication because the token carries a Google Cloud scope and the
+    // Workspace domain has a Google Cloud session length set. Say so, because
+    // "re-authorize" alone sends the operator round the same loop every session.
+    const hint =
+      subtype === "invalid_rapt"
+        ? ` This is Workspace Google Cloud session control, not a revoked token: the grant carries a Cloud scope (cloud-platform / service.management), so Google forces reauth every session window. Re-consent at /api/auth/google/oauth/start?label=${encodeURIComponent(email)} to mint a Cloud-free grant (see lib/google-auth.ts), or have a super-admin set Google Cloud session control to "session never expires".`
+        : ` The account may need re-authorization at /api/auth/google/oauth/start?label=${encodeURIComponent(email)}.`;
+
+    throw new Error(`OAuth refresh failed for ${email}: ${response.status} ${body}.${hint}`);
   }
 
   const token = (await response.json()) as { access_token: string; expires_in: number };
@@ -305,9 +384,33 @@ export async function getOAuthAccessToken(
     expirationTtl: Math.max(60, token.expires_in - 60),
   });
 
+  // A successful refresh clears a previous needs_reauth flag.
+  if ((await readAccountStatus(env, email)) === NEEDS_REAUTH) {
+    await markAccountStatus(env, email, "active");
+  }
+
   // The `maybeScopes` / `scopes` argument is intentionally unused (see JSDoc).
   void maybeScopes;
   return token.access_token;
+}
+
+/**
+ * Force a refresh-token exchange for an account, bypassing the cached access
+ * token. This is the only way to PROVE a refresh token still works — reading
+ * the cache proves nothing — so it is what the keepalive cron and the health
+ * probe use.
+ *
+ * @param env - Worker env
+ * @param email - Account email
+ * @returns A freshly minted access token
+ * @throws The same actionable error as {@link getOAuthAccessToken}
+ * @example
+ * await forceRefreshAccessToken(env, "justin@126colby.com");
+ */
+export async function forceRefreshAccessToken(env: Env, email: string): Promise<string> {
+  const normalized = email.toLowerCase();
+  await env.SESSIONS.delete(accessTokenKey(normalized));
+  return getOAuthAccessToken(env, normalized, ALL_GOOGLE_SCOPES);
 }
 
 /**
