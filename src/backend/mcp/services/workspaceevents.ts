@@ -96,14 +96,46 @@ export class WorkspaceEventsService {
     throw new Error(`Timed out waiting for Workspace Events operation ${opName}`);
   }
 
-  /** List subscriptions. The Events API requires a `filter` (e.g. `event_types:"google.workspace.drive.file.v3.contentChanged"` or a target resource). */
-  async listSubscriptions(filter: string): Promise<{ subscriptions: WorkspaceSubscription[]; nextPageToken?: string }> {
-    const out = await googleJson<{ subscriptions?: WorkspaceSubscription[]; nextPageToken?: string }>(
-      this.env,
-      this.sub,
-      `${BASE}/subscriptions?filter=${encodeURIComponent(filter)}`,
-    );
-    return { subscriptions: out.subscriptions ?? [], nextPageToken: out.nextPageToken };
+  /**
+   * List subscriptions, paging through to the end.
+   *
+   * The Events API requires a `filter` (e.g.
+   * `event_types:"google.workspace.drive.file.v3.contentChanged"` or
+   * `target_resource="//drive.googleapis.com/files/ID"`).
+   *
+   * Paging is not optional at this worker's scale: the API returns 100 per
+   * page, and an unpaged call quietly reported 100 when 253 existed — a caller
+   * scanning that list for a target would conclude "not present" from a page
+   * boundary. Never reason about what exists from a listing you did not page
+   * to the end.
+   *
+   * @param filter - Events API filter expression (required by Google)
+   * @param maxPages - Safety stop so a pathological cursor cannot loop forever
+   * @returns Every matching subscription
+   * @example
+   * const { subscriptions } = await svc.listSubscriptions(
+   *   `target_resource="//drive.googleapis.com/files/${id}"`,
+   * );
+   */
+  async listSubscriptions(
+    filter: string,
+    maxPages = 50,
+  ): Promise<{ subscriptions: WorkspaceSubscription[]; truncated: boolean }> {
+    const all: WorkspaceSubscription[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+    do {
+      const params = new URLSearchParams({ filter, pageSize: "100" });
+      if (pageToken) params.set("pageToken", pageToken);
+      const out = await googleJson<{
+        subscriptions?: WorkspaceSubscription[];
+        nextPageToken?: string;
+      }>(this.env, this.sub, `${BASE}/subscriptions?${params}`);
+      all.push(...(out.subscriptions ?? []));
+      pageToken = out.nextPageToken;
+    } while (pageToken && ++pages < maxPages);
+    // Say so rather than let a cap masquerade as the full set.
+    return { subscriptions: all, truncated: Boolean(pageToken) };
   }
 
   /** Get a subscription by resource name (`subscriptions/SUBSCRIPTION_ID`). */
