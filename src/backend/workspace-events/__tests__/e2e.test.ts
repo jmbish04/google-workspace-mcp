@@ -183,4 +183,41 @@ describe("resolveE2eAccount", () => {
     listAccounts.mockResolvedValue([]);
     await expect(resolveE2eAccount({} as Env)).rejects.toThrow(/No signed-in Google account/);
   });
+
+  it("pins the pipeline to WORKSPACE_EVENTS_ACCOUNT over registry order", async () => {
+    // Registry order puts the Workspace account first. Without the pin, the
+    // event pipeline would ride a token that Google Cloud session control
+    // periodically kills (invalid_grant / invalid_rapt).
+    listAccounts.mockResolvedValue([
+      { email: "justin@126colby.com", ref: "sub-justin" },
+      { email: "jmbish04@gmail.com", ref: "sub-personal" },
+    ]);
+    const env = { WORKSPACE_EVENTS_ACCOUNT: "jmbish04@gmail.com" } as unknown as Env;
+    await expect(resolveE2eAccount(env)).resolves.toEqual({
+      email: "jmbish04@gmail.com",
+      ref: "sub-personal",
+    });
+  });
+
+  it("still honours an explicit as_user over the pin", async () => {
+    listAccounts.mockResolvedValue([
+      { email: "justin@126colby.com", ref: "sub-justin" },
+      { email: "jmbish04@gmail.com", ref: "sub-personal" },
+    ]);
+    const env = { WORKSPACE_EVENTS_ACCOUNT: "jmbish04@gmail.com" } as unknown as Env;
+    await expect(resolveE2eAccount(env, "justin@126colby.com")).resolves.toEqual({
+      email: "justin@126colby.com",
+      ref: "sub-justin",
+    });
+  });
+
+  it("falls back to the first account when the pinned one is not registered", async () => {
+    // A var naming a since-removed account must not take the pipeline down.
+    listAccounts.mockResolvedValue([{ email: "justin@126colby.com", ref: "sub-justin" }]);
+    const env = { WORKSPACE_EVENTS_ACCOUNT: "gone@example.com" } as unknown as Env;
+    await expect(resolveE2eAccount(env)).resolves.toEqual({
+      email: "justin@126colby.com",
+      ref: "sub-justin",
+    });
+  });
 });

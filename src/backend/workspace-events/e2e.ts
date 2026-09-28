@@ -97,13 +97,31 @@ export const E2E_EVENT_TYPES = [
 ];
 
 /**
- * Pick a signed-in OAuth account for the E2E probe. Prefers human Google
- * accounts over service-account emails, then the first active registry row.
+ * Pick the signed-in OAuth account that drives the Workspace Events pipeline.
+ *
+ * Resolution order:
+ *  1. An explicit `as_user`.
+ *  2. `env.WORKSPACE_EVENTS_ACCOUNT` — pinned to the CONSUMER account. A
+ *     managed Workspace account is subject to Google Cloud session control,
+ *     which periodically rejects its refresh token (`invalid_grant` /
+ *     `invalid_rapt`) and would take the event pipeline down with it; a
+ *     consumer account has no admin policy to answer to. Both accounts share
+ *     Drive at the root, and a Workspace Events subscription fires on the
+ *     RESOURCE, not on whoever touched it — so an edit made by the Workspace
+ *     account still delivers through the consumer account's subscription, as
+ *     long as that account can see the file.
+ *  3. The first active registry row.
+ *
+ * Step 2 exists because step 3 alone is non-deterministic: `usable[0]` is
+ * whatever order D1 returns rows in, so which identity owned the event
+ * pipeline could change without anyone editing anything.
  *
  * @param env - Worker bindings
  * @param asUser - Optional email to act as
  * @returns Display email plus the token `ref` `getAccessToken` expects
  * @throws When no signed-in account exists or `asUser` is unknown
+ * @example
+ * const { email, ref } = await resolveE2eAccount(env); // jmbish04@gmail.com
  */
 export async function resolveE2eAccount(
   env: Env,
@@ -121,6 +139,15 @@ export async function resolveE2eAccount(
     }
     return match;
   }
+  // `||`, not `??`: wrangler.jsonc ships vars as "" and `"" ?? x` is "".
+  const pinned = (env.WORKSPACE_EVENTS_ACCOUNT || "").trim().toLowerCase();
+  if (pinned) {
+    const match = usable.find((a) => a.email === pinned) ?? accounts.find((a) => a.email === pinned);
+    // Not registered (or revoked) is not fatal — fall through rather than take
+    // the whole pipeline down over a var that names a since-removed account.
+    if (match) return match;
+  }
+
   const first = usable[0] ?? accounts[0];
   if (!first) {
     throw new Error("No signed-in Google account. Sign in at /api/auth/google/oauth/start.");

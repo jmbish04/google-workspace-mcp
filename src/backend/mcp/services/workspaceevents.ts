@@ -21,6 +21,8 @@ export type WorkspaceSubscription = {
   targetResource?: string;
   eventTypes?: string[];
   state?: string;
+  /** RFC-3339 instant at which Google drops this subscription. */
+  expireTime?: string;
   notificationEndpoint?: { pubsubTopic?: string };
 };
 
@@ -113,6 +115,27 @@ export class WorkspaceEventsService {
   async deleteSubscription(name: string): Promise<{ ok: true }> {
     await googleFetch(this.env, this.sub, `${BASE}/${name}`, { method: "DELETE" });
     return { ok: true };
+  }
+
+  /**
+   * Renew a subscription to its maximum expiration.
+   *
+   * `PATCH ?updateMask=ttl` with `{"ttl":"0s"}` means "the maximum" — 7 days
+   * when the payload carries no resource data, 4 hours when it does. There is
+   * no longer option, so every standing subscription needs a renewal sweep.
+   *
+   * @param name - Subscription resource name (`subscriptions/ID`)
+   * @returns The renewed subscription, carrying the new `expireTime`
+   * @example
+   * const s = await svc.renewSubscription("subscriptions/drive-file-abc");
+   */
+  async renewSubscription(name: string): Promise<WorkspaceSubscription> {
+    return googleJson<WorkspaceSubscription>(
+      this.env,
+      this.sub,
+      `${BASE}/${name}?updateMask=ttl`,
+      { method: "PATCH", body: JSON.stringify({ ttl: "0s" }) },
+    );
   }
 
   /** Reactivate a suspended subscription by resource name. */

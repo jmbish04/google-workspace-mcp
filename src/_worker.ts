@@ -39,6 +39,8 @@ import { purgeExpiredPreviews } from "./backend/docs/preview-store";
 import { sweepComments } from "./backend/docs/comment-collab";
 import { sweepScheduledSends } from "./backend/gmail/scheduled-send";
 import { sweepScheduledEmails } from "./backend/gmail/scheduled-email";
+import { keepaliveGoogleTokens } from "./backend/auth/oauth-keepalive";
+import { syncWorkspaceSubscriptions } from "./backend/workspace-events/subscription-manager";
 import { handleGoogleAuth } from "./backend/api/routes/auth-google"; // added in Task 6
 import { handleOAuth } from "./backend/mcp/oauth"; // MCP OAuth authorization server
 
@@ -251,12 +253,43 @@ function makeHandler(): ExportedHandler<Env> {
         return;
       }
       if (controller.cron === "0 * * * *") {
-        ctx.waitUntil(sweepScheduledSends(env).then(() => {}));
+        ctx.waitUntil(
+          (async () => {
+            await sweepScheduledSends(env);
+            // Create-or-renew a Workspace Events subscription per top-level
+            // Drive folder. Hourly because the max TTL Google grants is 7 days
+            // and an expired subscription takes the event pipeline dark
+            // silently — which is exactly how it sat dark for most of
+            // September. Runs that find everything healthy are one cheap
+            // folder listing per account.
+            const subs = await syncWorkspaceSubscriptions(env);
+            for (const r of subs) {
+              if (r.created || r.renewed || r.pruned || r.errors.length) {
+                console.log(
+                  `[workspace-subs] ${r.account} folders=${r.folders} created=${r.created} ` +
+                    `renewed=${r.renewed} skipped=${r.skipped} pruned=${r.pruned} errors=${r.errors.length}`,
+                );
+              }
+              for (const e of r.errors.slice(0, 5)) {
+                console.warn(`[workspace-subs] ${r.account} ${e.folderId}: ${e.error}`);
+              }
+            }
+          })(),
+        );
         return;
       }
       // Reconcile labels, then ingest messages for capture-enabled labels.
       ctx.waitUntil(
         (async () => {
+          // Exercise every stored Google refresh token BEFORE the rest of the
+          // weekly work: it keeps tokens clear of Google's ~6-month
+          // revoke-on-disuse rule and flags any account that can no longer
+          // refresh, instead of letting it read "active" until a tool call
+          // fails. Failures are recorded on the row, not thrown.
+          const keepalive = await keepaliveGoogleTokens(env);
+          for (const r of keepalive.filter((x) => !x.ok)) {
+            console.warn(`[oauth-keepalive] ${r.email} status=${r.status}: ${r.error ?? ""}`);
+          }
           await syncLabelsForAllAccounts(env);
           await captureAllAccounts(env);
           await purgeOldRenders(env); // drop QC screenshots older than 90 days

@@ -14,6 +14,12 @@ declare global {
     SELF_RPC?: GsuiteService;
     /** Comma-separated emails forced to OAuth (never DWD). Optional var. */
     GOOGLE_OAUTH_ONLY_ACCOUNTS?: string;
+    /**
+     * Account that owns every Workspace Events subscription. Pinned to the
+     * consumer account so the Pub/Sub pipeline is not subject to Workspace
+     * Google Cloud session control. Optional var (wrangler.jsonc).
+     */
+    WORKSPACE_EVENTS_ACCOUNT?: string;
   }
 }
 

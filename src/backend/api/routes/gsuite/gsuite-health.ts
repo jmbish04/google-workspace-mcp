@@ -20,6 +20,74 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 
 import { checkD1 } from "@/backend/db/health";
 import { checkSecrets, checkEnvVars } from "@/backend/utils/health";
+import { getDb } from "@/backend/db";
+import { googleAccounts } from "@db/schemas";
+import { isReauthExposed } from "@/backend/lib/google-auth";
+import { keepaliveGoogleTokens } from "@/backend/auth/oauth-keepalive";
+import { countLiveSubscriptions } from "@/backend/workspace-events/subscription-manager";
+
+/**
+ * Workspace Events coverage: are there actually LIVE subscriptions?
+ *
+ * This check exists because the E2E probe could not answer it. That probe
+ * creates its own folder, subscribes it, pokes it and deletes it, so it
+ * reported "healthy" for weeks while zero standing subscriptions existed and
+ * not one real Drive event ever arrived. Counting rows would repeat the
+ * mistake, so an expired row is not counted as live.
+ */
+async function checkWorkspaceSubscriptions(
+  env: Env,
+): Promise<{ status: "ok" | "fail" | "degraded"; accounts: unknown[] }> {
+  const counts = await countLiveSubscriptions(env);
+  if (!counts.length) return { status: "fail", accounts: [] };
+  const totalLive = counts.reduce((n, c) => n + c.live, 0);
+  if (totalLive === 0) return { status: "fail", accounts: counts };
+  // One account covered and another bare is a real regression, not "fine".
+  const anyBare = counts.some((c) => c.live === 0);
+  return { status: anyBare ? "degraded" : "ok", accounts: counts };
+}
+
+/**
+ * Google OAuth liveness for every registered account.
+ *
+ * Default (cheap): report the status recorded in D1, which the weekly keepalive
+ * cron and every real token refresh keep current. `?probe=1` forces a live
+ * refresh-token exchange per account instead.
+ *
+ * Severity is the point: an account that cannot refresh makes this check
+ * `"fail"`, which makes the whole response `"fail"`. A check that notices a
+ * dead account and still returns ok is worse than no check.
+ */
+async function checkGoogleOAuth(
+  env: Env,
+  probe: boolean,
+): Promise<{ status: "ok" | "fail" | "degraded"; accounts: unknown[] }> {
+  if (probe) {
+    const results = await keepaliveGoogleTokens(env);
+    const anyDead = results.some((r) => !r.ok);
+    const anyExposed = results.some((r) => r.reauthExposed);
+    return {
+      status: anyDead ? "fail" : anyExposed ? "degraded" : "ok",
+      accounts: results,
+    };
+  }
+
+  const rows = await getDb(env).select().from(googleAccounts);
+  const accounts = rows.map((r) => {
+    const scopes = Array.isArray(r.scopesJson) ? (r.scopesJson as string[]) : null;
+    return {
+      email: r.email,
+      status: r.status,
+      // A Cloud scope means this grant is under Workspace Google Cloud session
+      // control and will keep dying until it is re-consented without them.
+      reauthExposed: isReauthExposed(scopes),
+    };
+  });
+
+  const anyDead = accounts.some((a) => a.status !== "active" && a.status !== "revoked");
+  const anyExposed = accounts.some((a) => a.reauthExposed && a.status !== "revoked");
+  return { status: anyDead ? "fail" : anyExposed ? "degraded" : "ok", accounts };
+}
 
 const ErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
 
@@ -35,12 +103,14 @@ export const gsuiteHealthRouter = new OpenAPIHono<{ Bindings: Env }>();
 gsuiteHealthRouter.openapi(createRoute({
   method: "get", path: "/",
   tags: ["Health"], summary: "Live binding health probe (ported gsuite hub)", operationId: "gsuiteHealthCheck",
+  request: { query: z.object({ probe: z.string().optional() }) },
   responses: {
     200: { description: "Health status", content: { "application/json": { schema: HealthSchema } } },
     500: { description: "Server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 }), async (c) => {
-  const [d1, kv, secrets, env] = await Promise.all([
+  const probe = c.req.query("probe") === "1";
+  const [d1, kv, secrets, env, oauth, subscriptions] = await Promise.all([
     checkD1(c.env),
     // SESSIONS binding is the relevant KV for health checking
     (async () => {
@@ -54,14 +124,17 @@ gsuiteHealthRouter.openapi(createRoute({
     })(),
     checkSecrets(c.env),
     checkEnvVars(c.env),
+    checkGoogleOAuth(c.env, probe),
+    checkWorkspaceSubscriptions(c.env),
   ]);
 
-  const allOk = [d1, kv, secrets, env].every(r => r.status === "ok");
-  const anyFail = [d1, kv, secrets, env].some(r => r.status === "fail");
+  const modules = [d1, kv, secrets, env, oauth, subscriptions];
+  const allOk = modules.every(r => r.status === "ok");
+  const anyFail = modules.some(r => r.status === "fail");
 
   return c.json({
     status: allOk ? "ok" : anyFail ? "fail" : "degraded",
     timestamp: new Date().toISOString(),
-    checks: { d1, kv, secrets, env },
+    checks: { d1, kv, secrets, env, oauth, subscriptions },
   } as any, 200);
 });
