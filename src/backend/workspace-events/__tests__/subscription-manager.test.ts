@@ -50,6 +50,7 @@ function deps(over: Partial<SubscriptionSweepDeps> = {}): SubscriptionSweepDeps 
       state: "ACTIVE",
       expireTime: "2026-10-05T00:00:00.000Z",
     })),
+    findByFolder: vi.fn(async () => null),
     renew: vi.fn(async () => ({ state: "ACTIVE", expireTime: "2026-10-12T00:00:00.000Z" })),
     now: () => new Date("2026-09-28T00:00:00.000Z"),
     sleep: vi.fn(async () => undefined),
@@ -110,15 +111,40 @@ describe("syncWorkspaceSubscriptions", () => {
     expect(d.renew).not.toHaveBeenCalled();
   });
 
-  it("treats ALREADY_EXISTS as covered, not as a failure to report", async () => {
+  it("adopts the subscription Google already holds on ALREADY_EXISTS", async () => {
+    // Without adopting we never learn its resource name, so it could never be
+    // renewed — it would expire in 7 days while the sweep kept "succeeding".
     const d = deps({
       create: vi.fn(async () => {
         throw new Error("Google API 409: ALREADY_EXISTS");
       }),
+      findByFolder: vi.fn(async () => ({
+        name: "subscriptions/pre-existing",
+        state: "ACTIVE",
+        expireTime: "2026-10-05T00:00:00.000Z",
+      })),
     });
     const [r] = await syncWorkspaceSubscriptions({} as Env, d);
     expect(r.errors).toHaveLength(0);
-    expect(r.skipped).toBe(1);
+    expect(r.adopted).toBe(1);
+    expect(rows["jmbish04@gmail.com:folder-a"]).toMatchObject({
+      subscriptionName: "subscriptions/pre-existing",
+    });
+  });
+
+  it("reports ALREADY_EXISTS as an error when the subscription cannot be found", async () => {
+    // Silently counting this as covered is how an unrenewable subscription
+    // hides: it would read as success forever and expire anyway.
+    const d = deps({
+      create: vi.fn(async () => {
+        throw new Error("Google API 409: ALREADY_EXISTS");
+      }),
+      findByFolder: vi.fn(async () => null),
+    });
+    const [r] = await syncWorkspaceSubscriptions({} as Env, d);
+    expect(r.adopted).toBe(0);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].error).toMatch(/no subscription found/);
   });
 
   it("records a real failure instead of swallowing it", async () => {

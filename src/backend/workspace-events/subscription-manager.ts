@@ -72,6 +72,11 @@ export interface SubscriptionSweepResult {
   renewed: number;
   /** Subscriptions already healthy and far from expiry. */
   skipped: number;
+  /**
+   * Subscriptions Google already had that we had no record of, looked up by
+   * target resource and adopted into the table so they can be renewed.
+   */
+  adopted: number;
   /** Rows dropped because the folder no longer exists. */
   pruned: number;
   /** Per-folder failures (folder id → message), capped for legibility. */
@@ -82,6 +87,11 @@ export interface SubscriptionSweepResult {
 export interface SubscriptionSweepDeps {
   listFolders(account: string, ref: string): Promise<{ id: string; name: string }[]>;
   create(ref: string, folderId: string): Promise<{ name?: string; state?: string; expireTime?: string }>;
+  /** Find the subscription Google already holds for a folder, if any. */
+  findByFolder(
+    ref: string,
+    folderId: string,
+  ): Promise<{ name?: string; state?: string; expireTime?: string } | null>;
   renew(ref: string, subscriptionName: string): Promise<{ state?: string; expireTime?: string }>;
   now(): Date;
   sleep(ms: number): Promise<void>;
@@ -99,6 +109,12 @@ function liveDeps(env: Env): SubscriptionSweepDeps {
         // includeResource MUST stay false — true drops the max TTL to 4 hours.
         { includeResource: false, includeDescendants: true },
       ),
+    findByFolder: async (ref, folderId) => {
+      const { subscriptions } = await new WorkspaceEventsService(env, ref).listSubscriptions(
+        `target_resource="//drive.googleapis.com/files/${folderId}"`,
+      );
+      return subscriptions[0] ?? null;
+    },
     renew: async (ref, name) => new WorkspaceEventsService(env, ref).renewSubscription(name),
     now: () => new Date(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -141,6 +157,7 @@ export async function syncWorkspaceSubscriptions(
       created: 0,
       renewed: 0,
       skipped: 0,
+      adopted: 0,
       pruned: 0,
       errors: [],
     };
@@ -209,8 +226,25 @@ export async function syncWorkspaceSubscriptions(
         // Record the folder so the next sweep renews rather than re-creating,
         // and do not count it as a failure the operator must act on.
         if (isAlreadyExists(message)) {
-          result.created--;
-          result.skipped++;
+          // Google already holds a subscription for this folder that we have no
+          // row for — typically one created by hand before this table existed.
+          // Adopting it is not cosmetic: without its resource name we could
+          // never renew it, so it would expire in 7 days and stay dead while
+          // the sweep kept "succeeding" against ALREADY_EXISTS forever.
+          try {
+            const found = await deps.findByFolder(ref, folder.id);
+            if (found) {
+              await upsertRow(db, email, folder, found, now);
+              result.adopted++;
+              continue;
+            }
+            result.errors.push({
+              folderId: folder.id,
+              error: "ALREADY_EXISTS but no subscription found for this target",
+            });
+          } catch (lookupError) {
+            result.errors.push({ folderId: folder.id, error: describe(lookupError).slice(0, 300) });
+          }
         } else {
           result.errors.push({ folderId: folder.id, error: message.slice(0, 300) });
         }
