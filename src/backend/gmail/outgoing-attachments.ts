@@ -22,10 +22,14 @@ import type { MimeAttachment } from "./mime";
 /** Gmail's message ceiling in ENCODED (base64) bytes. */
 export const GMAIL_MESSAGE_LIMIT = 25 * 1024 * 1024;
 
-/** One attachment request. */
+/**
+ * One attachment request. `as:"inline"` embeds an image in the body via a
+ * `Content-ID` (provide `contentId` and reference it in the HTML as
+ * `<img src="cid:contentId">`); inline items always attach (never link-fallback).
+ */
 export type AttachmentSpec =
-  | { driveFileId: string; as?: "attach" | "link" }
-  | { blob: string; filename: string; mimeType?: string; as?: "attach" | "link" };
+  | { driveFileId: string; as?: "attach" | "link" | "inline"; contentId?: string }
+  | { blob: string; filename: string; mimeType?: string; as?: "attach" | "link" | "inline"; contentId?: string };
 
 /** Legacy inline-blob shape (the `blobs[]` tool param). */
 export interface BlobInput {
@@ -113,15 +117,19 @@ export async function resolveAttachments(
     report.push({ filename: name, source: "drive", ref: fileId, bytes, disposition, url });
   };
 
+  // ponytail: inline images always attach (a cid: ref can't point at a Drive link)
+  // and count toward the budget but don't trigger the over-limit fallback — a
+  // giant inline image could push the message over 25 MiB; acceptable (rare).
   for (const spec of specs) {
+    const inline = spec.as === "inline";
     if ("driveFileId" in spec) {
       const meta = await drive.getContentMeta(spec.driveFileId);
       const enc = encodedSize(meta.size);
       if (spec.as === "link") {
         await linkDriveFile(spec.driveFileId, meta.name, meta.size, "linked-by-request", meta.webViewLink);
-      } else if (usedEncoded + enc <= GMAIL_MESSAGE_LIMIT) {
+      } else if (inline || usedEncoded + enc <= GMAIL_MESSAGE_LIMIT) {
         const bytes = await drive.downloadBytes(spec.driveFileId);
-        attachments.push({ filename: meta.name, mimeType: meta.mimeType, bytes });
+        attachments.push({ filename: meta.name, mimeType: meta.mimeType, bytes, ...(inline ? { contentId: spec.contentId ?? crypto.randomUUID() } : {}) });
         usedEncoded += enc;
         report.push({ filename: meta.name, source: "drive", ref: spec.driveFileId, bytes: meta.size, disposition: "attached" });
       } else {
@@ -134,7 +142,7 @@ export async function resolveAttachments(
     const bytes = base64ToBytes(spec.blob);
     const mimeType = spec.mimeType || "application/octet-stream";
     const enc = encodedSize(bytes.length);
-    if (spec.as === "link" || usedEncoded + enc > GMAIL_MESSAGE_LIMIT) {
+    if (!inline && (spec.as === "link" || usedEncoded + enc > GMAIL_MESSAGE_LIMIT)) {
       // Blobs aren't in Drive — upload first, then share + link.
       const up = await drive.uploadBinary(spec.filename, mimeType, bytes);
       await drive.share(up.id, "reader", "anyone").catch(() => {});
@@ -149,7 +157,7 @@ export async function resolveAttachments(
         url,
       });
     } else {
-      attachments.push({ filename: spec.filename, mimeType, bytes });
+      attachments.push({ filename: spec.filename, mimeType, bytes, ...(inline ? { contentId: spec.contentId ?? crypto.randomUUID() } : {}) });
       usedEncoded += enc;
       report.push({ filename: spec.filename, source: "blob", bytes: bytes.length, disposition: "attached" });
     }

@@ -69,10 +69,18 @@ describe("htmlToPlainText", () => {
 });
 
 describe("composeBody", () => {
-  it("markdown wins and yields html + text", () => {
+  it("markdown wins and yields html + rendered plaintext (not raw markdown)", () => {
     const r = composeBody({ markdown: "**b**", html: "<i>ignored</i>", text: "ignored" });
     expect(r.html).toContain("<strong");
-    expect(r.text).toBe("**b**");
+    // Text alternative is derived from the rendered HTML so embedded HTML (e.g. a
+    // hidden tracking div) collapses to text instead of leaking raw markup.
+    expect(r.text).toBe("b");
+  });
+  it("a hidden HTML div in markdown collapses to text (no raw markup leaks to text/plain)", () => {
+    const r = composeBody({ markdown: 'Hi\n\n<div style="color:#ffffff">ref:abc-123</div>' });
+    expect(r.html).toContain("ref:abc-123"); // hidden in the HTML part
+    expect(r.text).not.toContain("<div"); // NOT leaked as raw markup
+    expect(r.text).toContain("ref:abc-123"); // still recoverable as plain text
   });
   it("plain text stays text-only (no html part)", () => {
     expect(composeBody({ text: "hello" })).toEqual({ text: "hello" });

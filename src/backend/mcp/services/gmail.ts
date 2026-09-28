@@ -1,11 +1,16 @@
 import { googleJson } from "../googleClient";
 import { buildOutgoingRaw } from "@/backend/gmail/build-outgoing";
+import { newEmailUuid, embedUuid, recordEmail } from "@/backend/gmail/tracking";
 import type { BlobInput, AttachmentSpec, AttachmentReportItem } from "@/backend/gmail/outgoing-attachments";
 
 export type GmailMessage = { id: string; snippet: string; payload?: unknown };
 
 /** Rich body + attachments accepted by send / draft helpers. */
 export interface RichContent {
+  /** Cc recipients (comma-separated). Honored on drafts and sends alike. */
+  cc?: string;
+  /** Bcc recipients (comma-separated). Honored on drafts and sends alike. */
+  bcc?: string;
   /** Raw HTML body (sanitized + CSS-inlined for Gmail by the worker). */
   html?: string;
   /** Markdown body (rendered + inlined for Gmail by the worker). */
@@ -66,6 +71,12 @@ export class GmailService {
     return googleJson<Record<string, unknown>>(this.env, this.sub, `${BASE}/messages/${id}?format=full`);
   }
 
+  /** Fetch the whole RFC822 message as a base64url string (`format=raw`). */
+  async getMessageRfc(id: string): Promise<string> {
+    const out = await googleJson<{ raw?: string }>(this.env, this.sub, `${BASE}/messages/${id}?format=raw`);
+    return out.raw ?? "";
+  }
+
   /** Fetch attachment bytes (base64url `data`) for a message part. */
   async getAttachment(messageId: string, attachmentId: string): Promise<{ data: string; size: number }> {
     return googleJson<{ data: string; size: number }>(
@@ -112,15 +123,19 @@ export class GmailService {
       }
     }
 
+    const uuid = newEmailUuid();
+    const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
       from: opts?.from,
+      cc: opts?.cc,
+      bcc: opts?.bcc,
       subject: finalSubject,
       inReplyTo,
       references,
-      text: body,
-      html: opts?.html,
-      markdown: opts?.markdown,
+      text: b.text ?? "",
+      html: b.html,
+      markdown: b.markdown,
       ...attachmentOpts(opts),
     });
 
@@ -129,6 +144,10 @@ export class GmailService {
     const sent = await googleJson<{ id: string; threadId?: string }>(this.env, this.sub, `${BASE}/messages/send`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+    await recordEmail(this.env, {
+      uuid, account: this.sub, action: "send", subject: finalSubject, to, cc: opts?.cc, bcc: opts?.bcc,
+      body: opts?.markdown ?? opts?.html ?? body, threadId: sent.threadId ?? threadId, messageId: sent.id, sub: this.sub,
     });
     return { ...sent, attachments: attachmentReport };
   }
@@ -139,17 +158,25 @@ export class GmailService {
     body: string,
     opts?: RichContent,
   ): Promise<{ id: string; message?: { id: string }; attachments: AttachmentReportItem[] }> {
+    const uuid = newEmailUuid();
+    const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
+      cc: opts?.cc,
+      bcc: opts?.bcc,
       subject,
-      text: body,
-      html: opts?.html,
-      markdown: opts?.markdown,
+      text: b.text ?? "",
+      html: b.html,
+      markdown: b.markdown,
       ...attachmentOpts(opts),
     });
     const draft = await googleJson<{ id: string; message?: { id: string } }>(this.env, this.sub, `${BASE}/drafts`, {
       method: "POST",
       body: JSON.stringify({ message: { raw } }),
+    });
+    await recordEmail(this.env, {
+      uuid, account: this.sub, action: "draft", subject, to, cc: opts?.cc, bcc: opts?.bcc,
+      body: opts?.markdown ?? opts?.html ?? body, messageId: draft.id, sub: this.sub,
     });
     return { ...draft, attachments: attachmentReport };
   }
@@ -212,20 +239,28 @@ export class GmailService {
     const messageIdHeader = headers["message-id"] ?? "";
     const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
 
+    const uuid = newEmailUuid();
+    const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to: recipients.join(", "),
+      cc: opts?.cc,
+      bcc: opts?.bcc,
       subject,
       inReplyTo: messageIdHeader || undefined,
       references: references || undefined,
-      text: body,
-      html: opts?.html,
-      markdown: opts?.markdown,
+      text: b.text ?? "",
+      html: b.html,
+      markdown: b.markdown,
       ...attachmentOpts(opts),
     });
 
     const draft = await googleJson<{ id: string; message?: { id: string; threadId?: string } }>(this.env, this.sub, `${BASE}/drafts`, {
       method: "POST",
       body: JSON.stringify({ message: { raw, threadId } }),
+    });
+    await recordEmail(this.env, {
+      uuid, account: this.sub, action: "reply_draft", subject, to: recipients.join(", "), cc: opts?.cc, bcc: opts?.bcc,
+      body: opts?.markdown ?? opts?.html ?? body, threadId, messageId: draft.id, sub: this.sub,
     });
     return { ...draft, attachments: attachmentReport };
   }

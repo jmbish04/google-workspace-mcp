@@ -6,14 +6,19 @@ vi.mock("@/backend/mcp/tokenProvider", () => ({ getAccessToken: vi.fn(async () =
 vi.mock("@/backend/mcp/googleClient", async (orig) => orig());
 
 let accounts: { email: string; ref: string }[] = [];
-vi.mock("@/backend/gmail/sync-service", () => ({ listCaptureAccounts: vi.fn(async () => accounts) }));
+vi.mock("@/backend/gmail/sync-service", () => ({
+  listCaptureAccounts: vi.fn(async () => accounts),
+}));
 // logging writes to D1 — no-op it.
-vi.mock("@/backend/mcp/logging", () => ({ logOperation: vi.fn(async () => {}), logAssetTouch: vi.fn(async () => {}) }));
+vi.mock("@/backend/mcp/logging", () => ({
+  logOperation: vi.fn(async () => {}),
+  logAssetTouch: vi.fn(async () => {}),
+}));
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 
-import { toolsRouter } from "../tools";
 import { errorHandler } from "../../middleware/error";
+import { toolsRouter } from "../tools";
 
 function buildApp() {
   const app = new OpenAPIHono();
@@ -42,6 +47,7 @@ describe("/openapi.json tool coverage", () => {
     // The capabilities the user cares about must be discoverable + carry a body schema.
     for (const name of [
       "drive_upload_file",
+      "drive_download_base64",
       "drive_update_sharing_recursive",
       "drive_audit_sharing",
       "share_file",
@@ -52,7 +58,10 @@ describe("/openapi.json tool coverage", () => {
     ]) {
       const op = doc.paths?.[`/api/tools/${name}`]?.post;
       expect(op, `missing operation for ${name}`).toBeTruthy();
-      expect(op.requestBody?.content?.["application/json"]?.schema, `no body schema for ${name}`).toBeTruthy();
+      expect(
+        op.requestBody?.content?.["application/json"]?.schema,
+        `no body schema for ${name}`,
+      ).toBeTruthy();
     }
   });
 });
@@ -60,10 +69,17 @@ describe("/openapi.json tool coverage", () => {
 describe("POST /api/tools/<name>", () => {
   it("runs a tool and returns { result } (account via as_user in body)", async () => {
     // trash_file → Drive files.update PATCH
-    fetchSpy.mockImplementation(async () => new Response(JSON.stringify({ id: "f1", name: "x", trashed: true }), { status: 200 }));
+    fetchSpy.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ id: "f1", name: "x", trashed: true }), { status: 200 }),
+    );
     const res = await buildApp().request(
       "/api/tools/trash_file",
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileId: "f1", as_user: "a@x.com" }) },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fileId: "f1", as_user: "a@x.com" }),
+      },
       env,
     );
     expect(res.status).toBe(200);
@@ -79,7 +95,11 @@ describe("POST /api/tools/<name>", () => {
   it("400s an unknown as_user before touching Google", async () => {
     const res = await buildApp().request(
       "/api/tools/trash_file",
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileId: "f1", as_user: "nobody@x.com" }) },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fileId: "f1", as_user: "nobody@x.com" }),
+      },
       env,
     );
     expect(res.status).toBe(400);

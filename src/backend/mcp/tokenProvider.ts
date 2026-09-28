@@ -5,26 +5,13 @@
  * access tokens (`gwstok:<sub>`) in the SESSIONS KV namespace, refreshing
  * via Google's token endpoint when the cached token is missing or expiring.
  */
-import { getSecret, hasDedicatedOAuthClient } from "../utils/secrets";
-import { getDwdAccessToken, getServiceAccountAccessToken } from "./dwd";
+import { getSecret } from "../utils/secrets";
 import { getOAuthAccessToken, hasOAuthRefreshToken } from "../auth/oauth-google";
 import { API_SCOPES } from "./scopes";
 
 /**
- * Accounts that must use OAuth and never fall back to Domain-Wide Delegation.
- * An account is OAuth-only if it's listed here, named in the
- * `GOOGLE_OAUTH_ONLY_ACCOUNTS` env (comma-separated), or has a dedicated OAuth
- * client secret configured. For these, a missing token is a "log in" error
- * rather than a confusing DWD `unauthorized_client`.
- */
-const DEFAULT_OAUTH_ONLY = new Set(["justin@126colby.com"]);
-
-/**
- * Consumer Google domains that can NEVER use Domain-Wide Delegation — DWD only
- * impersonates users inside a Workspace domain the service account is trusted
- * for, so a `@gmail.com`/`@googlemail.com` identity is unreachable via DWD and
- * must go through per-user OAuth. Treating them as OAuth-only turns a missing
- * token into an actionable "log in" error instead of a confusing DWD failure.
+ * Consumer Google domains. Kept only as a helper for callers that special-case
+ * consumer mailboxes; auth itself is OAuth-only for EVERY account now (no DWD).
  */
 const CONSUMER_GOOGLE_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 
@@ -32,18 +19,6 @@ const CONSUMER_GOOGLE_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 export function isConsumerGoogleAccount(email: string): boolean {
   const domain = email.trim().toLowerCase().split("@")[1] ?? "";
   return CONSUMER_GOOGLE_DOMAINS.has(domain);
-}
-
-async function isOAuthOnlyAccount(env: Env, email: string): Promise<boolean> {
-  const e = email.trim().toLowerCase();
-  if (DEFAULT_OAUTH_ONLY.has(e)) return true;
-  if (isConsumerGoogleAccount(e)) return true; // consumer Gmail → OAuth-only, DWD impossible
-  const configured = (env.GOOGLE_OAUTH_ONLY_ACCOUNTS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (configured.includes(e)) return true;
-  return hasDedicatedOAuthClient(env, e);
 }
 
 export type GwsUser = {
@@ -68,40 +43,20 @@ export async function getUser(env: Env, sub: string): Promise<GwsUser | null> {
 }
 
 export async function getAccessToken(env: Env, sub: string): Promise<string> {
-  // Explicit `as_user`: a `dwd:<email>` account ref asks to act AS that email.
-  // Prefer a stored per-user OAuth refresh token when one exists — this is the
-  // ONLY path that works for consumer / standalone mailboxes and for any domain
-  // where the service account has no Domain-Wide Delegation grant (DWD returns
-  // `unauthorized_client` there). Fall back to DWD impersonation for Workspace
-  // users that were authorized via an admin DWD grant instead of OAuth consent.
-  if (sub.startsWith("dwd:")) {
-    const email = sub.slice(4);
+  // OAuth-ONLY. No Domain-Wide Delegation, no service account. An account ref is
+  // either an EMAIL (act AS that account via its stored OAuth refresh token) or a
+  // signed-in `sub`. Legacy `dwd:<email>` refs are accepted and resolved to the
+  // same OAuth path so old stored refs (scheduled emails, etc.) keep working.
+  const emailRef = sub.startsWith("dwd:") ? sub.slice(4) : sub.includes("@") ? sub : null;
+  if (emailRef) {
+    const email = emailRef.trim().toLowerCase();
     if (await hasOAuthRefreshToken(env, email)) {
       return getOAuthAccessToken(env, email, API_SCOPES);
     }
-    // OAuth-only accounts (e.g. justin@126colby.com) never use DWD — surface a
-    // clear "log in" error instead of Google's `unauthorized_client`.
-    if (await isOAuthOnlyAccount(env, email)) {
-      throw new Error(
-        `${email} is configured for OAuth (DWD disabled) but has no stored credentials. ` +
-          `Set its refresh-token secret, or log in at /api/auth/google/oauth/start?label=${encodeURIComponent(email)}.`,
-      );
-    }
-    return getDwdAccessToken(env, email);
-  }
-
-  // Service-account own identity: reaches any Drive item shared with the SA's
-  // email. No impersonation, no domain — works for consumer-owned files too.
-  if (sub === "sa") {
-    return getServiceAccountAccessToken(env);
-  }
-
-  // Global default impersonation: when GOOGLE_USER_TO_IMPERSONATE is set, every
-  // call acts as that user via DWD — no per-tool `as_user` needed. Clear the var
-  // to fall back to the OAuth caller's own token.
-  const forced = env.GOOGLE_USER_TO_IMPERSONATE?.trim();
-  if (forced) {
-    return getDwdAccessToken(env, forced);
+    throw new Error(
+      `${email} has no stored OAuth credentials — log in at ` +
+        `/api/auth/google/oauth/start?label=${encodeURIComponent(email)}.`,
+    );
   }
 
   const cached = await env.SESSIONS.get(TOK_PREFIX + sub);

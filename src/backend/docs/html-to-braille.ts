@@ -22,9 +22,11 @@ const HEADING: Record<string, string> = { h1: "HEADING_1", h2: "HEADING_2", h3: 
 
 /** Collect a block element's plain text + inline style ranges (offsets within the block). */
 function inlineWalk(node: Node, active: InlineRange["style"], acc: { text: string; ranges: InlineRange[] }): void {
-  // Text node
+  // Text node. Use `.text` (HTML entities decoded: &quot;→", &#39;→', &amp;→&)
+  // NOT `.rawText` (raw source, entities intact) — otherwise encoded content the
+  // model hands us as HTML injects literal "&quot;"/"&#39;" into the doc.
   if ((node as any).nodeType === 3 || typeof (node as any).rawText === "string" && !(node as any).tagName) {
-    const t = (node as any).rawText ?? (node as any).text ?? "";
+    const t = (node as any).text ?? (node as any).rawText ?? "";
     const clean = t.replace(/\s+/g, " ");
     if (!clean) return;
     const start = acc.text.length;

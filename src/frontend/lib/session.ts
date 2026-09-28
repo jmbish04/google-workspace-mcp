@@ -74,3 +74,28 @@ export function getSessionToken(): ClientSession {
   cached = { token, chatId };
   return cached;
 }
+
+/**
+ * Ask the Worker whether this browser currently has a valid `gsuite_session`
+ * cookie. Always sends `credentials: "include"` so the cookie actually rides
+ * along — `AuthGate` uses the same endpoint as the source of truth, and gated
+ * islands should wait for this before hitting protected `/api/*` routes.
+ *
+ * Returns false only when the Worker confirms the browser is not signed in.
+ * Transport, response-status, and response-parsing failures throw so callers
+ * can report an actual session-check failure through the centralized error UI.
+ */
+export async function hasAgentSession(): Promise<boolean> {
+  const res = await fetch("/api/agent-session/session", {
+    method: "GET",
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`Session check failed (${res.status})`);
+
+  const data = (await res.json()) as { authed?: unknown };
+  if (typeof data.authed !== "boolean") {
+    throw new Error("Session check returned an invalid response.");
+  }
+  return data.authed;
+}

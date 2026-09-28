@@ -16,6 +16,8 @@ import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 /** The complete, self-contained message spec persisted for a scheduled send. */
 export interface ScheduledEmailSpec {
   to: string;
+  cc?: string;
+  bcc?: string;
   subject: string;
   body?: string;
   html?: string;

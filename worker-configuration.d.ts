@@ -4,6 +4,7 @@
 interface __BaseEnv_Env {
 	SESSIONS: KVNamespace;
 	R2_FILES_BUCKET: R2Bucket;
+	R2_PREVIEWS_BUCKET: R2Bucket;
 	DB: D1Database;
 	VECTORIZE_EMAILS: VectorizeIndex;
 	VECTORIZE_DOCS: VectorizeIndex;

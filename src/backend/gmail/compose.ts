@@ -131,7 +131,11 @@ export function composeBody(input: { text?: string; html?: string; markdown?: st
   text: string;
 } {
   if (input.markdown != null && input.markdown !== "") {
-    return { html: markdownToGmailHtml(input.markdown), text: input.markdown };
+    // Derive the plain-text alternative from the rendered HTML (not the raw
+    // markdown) so any embedded HTML — e.g. the hidden tracking <div> — collapses
+    // to readable text instead of leaking raw markup into the text/plain part.
+    const html = markdownToGmailHtml(input.markdown);
+    return { html, text: htmlToPlainText(html) };
   }
   if (input.html != null && input.html !== "") {
     const html = inlineGmailStyles(input.html);

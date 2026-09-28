@@ -96,6 +96,17 @@
     // spends AI on docs that carry an open comment mentioning this tag.
     // ---------------------------------------------------------------------
     "AGENT_CALL_SIGN": "@colby-app",
+    // ---------------------------------------------------------------------
+    // Account that owns every Workspace Events subscription (Pub/Sub pipeline).
+    // Pinned to the CONSUMER account on purpose: a managed Workspace account is
+    // subject to Google Cloud session control, which periodically kills its
+    // refresh token (invalid_grant / invalid_rapt) and would take the event
+    // pipeline down with it. A consumer account has no admin policy. Both
+    // accounts share Drive at the root, so events for shared files arrive
+    // either way. Empty string = fall back to the first active account.
+    // Verified 2026-09-28: E2E probe healthy end-to-end as jmbish04@gmail.com.
+    // ---------------------------------------------------------------------
+    "WORKSPACE_EVENTS_ACCOUNT": "jmbish04@gmail.com",
     // Minutes back the sweep looks for modified Google Docs to scan for comments.
     "COMMENT_SWEEP_WINDOW_MIN": "30",
     // Deployed Worker URL, used to build the Google OAuth redirect_uri.
@@ -118,8 +129,10 @@
     // for Google Workspace domain users — it can NOT impersonate consumer
     // @gmail.com accounts (e.g. jmbish04@gmail.com), so those must use OAuth.
     "GOOGLE_USER_TO_IMPERSONATE": "",
-    // Display email for the default Workspace (DWD) account.
-    "GOOGLE_WORKSPACE_ACCOUNT_EMAIL": "",
+    // Default account for callers that name none (the "workspace" alias), and
+    // the identity behind the Passcode door. OAuth only — this is a consumer
+    // account, so DWD does not apply; its refresh token is already in KV.
+    "GOOGLE_WORKSPACE_ACCOUNT_EMAIL": "jmbish04@gmail.com",
     // Email for the consumer/personal Google account (OAuth2, not DWD).
     "GOOGLE_PERSONAL_ACCOUNT_EMAIL": "",
     // AI Gateway + model defaults (Workers AI via AI Gateway, Phase 2 port).
@@ -219,6 +232,15 @@
     {
       "bucket_name": "google-workspace-mcp",
       "binding": "R2_FILES_BUCKET",
+      "remote": true,
+    },
+    {
+      // Short-lived doc previews (PDF + per-page PNGs), served at /api/preview/:id.
+      // 48h TTL is guaranteed by the hourly cron (purgeExpiredPreviews). A bucket
+      // lifecycle rule "expire-48h" (2 days) is set as a belt — but that's manual
+      // R2 config (dashboard / `wrangler r2 bucket lifecycle`), NOT declared here.
+      "bucket_name": "google-workspace-mcp-previews",
+      "binding": "R2_PREVIEWS_BUCKET",
       "remote": true,
     },
   ],

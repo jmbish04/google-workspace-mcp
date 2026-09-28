@@ -134,6 +134,20 @@ describe("DriveService.share", () => {
   });
 });
 
+describe("DriveService.deleteFile", () => {
+  it("issues DELETE with supportsAllDrives", async () => {
+    fetchSpy.mockResolvedValue(new Response(null, { status: 204 }));
+    const svc = new DriveService({} as any, "s1");
+    await svc.deleteFile("f1");
+    const call = fetchSpy.mock.calls[fetchSpy.mock.calls.length - 1];
+    const url = call[0] as string;
+    const init = call[1] as RequestInit;
+    expect(url).toContain("/files/f1?");
+    expect(url).toContain("supportsAllDrives=true");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
 describe("DriveService.updateFile", () => {
   it("patches name and addParents/removeParents", async () => {
     fetchSpy.mockResolvedValue(new Response(JSON.stringify({ id: "f1", name: "Renamed" }), { status: 200 }));

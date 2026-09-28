@@ -35,9 +35,10 @@ async function oauthSubByEmail(env: Env): Promise<Map<string, string>> {
   return out;
 }
 
-/** The canonical email for an MCP token ref (dwd:email → email, sub → its email). */
+/** The canonical email for an MCP token ref (email ref → itself, sub → its email). */
 export async function accountEmailFor(env: Env, ref: string): Promise<string> {
-  if (ref.startsWith("dwd:")) return ref.slice(4).toLowerCase();
+  if (ref.startsWith("dwd:")) return ref.slice(4).toLowerCase(); // legacy refs
+  if (ref.includes("@")) return ref.toLowerCase();
   const raw = await env.SESSIONS.get(`gwsuser:${ref}`);
   if (raw) {
     const u = JSON.parse(raw) as { email?: string };
@@ -54,12 +55,10 @@ export async function listCaptureAccounts(env: Env): Promise<{ email: string; re
   const out: { email: string; ref: string }[] = [];
   for (const r of rows) {
     const email = r.email.toLowerCase();
-    if (r.kind === "workspace_dwd") {
-      out.push({ email, ref: `dwd:${email}` });
-    } else {
-      const sub = subByEmail.get(email);
-      if (sub) out.push({ email, ref: sub }); // OAuth account must be signed in
-    }
+    // OAuth-only: every account is reached by its signed-in sub, or by its email
+    // ref (email → OAuth token) when no sub session is cached.
+    const sub = subByEmail.get(email);
+    out.push({ email, ref: sub ?? email });
   }
   return out;
 }

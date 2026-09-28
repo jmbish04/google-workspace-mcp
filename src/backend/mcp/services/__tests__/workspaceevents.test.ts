@@ -44,4 +44,33 @@ describe("WorkspaceEventsService", () => {
     expect(url).toBe("https://workspaceevents.googleapis.com/v1/subscriptions/1");
     expect(init.method).toBe("DELETE");
   });
+
+  it("createSubscription unwraps a long-running operation", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: "operations/op-1", done: false }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            name: "operations/op-1",
+            done: true,
+            response: { name: "subscriptions/live", state: "ACTIVE" },
+          }),
+          { status: 200 },
+        ),
+      );
+    const out = await new WorkspaceEventsService({} as any, "s1").createSubscription(
+      "//drive.googleapis.com/files/FILE1",
+      ["google.workspace.drive.file.v3.renamed"],
+      "projects/p/topics/t",
+      { includeDescendants: true, ttl: "3600s" },
+    );
+    expect(out.name).toBe("subscriptions/live");
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://workspaceevents.googleapis.com/v1/subscriptions");
+    const posted = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(posted.driveOptions.includeDescendants).toBe(true);
+    expect(posted.ttl).toBe("3600s");
+    expect(fetchSpy.mock.calls[1][0]).toBe("https://workspaceevents.googleapis.com/v1/operations/op-1");
+  });
 });

@@ -40,6 +40,7 @@ This repository relies heavily on AI agents for rapid prototyping and feature ge
     - **Inspecting failures:** to debug a failed run, `gh run list --workflow=deploy.yml` (or `ci.yml` / `migrate.yml`) to find the run id, then `gh run view <id> --log-failed` for just the failing step's log (full log: `gh run view <id> --log`). Fix, then re-trigger the workflow.
 18. **Drive IDs, never URLs:** Google APIs key off the bare Drive **id**, not the url. Whenever a tool/utility accepts Drive ids as params — especially arrays — normalize every element first: use `extractGoogleId(input)` (single) or `parseDriveRefs(input: string | string[])` (array → `{ requested, id }[]`, deduped, blanks dropped) from `@/backend/google/core/ids`. This means a caller can pass a full Docs/Sheets/Drive **url** in any element and it still resolves. `sheet-export.ts` and `doc-export.ts` are the reference consumers. Never pass a raw url straight to a Google API call.
 19. **Shared Data Toolkit:** This template ships an isomorphic data/array/object utility toolkit built on [Remeda](https://github.com/remeda/remeda). Reach for it before hand-rolling array/object plumbing. Import from `@/backend/utils/data` on the Worker side and `@/lib/data` on the frontend — both re-export the same isomorphic core at `@/shared/data-utils`. It exposes curated Remeda re-exports (`pipe`, `groupBy`, `unique`, `sortBy`, `pick`, `difference`, …), the full Remeda surface as `R`, and template helpers Remeda doesn't ship (`diffArrays`, `findWhere`, `toggleInArray`, `moveItem`, `keyBy`, `compact`, `ensureArray`, `deal`, `truncate`, `tryParseJson`). Add genuinely-shared helpers to the shared core (never duplicate per-surface). Live demo + docs at `/showcase/utilities`. See `.agent/rules/data-utilities.md`.
+20. **Linked GAS submodule (`gas/` → core-template-gas):** Standalone Apps Script projects the worker RUNS via `scripts.run` (currently `email-to-pdf`) live in the separate [`core-template-gas`](https://github.com/jmbish04/core-template-gas) repo, linked here as the **`gas/` git submodule**; their source is at `gas/projects/<name>/`. This worker does **not** build or deploy them — the submodule is excluded from the worker toolchain (not a pnpm package; outside `tsconfig` `include`; ignored by vitest/oxlint). The worker only (a) stores each project's per-account `scriptId` in `backend/appscript/gas-projects.ts` (override at runtime via `set_gas_script` / `global_config` key `gas_script:<project>:<account>`), and (b) invokes it (`gmail_to_pdf` with `via:"appscript"` → `scripts.run`). **Commits made inside `gas/` belong to core-template-gas, not this repo** — commit + push them to core-template-gas, then `git add gas` here to bump the recorded pointer. **Before editing anything under `gas/`, READ AND FOLLOW `gas/AGENTS.md`** — that repo has its own conventions (Deno/esbuild TS→GAS build, per-project `project.json` + root `projects.json` registry, deploy-affected CI, per-project `accounts[]` for multi-account deploy). Fresh clones must run `git submodule update --init` to populate `gas/`; after a core-template-gas merge, repoint with `git -C gas checkout master && git -C gas pull && git add gas`.
 
 ## Google Workspace MCP — Feature Map (this worker's real surface)
 
@@ -57,6 +58,37 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   routes through `runTool` → **input sanitization** (`mcp/text-sanitize.ts`: mojibake
   + HTML-entity repair on content-key fields; `code` is deliberately NOT a content key)
   + **mandatory cross-account shadow search** for read-only tools in `SHADOW_TOOLS`.
+- **`/mcp` auth — both doors** (`mcp/server.ts#resolveSub`, `mcp/oauth.ts`):
+  `Authorization: Bearer <WORKER_API_KEY>` (constant-time) resolves to the default
+  Workspace identity, the bare email from `auth/provider.ts#resolveAccount`
+  (`GOOGLE_WORKSPACE_ACCOUNT_EMAIL || GOOGLE_USER_TO_IMPERSONATE || justin@126colby.com`
+  — `||`, the vars ship as ""). OAuth `/authorize` renders a page offering **Passcode**
+  (same secret, never named in UI/errors) or Google sign-in; passcode grants bind to the
+  default identity, 1-year access tokens. Registration is open, so the **Passcode POST
+  only completes for a redirect host on `oauth.ts#PASSCODE_REDIRECT_HOSTS`** (claude.ai,
+  `*.claude.ai`, claude.com, `*.claude.com`, loopback) — otherwise a phishing link could trade one passcode entry for
+  a year of full Workspace access. Google sign-in stays open to any host: it binds the
+  signer's own identity. Failed passcodes are `console.warn`ed (host + client_id only).
+  Live check: `scripts/auth-check.mjs`.
+- **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
+  match + `deleteContentRange`, no style requests; mixed-style match →
+  `{ok:false,mixedStyles:true,runs}`; non-text-element match →
+  `{ok:false,spansNonText:true,runs}`; tracked-change match →
+  `{ok:false,hasSuggestions:true,runs}` (the matched text carries a pending suggestion,
+  so editing it would rewrite text whose author has not had it accepted/rejected — the
+  agent must ask the user to resolve the suggestions first; this is only about the
+  matched text, not the rest of the document's indices); the batch
+  is pinned to the `revisionId` of the read via `writeControl.requiredRevisionId`
+  (reported back as `pinnedRevision`), so a concurrent edit throws a clear "document
+  changed, retry" error instead of a raw Google API 400 or deleting the wrong range;
+  headers and footers are NOT searched; resolver `docs/locate.ts#locateText`, shared
+  with `docs_style_text` via `GoogleDocsClient.findElement` — which calls
+  `locateText` with no options, so `docs_style_text` always matches case-sensitively
+  in the first tab, with no `matchCase`/`tabId` control. Tab ids resolve through
+  `docs/locate.ts#flattenTabs`, so nested `childTabs` ids work) and `sheets_update_values`
+  (values.update; `valueInputOption` defaults to USER_ENTERED, pass RAW for text from an
+  untrusted or third-party source so `=IMPORTXML(...)` is stored, not executed).
+  The Preserve/Redesign/Clarify editing policy lives in `mcp/code-mode.ts#apiGuide`.
 - **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
   `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
   Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,
@@ -75,6 +107,21 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   `email_templates_list/get/add` + built-in Gmail-safe templates (`backend/gmail/
   email-templates.ts`, table `email_templates`, seeded idempotently) + `/gws/email-templates`
   gallery.
+- **Email → PDF** (`backend/gmail/thread-pdf.ts`): `gmail_to_pdf` prints a thread /
+  message / message-subset. `via:"render"` (default) → Browser Rendering REST `/pdf`
+  (`docs/browser-render.ts#renderHtmlToPdf`) into a worker-served `pdf_url` (previews
+  bucket, 48h) and supports `highlights` ([{term,color}] → colored `<mark>`, tag-safe).
+  `via:"appscript"` → the account's `email-to-pdf` GAS project (see directive #20) via
+  `scripts.run`, saving a native-fidelity PDF to the user's Drive (`drive_url`).
+- **Email read** (`backend/gmail/body-extract.ts`): `gmail_get_message` returns body in
+  `bodyFormat` `text`(default)|`html`|`rfc`, ALWAYS with `urls:[{label,href}]`;
+  `gmail_get_thread` carries per-message `body`+`urls`. `cc`/`bcc` supported on all
+  compose tools (drafts included).
+- **Doc/Sheet/PDF preview** (`docs/doc-preview.ts`): `preview_file` (+ `docs_create_from_markdown`
+  by default) exports to PDF, rasterizes EACH page to a PNG in the previews R2 bucket
+  (48h TTL via bucket lifecycle + hourly `purgeExpiredPreviews`, served `/api/preview/:id`),
+  and optionally critiques each page via Ollama (`docs/vision-critique.ts` → `lib/guardian-ai.ts`,
+  auth `WORKER_API_KEY`). Returns `{ pdf_url, pages:{pg_N:{image_url, vision_ai_notes}} }`.
 - **Exports**: `sheets_export_json` (`google/sheet-export.ts`, table `sheet_export_jobs`)
   and `docs_export` (`google/doc-export.ts`, table `doc_export_jobs`) — array of id/urls
   (via `parseDriveRefs`), cross-account fallback, per-element error items, D1 tracking
@@ -85,7 +132,19 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   error, not a confusing DWD failure.
 - **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/scheduled-sends`
   (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),
-  `/gws/email-preview/[id]` (sandboxed iframe).
+  `/gws/email-preview/[id]` (sandboxed iframe), `/gws/events-health` (Workspace
+  Events E2E: trigger from UI or MCP `run_workspace_e2e_test` /
+  `list_workspace_e2e_results`).
+- **Workspace Events pipeline**: Pub/Sub push → `POST /api/webhooks/workspace?token=<WORKER_API_KEY>`
+  (records `drive_notifications`, invalidates artifact cache). Probe creates a
+  folder in Drive, subscribes via Workspace Events (`includeDescendants`) to
+  `projects/discovery-383518/topics/workspace-events-topic` (must be the OAuth
+  app's GCP project), then creates / renames / comments / deletes a Doc inside
+  that folder and polls D1 (`workspace-events/e2e.ts`). UI: `/gws/events-health`.
+  MCP: `run_workspace_e2e_test` / `list_workspace_e2e_results`. CLI:
+  `node scripts/test-workspace-events-e2e.mjs` (optional `--configure-push`).
+  `gen-lang-client-0933201592` `workspace-events-topic-sub` is also pushed to
+  this Worker; Gemini usage stays on Core Guardian.
 
 ## Template App Surface (reference implementation)
 
@@ -139,7 +198,9 @@ no mock data.
   instance `"global"`) syncs notification state over WebSocket. The client island
   is `components/NotificationsFeed.tsx` (`useAgent` + `onStateUpdate`); REST
   mutations proxy to it via `getAgentByName` (never `stub.fetch`).
-- **Shared frontend helpers**: `lib/api.ts` (`apiGet`/`apiSend`/`ApiError`) and
+- **Shared frontend helpers**: `lib/api.ts` (`apiGet`/`apiSend`/`ApiError`;
+  always `credentials: "include"` plus session Bearer when the `gsuite_session`
+  cookie is readable) and
   `lib/format.ts` (`relativeTime`/`shortDate`/`compactNumber`). Charts use the
   shadcn `ui/chart.tsx` wrapper + the OKLCH `--chart-1..5` palette in `global.css`.
 - **Shared data toolkit** (isomorphic, Remeda-backed): one core at

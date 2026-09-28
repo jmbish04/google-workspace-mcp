@@ -1,71 +1,110 @@
 /**
- * @fileoverview Google service-account (Domain-Wide Delegation) auth for the
- * ported `google/` client layer.
+ * @fileoverview Canonical Google API OAuth scopes used across every Workspace
+ * surface (the ported `google/*` client layer).
  *
- * Ported from core-gsuite-tools. The original file minted its own RS256 JWT
- * over Web Crypto and exchanged it directly at Google's token endpoint. This
- * worker already has that exact signer in `src/backend/mcp/dwd.ts`
- * (`getDwdAccessToken`, using `jose`) for the stateless `/mcp` DWD path, so
- * rather than duplicate a second SA-JWT signer, {@link getServiceAccountAccessToken}
- * is now a thin bridge onto it (see the Phase 1 port plan's "DWD bridge"
- * reconciliation decision).
+ * Auth itself is OAuth-ONLY now — access tokens come from `auth/provider.ts`
+ * (`getGoogleAccessToken`) and `mcp/tokenProvider.ts` (`getAccessToken`), each
+ * resolving a stored per-account OAuth refresh token. Domain-Wide Delegation and
+ * the service account were removed; this file no longer mints SA tokens.
  *
- * NOTE: `mcp/dwd.ts`'s `getDwdAccessToken` always requests the fixed
- * `API_SCOPE_STRING` from `src/backend/mcp/scopes.ts` (a superset covering
- * drive/documents/spreadsheets/presentations/calendar/gmail.modify/
- * script.projects/script.processes/forms/contacts/directory.readonly) rather
- * than the narrower per-call `scopes` argument below — so the `scopes`
- * parameter here is accepted for interface compatibility with the ported
- * `google/*` clients but not forwarded. Every scope those clients request is a
- * subset of `API_SCOPE_STRING`, so no functionality is lost; this also means
- * DWD tokens are cached per-impersonated-user rather than per-(user, scopes)
- * tuple, which is coarser but still correct.
+ * ## Why NO Google Cloud scopes appear here (load-bearing — do not add them)
+ *
+ * A Workspace admin can set a **Google Cloud session length**
+ * (Admin console → Security → Access and data control → Google Cloud session
+ * control). Google's own docs say that policy applies to the Cloud Console, the
+ * gcloud CLI, "and any third party OAuth application that requires the Cloud
+ * Platform scope". When it applies, a refresh token that carries
+ * `.../auth/cloud-platform` stops refreshing at the end of each session window
+ * with:
+ *
+ *     400 invalid_grant / "reauth related error (invalid_rapt)"
+ *
+ * even though the refresh token itself is perfectly valid and un-revoked. That
+ * is exactly what was killing `justin@126colby.com` (a managed Workspace
+ * account) while `jmbish04@gmail.com` (consumer, no admin policy) kept working
+ * for weeks — measured 2026-09-28.
+ *
+ * A refresh token WITHOUT Cloud scopes is not subject to that policy and lives
+ * indefinitely (it dies only on explicit revoke, ~6 months of total disuse, or
+ * a consumer-account password change). So: this worker calls Gmail, Drive,
+ * Docs, Sheets, Slides, Calendar, People, Forms, Apps Script and Workspace
+ * Events — none of which need `cloud-platform` or `service.management`. Keep it
+ * that way, and keep {@link buildConsentUrl}'s `include_granted_scopes=false`,
+ * which is what stops a previously-granted Cloud scope from being silently
+ * merged back into a fresh consent.
  */
-
-import { getDwdAccessToken } from "@/backend/mcp/dwd";
-import { getGoogleUserToImpersonate } from "@/backend/utils/secrets";
 
 /**
- * Canonical Google API OAuth scopes used across every Workspace surface.
- * DWD authorizes these in the Workspace Admin console; the OAuth consent
- * screen requests the same set for the personal account.
+ * Canonical Google API OAuth scopes used across every Workspace surface. The
+ * OAuth consent screen requests this set for each authorized account.
+ *
+ * This is the full set the worker needs, spelled out rather than relying on
+ * incremental authorization to accumulate it — see the file header.
  */
 export const GoogleScope = {
+  // --- Identity -----------------------------------------------------------
+  OpenId: "openid",
+  UserinfoEmail: "https://www.googleapis.com/auth/userinfo.email",
+  UserinfoProfile: "https://www.googleapis.com/auth/userinfo.profile",
+
+  // --- Gmail --------------------------------------------------------------
+  // `https://mail.google.com/` is the superset of every `gmail.*` scope, so
+  // read/modify/send/settings all resolve to it. The three names are kept
+  // because callers (google/gmail.ts) ask for the capability, not the URL;
+  // ALL_GOOGLE_SCOPES de-duplicates them.
+  Gmail: "https://mail.google.com/",
+  GmailSend: "https://mail.google.com/",
+  GmailSettings: "https://mail.google.com/",
+
+  // --- Drive / editors ----------------------------------------------------
+  Drive: "https://www.googleapis.com/auth/drive",
   Docs: "https://www.googleapis.com/auth/documents",
   Sheets: "https://www.googleapis.com/auth/spreadsheets",
   Slides: "https://www.googleapis.com/auth/presentations",
-  Drive: "https://www.googleapis.com/auth/drive",
-  Gmail: "https://www.googleapis.com/auth/gmail.modify",
-  GmailSend: "https://www.googleapis.com/auth/gmail.send",
-  GmailSettings: "https://www.googleapis.com/auth/gmail.settings.basic",
+
+  // --- Calendar -----------------------------------------------------------
   Calendar: "https://www.googleapis.com/auth/calendar",
+
+  // --- People (contacts + domain directory search) ------------------------
+  Contacts: "https://www.googleapis.com/auth/contacts",
+  DirectoryReadonly: "https://www.googleapis.com/auth/directory.readonly",
+
+  // --- Forms --------------------------------------------------------------
+  FormsBody: "https://www.googleapis.com/auth/forms.body",
+  FormsResponses: "https://www.googleapis.com/auth/forms.responses.readonly",
+
+  // --- Apps Script API (projects + scripts.run, e.g. email-to-pdf) --------
   ScriptProjects: "https://www.googleapis.com/auth/script.projects",
   ScriptDeployments: "https://www.googleapis.com/auth/script.deployments",
-  UserinfoEmail: "https://www.googleapis.com/auth/userinfo.email",
+  ScriptProcesses: "https://www.googleapis.com/auth/script.processes",
+  ScriptExternalRequest: "https://www.googleapis.com/auth/script.external_request",
+  ScriptScriptApp: "https://www.googleapis.com/auth/script.scriptapp",
+  ScriptStorage: "https://www.googleapis.com/auth/script.storage",
 } as const;
 
 /** Every scope — used for the broadest token / one-time OAuth consent. */
-export const ALL_GOOGLE_SCOPES: string[] = Object.values(GoogleScope);
+export const ALL_GOOGLE_SCOPES: string[] = [...new Set<string>(Object.values(GoogleScope))];
 
 /**
- * Get a DWD access token impersonating `sub` (defaults to
- * `GOOGLE_USER_TO_IMPERSONATE`), bridged onto `mcp/dwd.ts`'s `getDwdAccessToken`
- * (KV-cached there, keyed per impersonated user).
- *
- * @param env - Worker env (needs `GOOGLE_CREDS_SA_*` secret-store bindings)
- * @param scopes - Accepted for interface compatibility; see file-level note —
- *   not forwarded, since the bridged signer always requests the fixed
- *   `API_SCOPE_STRING` (a superset of every scope callers pass here).
- * @param sub - Workspace user to impersonate; defaults to the configured primary
- * @returns A bearer access token string
- * @throws If the token exchange fails or required secrets are missing
+ * Scope prefixes that put a refresh token under Google Cloud session control
+ * (see the file header). Never request one of these on a Workspace account.
  */
-export async function getServiceAccountAccessToken(
-  env: Env,
-  scopes: string[],
-  sub?: string,
-): Promise<string> {
-  void scopes;
-  const impersonate = sub ?? (await getGoogleUserToImpersonate(env));
-  return getDwdAccessToken(env, impersonate);
+export const REAUTH_TRIGGERING_SCOPES: readonly string[] = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/service.management",
+];
+
+/**
+ * Whether a granted scope set contains a Google Cloud scope, i.e. whether the
+ * token is subject to the Workspace reauthentication policy that produces
+ * `invalid_grant` / `invalid_rapt`.
+ *
+ * @param scopes - Granted OAuth scopes for an account
+ * @returns True when at least one Cloud scope is present
+ * @example
+ * isReauthExposed(["https://www.googleapis.com/auth/drive"]) // false
+ */
+export function isReauthExposed(scopes: readonly string[] | null | undefined): boolean {
+  if (!scopes?.length) return false;
+  return scopes.some((s) => REAUTH_TRIGGERING_SCOPES.some((bad) => s.startsWith(bad)));
 }

@@ -42,6 +42,87 @@ const d=document.createElement('div');d.id='ready';document.body.appendChild(d);
 </script></body></html>`;
 }
 
+/**
+ * Render an HTML string to a PDF via Cloudflare Browser Rendering (REST `/pdf`
+ * endpoint — the headless-Chrome `page.pdf()` equivalent, no puppeteer binding).
+ * Best-effort: returns null when Browser Rendering isn't configured or the call
+ * fails, so callers degrade instead of throwing.
+ */
+export async function renderHtmlToPdf(env: Env, html: string): Promise<Uint8Array | null> {
+  const accountId = await getSecret(env, "CLOUDFLARE_ACCOUNT_ID");
+  const token = await getSecret(env, "CLOUDFLARE_WRANGLER_API_TOKEN");
+  if (!accountId || !token) return null;
+
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/browser-rendering/pdf`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        html,
+        gotoOptions: { waitUntil: "networkidle0", timeout: 30000 },
+      }),
+    });
+    if (!res.ok) return null;
+    if (!(res.headers.get("content-type") ?? "").includes("pdf")) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/** Single-page pdf.js harness: renders ONLY page `pageNum` (1-based) full-bleed. */
+function pageHarness(b64: string, pageNum: number, scale: number): string {
+  const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174";
+  return `<!doctype html><html><head><meta charset="utf-8">
+<script src="${PDFJS}/pdf.min.js"></script></head>
+<body style="margin:0;background:#fff"><div id="pages"></div>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc="${PDFJS}/pdf.worker.min.js";
+(async()=>{try{
+  const data=Uint8Array.from(atob("${b64}"),c=>c.charCodeAt(0));
+  const pdf=await pdfjsLib.getDocument({data}).promise;
+  const n=Math.max(1,Math.min(${pageNum},pdf.numPages));
+  const p=await pdf.getPage(n);const vp=p.getViewport({scale:${scale}});
+  const c=document.createElement('canvas');c.width=vp.width;c.height=vp.height;
+  document.getElementById('pages').appendChild(c);
+  await p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+}catch(e){document.body.setAttribute('data-error',String(e));}
+const d=document.createElement('div');d.id='ready';document.body.appendChild(d);
+})();
+</script></body></html>`;
+}
+
+/**
+ * Rasterize a SINGLE PDF page (1-based) to a PNG via Browser Rendering. Null on
+ * failure / when Browser Rendering isn't configured. Used to produce one image
+ * per page (vs {@link rasterizePdf}, which stacks pages into one tall PNG).
+ */
+export async function rasterizePdfPage(
+  env: Env,
+  pdfBytes: Uint8Array,
+  pageNum: number,
+  scale = 1.6,
+): Promise<Uint8Array | null> {
+  if (pdfBytes.length > MAX_PDF_BYTES) return null;
+  const accountId = await getSecret(env, "CLOUDFLARE_ACCOUNT_ID");
+  const token = await getSecret(env, "CLOUDFLARE_WRANGLER_API_TOKEN");
+  if (!accountId || !token) return null;
+
+  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/browser-rendering/screenshot`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      html: pageHarness(toBase64(pdfBytes), pageNum, scale),
+      gotoOptions: { waitUntil: "networkidle0", timeout: 30000 },
+      waitForSelector: "#ready",
+      screenshotOptions: { fullPage: true, type: "png" },
+    }),
+  });
+  if (!res.ok) return null;
+  if (!(res.headers.get("content-type") ?? "").includes("image")) return null;
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 /** Render a PDF's pages to one tall PNG via Browser Rendering. Null on failure. */
 export async function rasterizePdf(env: Env, pdfBytes: Uint8Array, maxPages = 8): Promise<Uint8Array | null> {
   if (pdfBytes.length > MAX_PDF_BYTES) return null;

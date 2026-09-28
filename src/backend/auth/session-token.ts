@@ -39,6 +39,32 @@ export async function mintSessionToken(
 }
 
 /**
+ * Verify a signed session token against an already-resolved HMAC key.
+ *
+ * Use this when the caller has already read `WORKER_API_KEY` (e.g. to compare
+ * a Bearer master key) so a Secrets Store binding is not fetched twice.
+ *
+ * @param key - HMAC signing key (`WORKER_API_KEY`)
+ * @param token - The `exp.signature` token to verify
+ * @returns true if the token is valid and unexpired
+ * @example
+ * ```typescript
+ * const key = await getWorkerApiKey(env);
+ * if (key && (await verifySessionTokenWithKey(key, bearer))) return true;
+ * ```
+ */
+export async function verifySessionTokenWithKey(key: string, token: string): Promise<boolean> {
+  const dot = token.indexOf(".");
+  if (dot <= 0) return false;
+  const expStr = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
+  const expected = await hmacSign(key, expStr);
+  return constantTimeEqual(sig, expected);
+}
+
+/**
  * Verify a signed session token: correct HMAC signature and not expired.
  *
  * @param env - Worker env
@@ -46,15 +72,7 @@ export async function mintSessionToken(
  * @returns true if the token is valid and unexpired
  */
 export async function verifySessionToken(env: Env, token: string): Promise<boolean> {
-  const dot = token.indexOf(".");
-  if (dot <= 0) return false;
-  const expStr = token.slice(0, dot);
-  const sig = token.slice(dot + 1);
-  const exp = Number(expStr);
-  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
-
   const key = await getWorkerApiKey(env);
   if (!key) return false;
-  const expected = await hmacSign(key, expStr);
-  return constantTimeEqual(sig, expected);
+  return verifySessionTokenWithKey(key, token);
 }
