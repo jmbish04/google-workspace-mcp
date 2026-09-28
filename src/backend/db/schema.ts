@@ -42,6 +42,7 @@ export * from "./schemas/render-artifacts";
 export * from "./schemas/drive-tags";
 export * from "./schemas/email-records";
 export * from "./schemas/drive-notifications";
+export * from "./schemas/workspace-subscriptions";
 export * from "./schemas/google-accounts";
 export * from "./schemas/appsscript-deployments";
 export * from "./schemas/sheet-export-jobs";

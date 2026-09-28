@@ -24,6 +24,28 @@ import { getDb } from "@/backend/db";
 import { googleAccounts } from "@db/schemas";
 import { isReauthExposed } from "@/backend/lib/google-auth";
 import { keepaliveGoogleTokens } from "@/backend/auth/oauth-keepalive";
+import { countLiveSubscriptions } from "@/backend/workspace-events/subscription-manager";
+
+/**
+ * Workspace Events coverage: are there actually LIVE subscriptions?
+ *
+ * This check exists because the E2E probe could not answer it. That probe
+ * creates its own folder, subscribes it, pokes it and deletes it, so it
+ * reported "healthy" for weeks while zero standing subscriptions existed and
+ * not one real Drive event ever arrived. Counting rows would repeat the
+ * mistake, so an expired row is not counted as live.
+ */
+async function checkWorkspaceSubscriptions(
+  env: Env,
+): Promise<{ status: "ok" | "fail" | "degraded"; accounts: unknown[] }> {
+  const counts = await countLiveSubscriptions(env);
+  if (!counts.length) return { status: "fail", accounts: [] };
+  const totalLive = counts.reduce((n, c) => n + c.live, 0);
+  if (totalLive === 0) return { status: "fail", accounts: counts };
+  // One account covered and another bare is a real regression, not "fine".
+  const anyBare = counts.some((c) => c.live === 0);
+  return { status: anyBare ? "degraded" : "ok", accounts: counts };
+}
 
 /**
  * Google OAuth liveness for every registered account.
@@ -88,7 +110,7 @@ gsuiteHealthRouter.openapi(createRoute({
   },
 }), async (c) => {
   const probe = c.req.query("probe") === "1";
-  const [d1, kv, secrets, env, oauth] = await Promise.all([
+  const [d1, kv, secrets, env, oauth, subscriptions] = await Promise.all([
     checkD1(c.env),
     // SESSIONS binding is the relevant KV for health checking
     (async () => {
@@ -103,15 +125,16 @@ gsuiteHealthRouter.openapi(createRoute({
     checkSecrets(c.env),
     checkEnvVars(c.env),
     checkGoogleOAuth(c.env, probe),
+    checkWorkspaceSubscriptions(c.env),
   ]);
 
-  const modules = [d1, kv, secrets, env, oauth];
+  const modules = [d1, kv, secrets, env, oauth, subscriptions];
   const allOk = modules.every(r => r.status === "ok");
   const anyFail = modules.some(r => r.status === "fail");
 
   return c.json({
     status: allOk ? "ok" : anyFail ? "fail" : "degraded",
     timestamp: new Date().toISOString(),
-    checks: { d1, kv, secrets, env, oauth },
+    checks: { d1, kv, secrets, env, oauth, subscriptions },
   } as any, 200);
 });

@@ -448,6 +448,41 @@ export class DriveService {
     );
   }
 
+  /**
+   * List the FOLDERS directly inside a folder, with minimal fields.
+   *
+   * Deliberately separate from {@link listChildren}: that one requests full
+   * ACLs and owner blocks for every child, which is ruinous at the root of a
+   * Drive holding thousands of loose files (measured: a root walk that way
+   * times out). Here the folder filter runs server-side, so the loose files
+   * never come back at all.
+   *
+   * @param folderId - Parent folder id, or `"root"` for My Drive
+   * @returns Every child folder, paged through to the end
+   * @example
+   * const tops = await drive.listChildFolders("root");
+   */
+  async listChildFolders(folderId: string): Promise<{ id: string; name: string }[]> {
+    const out: { id: string; name: string }[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({
+        q: `'${folderId}' in parents and trashed=false and mimeType='${FOLDER_MIME}'`,
+        fields: "nextPageToken,files(id,name)",
+        pageSize: "200",
+        spaces: "drive",
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+      const page = await googleJson<{
+        files?: { id: string; name: string }[];
+        nextPageToken?: string;
+      }>(this.env, this.sub, `${BASE}/files?${params}`);
+      out.push(...(page.files ?? []));
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return out;
+  }
+
   /** Remove a single permission from a file/folder. */
   async deletePermission(fileId: string, permissionId: string): Promise<void> {
     await googleFetch(this.env, this.sub, `${BASE}/files/${fileId}/permissions/${permissionId}`, {
