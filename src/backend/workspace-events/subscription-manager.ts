@@ -59,6 +59,25 @@ const RENEW_BEFORE_MS = 48 * 60 * 60 * 1000;
 
 /** Google allows 100 subscription writes per minute per user. Stay under it. */
 const WRITES_PER_MINUTE = 90;
+
+/**
+ * Google allows 100 subscription READS per minute per user, so a reconcile pass
+ * verifies at most this many rows per account per run, oldest-verified first.
+ * A full pass over ~253 folders therefore completes across a few hourly runs
+ * rather than blowing the read budget (or the request) in one go.
+ */
+const VERIFY_PER_RUN = 80;
+
+/** A verification older than this is stale — treated as unproven, not as coverage. */
+const VERIFY_FRESH_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Stop recreating a folder's subscription after this many consecutive lookups
+ * that found nothing. Beyond this, something upstream is dropping them and
+ * retrying forever would churn writes while reporting activity and never
+ * improving coverage. The row is left alone and reported instead.
+ */
+const MAX_MISSING_RETRIES = 3;
 const WRITE_SPACING_MS = Math.ceil(60_000 / WRITES_PER_MINUTE);
 
 /** What one sweep did, per account. */
@@ -79,6 +98,8 @@ export interface SubscriptionSweepResult {
   adopted: number;
   /** Rows dropped because the folder no longer exists. */
   pruned: number;
+  /** Folders the reconcile pass gave up on; not retried by this sweep. */
+  abandoned: number;
   /** Per-folder failures (folder id → message), capped for legibility. */
   errors: { folderId: string; error: string }[];
 }
@@ -159,6 +180,7 @@ export async function syncWorkspaceSubscriptions(
       skipped: 0,
       adopted: 0,
       pruned: 0,
+      abandoned: 0,
       errors: [],
     };
 
@@ -202,6 +224,14 @@ export async function syncWorkspaceSubscriptions(
 
       if (healthy) {
         result.skipped++;
+        continue;
+      }
+
+      // Given up on by the reconcile pass: recreating would restart a loop
+      // against whatever keeps dropping it. Leave it, and let the coverage
+      // report carry it as abandoned rather than as churn.
+      if (row?.state === "ABANDONED") {
+        result.abandoned++;
         continue;
       }
 
@@ -326,18 +356,50 @@ async function noteFailure(
     });
 }
 
+/** Per-account coverage, split by how well each row is actually evidenced. */
+export interface SubscriptionCoverage {
+  account: string;
+  /**
+   * Rows Google CONFIRMED recently, unexpired. The only number that means
+   * coverage — every other bucket is a row we cannot vouch for.
+   */
+  verified: number;
+  /**
+   * Rows that look live by our own bookkeeping but have not been confirmed
+   * within the freshness window. Reported separately rather than added to
+   * `verified`, because counting our own writes as coverage is precisely the
+   * defect this split exists to prevent.
+   */
+  unverified: number;
+  /** Rows Google confirmed it does NOT have, still queued for recreation. */
+  missing: number;
+  /** Rows given up on after repeated disappearances — the real problem, named. */
+  abandoned: number;
+  /** Rows in the table for this account. */
+  total: number;
+  /** Soonest expiry among verified rows. */
+  nextExpiry: string | null;
+}
+
 /**
- * Count the subscriptions that are actually live right now, for the health
- * probe. A row that exists but has expired is NOT live — counting it would be
- * the whole bug this module exists to fix, one level up.
+ * Report per-account coverage, split by evidence.
+ *
+ * Deliberately does NOT return one "live" number. The previous version did, by
+ * counting rows we had written, and reported 252 for an account Google was
+ * holding about 100 subscriptions for. A single number invites exactly that
+ * mistake, so callers are handed the split and have to decide what counts.
  *
  * @param env - Worker env
- * @returns Per-account live/total counts and the soonest expiry
+ * @param now - Clock injection for tests
+ * @returns One {@link SubscriptionCoverage} per account
+ * @example
+ * const cov = await countLiveSubscriptions(env);
+ * const trustworthy = cov.every((c) => c.unverified === 0 && c.abandoned === 0);
  */
 export async function countLiveSubscriptions(
   env: Env,
   now: Date = new Date(),
-): Promise<{ account: string; live: number; total: number; nextExpiry: string | null }[]> {
+): Promise<SubscriptionCoverage[]> {
   const db = getDb(env);
   const rows = await db.select().from(workspaceSubscriptions);
   const accounts = await db.select().from(googleAccounts);
@@ -346,15 +408,28 @@ export async function countLiveSubscriptions(
 
   return [...emails].map((account) => {
     const mine = rows.filter((r) => r.account === account);
-    const live = mine.filter(
-      (r) => r.state === "ACTIVE" && r.expireAt !== null && r.expireAt.getTime() > now.getTime(),
+    const looksLive = (r: (typeof mine)[number]) =>
+      r.state === "ACTIVE" && r.expireAt !== null && r.expireAt.getTime() > now.getTime();
+    const freshlyVerified = (r: (typeof mine)[number]) =>
+      r.verifiedAt !== null && now.getTime() - r.verifiedAt.getTime() < VERIFY_FRESH_MS;
+
+    const abandoned = mine.filter((r) => r.state === "ABANDONED");
+    const verified = mine.filter((r) => looksLive(r) && freshlyVerified(r));
+    const unverified = mine.filter((r) => looksLive(r) && !freshlyVerified(r));
+    const missing = mine.filter(
+      (r) => r.state !== "ABANDONED" && !looksLive(r) && r.missingStreak > 0,
     );
-    const next = live
+
+    const next = verified
       .map((r) => r.expireAt as Date)
       .sort((a, b) => a.getTime() - b.getTime())[0];
+
     return {
       account,
-      live: live.length,
+      verified: verified.length,
+      unverified: unverified.length,
+      missing: missing.length,
+      abandoned: abandoned.length,
       total: mine.length,
       nextExpiry: next ? next.toISOString() : null,
     };
@@ -363,3 +438,160 @@ export async function countLiveSubscriptions(
 
 /** Re-exported so callers do not need to reach into `e2e.ts` for the topic. */
 export { DEFAULT_PUBSUB_TOPIC };
+
+// ---------------------------------------------------------------------------
+// Reconciliation — ask Google what it actually holds
+// ---------------------------------------------------------------------------
+
+/** What one reconcile pass found, per account. */
+export interface ReconcileResult {
+  account: string;
+  /** Rows examined this run (bounded by {@link VERIFY_PER_RUN}). */
+  checked: number;
+  /** Rows Google confirmed. */
+  confirmed: number;
+  /**
+   * Rows Google had no subscription for, despite a create having reported
+   * success. Cleared for recreation unless they have exhausted their retries.
+   */
+  missing: number;
+  /**
+   * Rows that have gone missing {@link MAX_MISSING_RETRIES} times in a row.
+   * These will NOT be recreated again — something upstream is dropping them,
+   * and this count is the honest size of that problem.
+   */
+  abandoned: number;
+  /** Lookup failures (network, quota); the row keeps its previous verdict. */
+  errors: number;
+}
+
+/** Seam for the reconcile pass so tests need neither Google nor D1. */
+export interface ReconcileDeps {
+  findByFolder(
+    ref: string,
+    folderId: string,
+  ): Promise<{ name?: string; state?: string; expireTime?: string } | null>;
+  now(): Date;
+  sleep(ms: number): Promise<void>;
+}
+
+/** Real Google-backed reconcile dependencies. */
+function liveReconcileDeps(env: Env): ReconcileDeps {
+  return {
+    findByFolder: async (ref, folderId) => {
+      const { subscriptions } = await new WorkspaceEventsService(env, ref).listSubscriptions(
+        `target_resource="//drive.googleapis.com/files/${folderId}"`,
+      );
+      return subscriptions[0] ?? null;
+    },
+    now: () => new Date(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
+}
+
+/**
+ * Ask Google, per folder, whether the subscription we recorded actually exists,
+ * and write the answer to `verifiedAt` / `missingStreak`.
+ *
+ * This is the only thing that makes a coverage number trustworthy. Without it
+ * the table records what we asked for; with it the table records what Google
+ * confirms. Those differed by a factor of three the first time anyone checked.
+ *
+ * A row Google does not have is cleared (`subscriptionName`/`expireAt` nulled)
+ * so the next sweep recreates it — but only until `missingStreak` reaches
+ * {@link MAX_MISSING_RETRIES}, after which it is left alone and counted as
+ * abandoned rather than retried forever.
+ *
+ * @param env - Worker env
+ * @param deps - Injected seams (tests pass fakes)
+ * @returns One {@link ReconcileResult} per account
+ * @example
+ * const results = await reconcileWorkspaceSubscriptions(env);
+ */
+export async function reconcileWorkspaceSubscriptions(
+  env: Env,
+  deps: ReconcileDeps = liveReconcileDeps(env),
+): Promise<ReconcileResult[]> {
+  const db = getDb(env);
+  const accounts = (await listCaptureAccounts(env)).filter(
+    (a) => !a.email.endsWith(".iam.gserviceaccount.com"),
+  );
+  const allRows = await db.select().from(workspaceSubscriptions);
+  const out: ReconcileResult[] = [];
+  const now = deps.now();
+
+  for (const { email, ref } of accounts) {
+    const result: ReconcileResult = {
+      account: email,
+      checked: 0,
+      confirmed: 0,
+      missing: 0,
+      abandoned: 0,
+      errors: 0,
+    };
+
+    // Oldest verification first, so a bounded run still sweeps everything over
+    // a few cycles instead of re-checking the same head of the list.
+    const mine = allRows
+      .filter((r) => r.account === email)
+      .sort((a, b) => (a.verifiedAt?.getTime() ?? 0) - (b.verifiedAt?.getTime() ?? 0))
+      .slice(0, VERIFY_PER_RUN);
+
+    for (const row of mine) {
+      if (result.checked > 0) await deps.sleep(WRITE_SPACING_MS);
+      result.checked++;
+
+      let found: { name?: string; state?: string; expireTime?: string } | null;
+      try {
+        found = await deps.findByFolder(ref, row.folderId);
+      } catch {
+        // A failed lookup proves nothing either way — leave the row's previous
+        // verdict alone rather than recording an absence we did not establish.
+        result.errors++;
+        continue;
+      }
+
+      if (found) {
+        await db
+          .update(workspaceSubscriptions)
+          .set({
+            subscriptionName: found.name ?? row.subscriptionName,
+            state: found.state ?? "ACTIVE",
+            expireAt: found.expireTime ? new Date(found.expireTime) : row.expireAt,
+            verifiedAt: now,
+            missingStreak: 0,
+            lastError: null,
+            updatedAt: now,
+          })
+          .where(eq(workspaceSubscriptions.id, row.id));
+        result.confirmed++;
+        continue;
+      }
+
+      const streak = row.missingStreak + 1;
+      const abandoned = streak >= MAX_MISSING_RETRIES;
+      await db
+        .update(workspaceSubscriptions)
+        .set({
+          // Null these so the next sweep takes the create path — unless we have
+          // given up, in which case leave the record of what we last knew.
+          subscriptionName: abandoned ? row.subscriptionName : null,
+          expireAt: abandoned ? row.expireAt : null,
+          state: abandoned ? "ABANDONED" : null,
+          missingStreak: streak,
+          verifiedAt: now,
+          lastError: abandoned
+            ? `Google reported no subscription ${streak} times running; not recreating.`
+            : "Google reported no subscription for this folder despite a successful create.",
+          updatedAt: now,
+        })
+        .where(eq(workspaceSubscriptions.id, row.id));
+      result.missing++;
+      if (abandoned) result.abandoned++;
+    }
+
+    out.push(result);
+  }
+
+  return out;
+}

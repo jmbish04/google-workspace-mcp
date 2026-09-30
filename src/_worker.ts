@@ -40,7 +40,10 @@ import { sweepComments } from "./backend/docs/comment-collab";
 import { sweepScheduledSends } from "./backend/gmail/scheduled-send";
 import { sweepScheduledEmails } from "./backend/gmail/scheduled-email";
 import { keepaliveGoogleTokens } from "./backend/auth/oauth-keepalive";
-import { syncWorkspaceSubscriptions } from "./backend/workspace-events/subscription-manager";
+import {
+  reconcileWorkspaceSubscriptions,
+  syncWorkspaceSubscriptions,
+} from "./backend/workspace-events/subscription-manager";
 import { handleGoogleAuth } from "./backend/api/routes/auth-google"; // added in Task 6
 import { handleOAuth } from "./backend/mcp/oauth"; // MCP OAuth authorization server
 
@@ -262,6 +265,19 @@ function makeHandler(): ExportedHandler<Env> {
             // silently — which is exactly how it sat dark for most of
             // September. Runs that find everything healthy are one cheap
             // folder listing per account.
+            // Reconcile BEFORE sweeping: the reconcile pass is what discovers
+            // that a recorded subscription no longer exists at Google, and it
+            // clears the row so this same run recreates it. Sweeping first
+            // would skip those rows as healthy on our own (wrong) bookkeeping.
+            const recon = await reconcileWorkspaceSubscriptions(env);
+            for (const r of recon) {
+              if (r.missing || r.abandoned || r.errors) {
+                console.warn(
+                  `[workspace-subs:reconcile] ${r.account} checked=${r.checked} ` +
+                    `confirmed=${r.confirmed} missing=${r.missing} abandoned=${r.abandoned} errors=${r.errors}`,
+                );
+              }
+            }
             const subs = await syncWorkspaceSubscriptions(env);
             for (const r of subs) {
               if (r.created || r.renewed || r.pruned || r.errors.length) {
