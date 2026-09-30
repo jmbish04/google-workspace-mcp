@@ -37,6 +37,8 @@ export interface BodyInputs {
  */
 export function embedUuid(body: BodyInputs, uuid: string): BodyInputs {
   const out: BodyInputs = { ...body };
+  // Already stamped (body built with this id upstream) → don't add a second ref.
+  if ([out.markdown, out.html, out.text].some((b) => b?.includes(`ref:${uuid}`))) return out;
   const marker = hiddenUuidHtml(uuid);
   if (out.markdown != null && out.markdown !== "") out.markdown = `${out.markdown}\n\n${marker}`;
   else if (out.html != null && out.html !== "") out.html = `${out.html}\n${marker}`;

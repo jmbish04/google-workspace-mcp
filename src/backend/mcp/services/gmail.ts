@@ -15,6 +15,12 @@ export interface RichContent {
   html?: string;
   /** Markdown body (rendered + inlined for Gmail by the worker). */
   markdown?: string;
+  /**
+   * Pre-minted tracking id. Set when the body already carries its hidden
+   * `ref:<uuid>` (e.g. built by gmail/authored-html.ts), so the same id is logged
+   * and no second ref is appended.
+   */
+  uuid?: string;
   /** Unified attachment specs: Drive files, inline blobs, or forced links. */
   attachments?: AttachmentSpec[];
   /** Legacy: Drive file ids to attach (auto-fallback to shared links over the size cap). */
@@ -123,7 +129,7 @@ export class GmailService {
       }
     }
 
-    const uuid = newEmailUuid();
+    const uuid = opts?.uuid ?? newEmailUuid();
     const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
@@ -158,7 +164,7 @@ export class GmailService {
     body: string,
     opts?: RichContent,
   ): Promise<{ id: string; message?: { id: string }; attachments: AttachmentReportItem[] }> {
-    const uuid = newEmailUuid();
+    const uuid = opts?.uuid ?? newEmailUuid();
     const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
@@ -239,7 +245,7 @@ export class GmailService {
     const messageIdHeader = headers["message-id"] ?? "";
     const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
 
-    const uuid = newEmailUuid();
+    const uuid = opts?.uuid ?? newEmailUuid();
     const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
     const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
       to: recipients.join(", "),

@@ -38,6 +38,14 @@ export const GAS_PROJECTS: Record<string, GasProject> = {
       "justin@126colby.com": "1yCzRUF-KYX9mhz39t31dyZIfC1SU7tcWvZywX_wE8kTkjQvWQ5I6ydf-",
     },
   },
+  // Gmail HTML drafts (native reply drafts) + formatting-safe Doc hygiene,
+  // dispatched as runBridge(action, params). Source: gas/projects/workspace-bridge.
+  // No seeded ids yet: create the project in each account, then register it with
+  // set_gas_script({ project: "workspace-bridge", ... }).
+  "workspace-bridge": {
+    entry: "runBridge",
+    scriptIds: {},
+  },
 };
 
 function configKey(project: string, accountEmail: string): string {
