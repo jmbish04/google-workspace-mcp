@@ -38,6 +38,16 @@ export const GAS_PROJECTS: Record<string, GasProject> = {
       "justin@126colby.com": "1yCzRUF-KYX9mhz39t31dyZIfC1SU7tcWvZywX_wE8kTkjQvWQ5I6ydf-",
     },
   },
+  // Gmail HTML drafts (native reply drafts) + formatting-safe Doc hygiene,
+  // dispatched as runBridge(action, params). Source: gas/projects/workspace-bridge.
+  // Created 2026-09-30 (deployment ids in gas/projects/workspace-bridge/project.json).
+  "workspace-bridge": {
+    entry: "runBridge",
+    scriptIds: {
+      "jmbish04@gmail.com": "1AxUi1mLGmNXI-nkXdGYv456L1R35uplvJ9Qsf1zW4lAEsKmc2aF5CYKp",
+      "justin@126colby.com": "1wIMP2tCayhz_Gwz7OgAtkhesHPI182DQ6ELXA13hLbsZupKiUVFuuuaP",
+    },
+  },
 };
 
 function configKey(project: string, accountEmail: string): string {

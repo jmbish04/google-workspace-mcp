@@ -110,10 +110,16 @@ export function markdownToGmailHtml(md: string): string {
   return inlineGmailStyles(html);
 }
 
-/** Best-effort plain-text fallback from HTML (block tags → newlines). */
+/**
+ * Best-effort plain-text fallback from HTML (block tags → newlines). Elements
+ * marked `data-plaintext="omit"` (hidden machine-readable markers such as the
+ * authorship watermark) are dropped — they are invisible in HTML and must stay
+ * invisible in the text/plain part too.
+ */
 export function htmlToPlainText(html: string): string {
   const root = parse(html, { comment: false });
   root.querySelectorAll("style,script").forEach((n) => n.remove());
+  root.querySelectorAll('[data-plaintext="omit"]').forEach((n) => n.remove());
   root.querySelectorAll("br").forEach((n) => n.replaceWith("\n"));
   for (const tag of ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "blockquote"]) {
     root.querySelectorAll(tag).forEach((n) => n.insertAdjacentHTML("afterend", "\n"));

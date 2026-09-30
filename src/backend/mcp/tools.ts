@@ -78,7 +78,9 @@ import {
   accountEmailFor,
 } from "@/backend/gmail/sync-service";
 import { buildThreadHtml, toRenderMessage } from "@/backend/gmail/thread-pdf";
-import { findEmailRecords } from "@/backend/gmail/tracking";
+import { findEmailRecords, newEmailUuid, recordEmail } from "@/backend/gmail/tracking";
+import { runBridgeAction } from "@/backend/appscript/bridge";
+import { buildAuthoredBody, getAuthorshipKey, verifyAuthoredHtml } from "@/backend/gmail/authored-html";
 import { GoogleDocsClient } from "@/backend/google";
 import {
   renderPdfBuffer,
@@ -2345,6 +2347,173 @@ export const TOOLS: ToolDef[] = [
           detail: { replyTo: a.messageId, draft: true },
         },
       };
+    },
+  },
+  {
+    name: "gmail_draft_html",
+    description:
+      "Create a Gmail DRAFT whose body is ALWAYS HTML shaped exactly like Gmail's own compose (Arial, small, #222222, <div> paragraphs with Gmail's blank-line spacer) — so links, bold/italic, colour and lists work while it still looks hand-typed. Supply ONE of `markdown`, `html` or `text`. Every draft is stamped with a hidden white `ref:<uuid>` (returned as `uuid`; search Gmail for it later) and a hidden per-paragraph authorship watermark, so gmail_verify_authorship can later tell the sender's text apart from text someone typed inline inside the quoted original. New draft: pass `to` + `subject`. Reply draft in the same thread: pass `replyToMessageId` (reply-all by default; `replyAll:false` for sender only).",
+    inputSchema: z.object({
+      to: recipients.optional(),
+      subject: z.string().optional(),
+      text: z.string().optional().describe("Plain text body (blank line = new paragraph). Escaped, never parsed as HTML."),
+      replyToMessageId: z.string().optional(),
+      replyAll: z.boolean().optional(),
+      via: z
+        .enum(["api", "appscript"])
+        .optional()
+        .describe(
+          "'api' (default): Gmail REST, supports attachments. 'appscript': the account's workspace-bridge Apps Script (GmailApp) via scripts.run — no attachments.",
+        ),
+      ...richBody,
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      if (![a.markdown, a.html, a.text].some((b) => b != null && b !== "")) {
+        throw new Error("gmail_draft_html: supply one of markdown, html or text.");
+      }
+      const account = acct(sub, a);
+      const uuid = newEmailUuid();
+      const body = await buildAuthoredBody({
+        markdown: a.markdown,
+        html: a.html,
+        text: a.text,
+        uuid,
+        author: account,
+        keyHex: await getAuthorshipKey(env),
+      });
+      if (a.via === "appscript") {
+        if (a.attachments?.length || a.driveIds?.length || a.blobs?.length) {
+          throw new Error("gmail_draft_html: attachments are only supported with via:'api'.");
+        }
+        if (!a.replyToMessageId && (!addrList(a.to) || !a.subject)) {
+          throw new Error("gmail_draft_html: a new (non-reply) draft needs `to` and `subject`.");
+        }
+        const email = (a.as_user ?? (await accountEmailFor(env, account))).toLowerCase();
+        const d = await runBridgeAction<{ draftId: string; messageId: string; threadId: string; subject: string; warnings: string[] }>(
+          env,
+          account,
+          email,
+          "gmail.createDraft",
+          {
+            to: addrList(a.to),
+            cc: addrList(a.cc),
+            bcc: addrList(a.bcc),
+            subject: a.subject,
+            html: body.html,
+            text: body.text,
+            replyToMessageId: a.replyToMessageId,
+            replyAll: a.replyAll !== false,
+          },
+        );
+        await recordEmail(env, {
+          uuid,
+          account,
+          action: a.replyToMessageId ? "reply_draft" : "draft",
+          subject: d.subject,
+          to: addrList(a.to),
+          cc: addrList(a.cc),
+          bcc: addrList(a.bcc),
+          body: a.markdown ?? a.html ?? a.text,
+          threadId: d.threadId,
+          messageId: d.messageId,
+          sub,
+        });
+        return {
+          result: { ...d, id: d.draftId, uuid, signedBlocks: body.signedBlocks, search: `"ref:${uuid}"`, via: "appscript" },
+          asset: {
+            assetType: "gmail",
+            googleId: d.draftId,
+            title: d.subject,
+            action: "create",
+            detail: { draft: true, uuid, replyTo: a.replyToMessageId, via: "appscript" },
+          },
+        };
+      }
+      const gmail = new GmailService(env, account);
+      const opts = {
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
+        html: body.html,
+        uuid,
+        attachments: a.attachments,
+        driveIds: a.driveIds,
+        blobs: a.blobs,
+      };
+      let d: { id: string; attachments: unknown };
+      if (a.replyToMessageId) {
+        d = await gmail.createReplyDraft(a.replyToMessageId, body.text, { ...opts, replyAll: a.replyAll });
+      } else {
+        const to = addrList(a.to);
+        if (!to || !a.subject) throw new Error("gmail_draft_html: a new (non-reply) draft needs `to` and `subject`.");
+        d = await gmail.createDraft(to, a.subject, body.text, opts);
+      }
+      return {
+        result: { ...d, uuid, signedBlocks: body.signedBlocks, search: `"ref:${uuid}"`, via: "api" },
+        asset: {
+          assetType: "gmail",
+          googleId: d.id,
+          title: a.subject,
+          action: "create",
+          detail: { draft: true, uuid, replyTo: a.replyToMessageId },
+        },
+      };
+    },
+  },
+  {
+    name: "docs_hygiene",
+    description:
+      "Formatting-SAFE cleanup of a Google Doc that an agent wrote into: decodes leftover HTML entities (&amp; &nbsp; &#39; …), turns raw markdown **bold** into real bold and [label](https://url) into real links, turns '# Heading' lines into real headings, and collapses runs of blank paragraphs to one. Edits character ranges inside existing text, so surrounding bold/colour/links survive (no paragraph rewrites). Markdown list lines are counted, not converted. Pass dryRun:true to see counts without writing. Runs on the account's workspace-bridge Apps Script (DocumentApp) via scripts.run. Accepts a Doc id or url.",
+    inputSchema: z.object({
+      documentId: z.string().describe("Doc id or full Docs url."),
+      dryRun: z.boolean().optional(),
+      collapseBlankParagraphs: z.boolean().optional().describe("Default true."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const account = acct(sub, a);
+      const email = (a.as_user ?? (await accountEmailFor(env, account))).toLowerCase();
+      const documentId = extractGoogleId(a.documentId);
+      const report = await runBridgeAction(env, account, email, "docs.hygiene", {
+        documentId,
+        dryRun: a.dryRun === true,
+        collapseBlankParagraphs: a.collapseBlankParagraphs !== false,
+      });
+      return {
+        result: report,
+        ...(a.dryRun ? {} : { asset: { assetType: "doc", googleId: documentId, action: "update", detail: { hygiene: true } } }),
+      };
+    },
+  },
+  {
+    name: "gmail_verify_authorship",
+    description:
+      "Forensic check of who wrote what in an email thread. Reads each message's HTML and, for every paragraph carrying a hidden authorship tag (added by gmail_draft_html), reports whether it is verified (the sender's text, unchanged), altered (the sender's tag but the words or link targets were changed), missing (the sender's paragraph was deleted from a quote), or unmarked (untagged text sitting INSIDE the sender's quoted original — someone else typed it inline). Use this before attributing quoted text to the account owner. Messages with no tags are reported as undetermined, never as 'not the sender'. Pass `threadId` or `messageId`.",
+    inputSchema: z.object({
+      threadId: z.string().optional(),
+      messageId: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      if (!a.threadId && !a.messageId) throw new Error("gmail_verify_authorship: pass threadId or messageId.");
+      const gmail = new GmailService(env, acct(sub, a));
+      const messages = a.threadId
+        ? (await gmail.getThread(a.threadId)).messages
+        : [await gmail.getRawMessage(a.messageId!)];
+      const keyHex = await getAuthorshipKey(env);
+      const results = [];
+      for (const m of messages) {
+        const parsed = parseRawMessage(m);
+        const { body, bodyFormat } = extractBody((m as any).payload, "html");
+        results.push({
+          messageId: parsed.id,
+          from: parsed.contacts.find((c) => c.type === "from")?.email ?? null,
+          date: parsed.internalDate ? new Date(parsed.internalDate).toISOString() : null,
+          // A text-only message has no html to carry tags: verify "" → undetermined.
+          ...(await verifyAuthoredHtml(bodyFormat === "html" ? body : "", keyHex)),
+        });
+      }
+      return { result: { messages: results } };
     },
   },
   {

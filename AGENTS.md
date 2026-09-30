@@ -95,6 +95,27 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`): cumulative encoded
   25 MiB budget, per-item Drive-link overflow (anyone-with-link) + per-attachment report.
   MIME in `mime.ts`; orchestration in `build-outgoing.ts`.
+- **Native-HTML drafts + authorship watermark** (`backend/gmail/authored-html.ts`):
+  `gmail_draft_html` ALWAYS builds an HTML body shaped like Gmail's own compose
+  (`<div dir="ltr">` Arial small #222222, `<div>` paragraphs + `<div><br></div>`
+  spacers, never `<p>`), keeps the hidden white `ref:<uuid>`, and appends a hidden
+  `[authored v1 <uuid> <n> <mac12>]` tag to every paragraph/list item (HMAC over
+  normalised text + link hrefs). `gmail_verify_authorship` classifies blocks in a
+  thread as verified / altered / missing / unmarked (untagged text inside the
+  sender's quote = someone else's inline reply). Key: random, `global_config`
+  `email_authorship_key` — NEVER derive it from WORKER_API_KEY (each email is an
+  offline oracle). Hidden markers carry `data-plaintext="omit"` so
+  `compose.ts#htmlToPlainText` keeps them out of text/plain. `via:"appscript"`
+  creates the draft through the workspace-bridge GAS project instead of REST.
+- **workspace-bridge GAS** (`backend/appscript/bridge.ts#runBridgeAction`, source
+  `gas/projects/workspace-bridge`): Execution API `scripts.run runBridge(action,
+  params)` → envelope `{ok,result}|{ok:false,code,error}`. Actions: `health`,
+  `gmail.createDraft|updateDraft|getDraft|listDrafts`, `docs.hygiene` (MCP
+  `docs_hygiene`: entities/markdown/heading markers/blank runs, range edits only).
+  Runs on the Worker's OAuth token (Execution API always runs as the caller), so it
+  lapses with that token — a public Web App was considered and rejected
+  (`docs/decisions/2026-09-29-apps-script-bridge-public-web-app.md`). Register each
+  account's scriptId with `set_gas_script({project:"workspace-bridge",…})`.
 - **Scheduled email** (`backend/gmail/scheduled-email.ts`, table `scheduled_emails`):
   `schedule_email(send_at ISO-8601 UTC)` persists the full spec — Gmail has NO native
   scheduled-send API. Sweep runs on the `*/5` cron, claims each due row **atomically**
