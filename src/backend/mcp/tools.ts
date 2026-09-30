@@ -103,6 +103,7 @@ import { exportSheetsToJson } from "@/backend/google/sheet-export";
 import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/workspace-events/e2e";
 import {
   countLiveSubscriptions,
+  reconcileWorkspaceSubscriptions,
   syncWorkspaceSubscriptions,
 } from "@/backend/workspace-events/subscription-manager";
 import { getDb } from "@/db";
@@ -1378,15 +1379,39 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: "list_workspace_subscriptions",
+    name: "reconcile_workspace_subscriptions",
     description:
-      "List the standing Workspace Events subscriptions this Worker maintains, per account: how many are LIVE right now (ACTIVE and not past their expiry) versus how many rows exist, and when the soonest one expires. An expired row is not coverage and is not counted as live.",
+      "Ask Google, folder by folder, whether each subscription this Worker recorded actually exists, and write the answer back. This is the only thing that makes a coverage number trustworthy: creates can report success with a real expiry and Google still not keep the subscription. Rows Google does not have are cleared so the next sweep recreates them, up to a retry limit — past that they are reported as abandoned rather than retried forever. Bounded per run to stay inside Google's 100-reads-per-minute-per-user limit, oldest-verified first, so a full pass completes over a few runs.",
     inputSchema: z.object({}),
     outputSchema: z.object({
       accounts: z.array(
         z.object({
           account: z.string(),
-          live: z.number(),
+          checked: z.number(),
+          confirmed: z.number(),
+          missing: z.number(),
+          abandoned: z.number(),
+          errors: z.number(),
+        }),
+      ),
+    }),
+    async run({ env }) {
+      return { result: { accounts: await reconcileWorkspaceSubscriptions(env) } };
+    },
+  },
+  {
+    name: "list_workspace_subscriptions",
+    description:
+      "Report standing Workspace Events subscription coverage per account, split by evidence: `verified` (Google confirmed it recently), `unverified` (our bookkeeping says live but Google has not been asked lately), `missing` (Google confirmed it does NOT have it), and `abandoned` (given up on after repeated disappearances). There is deliberately no single 'live' number — counting our own writes as coverage is how this previously reported 252 for an account holding about 100.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({
+      accounts: z.array(
+        z.object({
+          account: z.string(),
+          verified: z.number(),
+          unverified: z.number(),
+          missing: z.number(),
+          abandoned: z.number(),
           total: z.number(),
           nextExpiry: z.string().nullable(),
         }),

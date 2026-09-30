@@ -46,6 +46,28 @@ export const workspaceSubscriptions = sqliteTable(
     lastError: text("last_error"),
     /** When the sweep last successfully created or renewed this subscription. */
     lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
+    /**
+     * When Google last CONFIRMED this subscription exists, by a lookup against
+     * its own API rather than by us writing a row.
+     *
+     * This column exists because the first version of this table was trusted as
+     * if it were Google's state. Measured 2026-09-28: it claimed 252 live
+     * subscriptions for `justin@126colby.com` while a per-folder lookup found
+     * only 8 of 20 sampled, and Google's own listing returned 100. Every create
+     * had returned success with a real `expireTime`; Google accepted them and
+     * did not keep them. A count of our own writes is not a count of coverage.
+     */
+    verifiedAt: integer("verified_at", { mode: "timestamp" }),
+    /**
+     * Consecutive times a lookup has come back with no subscription for this
+     * folder despite a create having reported success.
+     *
+     * Needed as a stop: recreating on every sweep would loop forever against
+     * whatever is dropping them (a per-user cap, a delivery-authorization
+     * reaper), churning writes and reporting activity while coverage never
+     * improves. Past MAX_MISSING_RETRIES the row is left alone and surfaced.
+     */
+    missingStreak: integer("missing_streak").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),

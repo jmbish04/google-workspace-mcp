@@ -27,24 +27,33 @@ import { keepaliveGoogleTokens } from "@/backend/auth/oauth-keepalive";
 import { countLiveSubscriptions } from "@/backend/workspace-events/subscription-manager";
 
 /**
- * Workspace Events coverage: are there actually LIVE subscriptions?
+ * Workspace Events coverage, judged on what Google CONFIRMED.
  *
- * This check exists because the E2E probe could not answer it. That probe
- * creates its own folder, subscribes it, pokes it and deletes it, so it
- * reported "healthy" for weeks while zero standing subscriptions existed and
- * not one real Drive event ever arrived. Counting rows would repeat the
- * mistake, so an expired row is not counted as live.
+ * The first version of this check counted rows in our own table and reported
+ * 252 for an account Google was holding about 100 subscriptions for. So the
+ * verdict now keys on `verified` — rows a per-folder lookup confirmed inside
+ * the freshness window — and unverified rows count against it rather than for
+ * it. If that reads pessimistic right after a deploy, that is correct: nothing
+ * has been proven yet.
+ *
+ * - fail: an account has no verified coverage at all, or anything abandoned
+ *   (abandoned means we gave up recreating a folder's subscription because
+ *   something upstream keeps dropping it — a real, sized problem).
+ * - degraded: coverage exists but part of it is unproven or known-missing.
+ * - ok: every row on every account is verified.
  */
 async function checkWorkspaceSubscriptions(
   env: Env,
 ): Promise<{ status: "ok" | "fail" | "degraded"; accounts: unknown[] }> {
-  const counts = await countLiveSubscriptions(env);
-  if (!counts.length) return { status: "fail", accounts: [] };
-  const totalLive = counts.reduce((n, c) => n + c.live, 0);
-  if (totalLive === 0) return { status: "fail", accounts: counts };
-  // One account covered and another bare is a real regression, not "fine".
-  const anyBare = counts.some((c) => c.live === 0);
-  return { status: anyBare ? "degraded" : "ok", accounts: counts };
+  const coverage = await countLiveSubscriptions(env);
+  if (!coverage.length) return { status: "fail", accounts: [] };
+
+  const anyBare = coverage.some((c) => c.verified === 0);
+  const anyAbandoned = coverage.some((c) => c.abandoned > 0);
+  if (anyBare || anyAbandoned) return { status: "fail", accounts: coverage };
+
+  const anyUnproven = coverage.some((c) => c.unverified > 0 || c.missing > 0);
+  return { status: anyUnproven ? "degraded" : "ok", accounts: coverage };
 }
 
 /**
