@@ -84,7 +84,21 @@ export async function getAccessToken(env: Env, sub: string): Promise<string> {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
   });
-  if (!res.ok) throw new Error(`Token refresh failed: ${res.status}`);
+  if (!res.ok) {
+    // A signed-in `sub` session whose refresh token Google now rejects (revoked, expired, or
+    // superseded by a newer consent) must not take the account down when the same account also
+    // has current email-keyed OAuth credentials — the path every `/mcp` call with `as_user`
+    // already uses. Measured 2026-09-30: every REST `/api/tools/*` call as justin@126colby.com
+    // failed here with 400 while the email path worked, so core-vetting's 30-minute Gmail scan
+    // recorded nothing for two weeks. Fall back rather than fail; the stale session is dropped
+    // so the next call goes straight to the working credentials.
+    const email = user.email?.trim().toLowerCase();
+    if (res.status === 400 && email && (await hasOAuthRefreshToken(env, email))) {
+      await env.SESSIONS.delete(TOK_PREFIX + sub);
+      return getOAuthAccessToken(env, email, API_SCOPES);
+    }
+    throw new Error(`Token refresh failed: ${res.status}`);
+  }
   const json = (await res.json()) as { access_token: string; expires_in: number };
   const exp = Math.floor(Date.now() / 1000) + json.expires_in;
   await env.SESSIONS.put(
