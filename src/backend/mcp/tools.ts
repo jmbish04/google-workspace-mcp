@@ -1373,6 +1373,8 @@ export const TOOLS: ToolDef[] = [
           renewed: z.number(),
           skipped: z.number(),
           pruned: z.number(),
+          abandoned: z.number(),
+          unrenewable: z.number(),
           errors: z.array(z.object({ folderId: z.string(), error: z.string() })),
         }),
       ),
@@ -1392,7 +1394,7 @@ export const TOOLS: ToolDef[] = [
           account: z.string(),
           checked: z.number(),
           confirmed: z.number(),
-          missing: z.number(),
+          unconfirmable: z.number(),
           abandoned: z.number(),
           errors: z.number(),
         }),
@@ -1423,15 +1425,16 @@ export const TOOLS: ToolDef[] = [
   {
     name: "list_workspace_subscriptions",
     description:
-      "Report standing Workspace Events subscription coverage per account, split by evidence: `verified` (Google confirmed it recently), `unverified` (our bookkeeping says live but Google has not been asked lately), `missing` (Google confirmed it does NOT have it), and `abandoned` (given up on after repeated disappearances). There is deliberately no single 'live' number — counting our own writes as coverage is how this previously reported 252 for an account holding about 100.",
+      "Report standing Workspace Events subscription coverage per account, split by evidence: `verified` (confirmed and renewable), `assumedLive` (confirmed by ALREADY_EXISTS but unrenewable, because subscriptions.list caps at 100 rows per user and will not yield the resource name — these ARE delivering events and are recreated at each 7-day TTL), `unverified` (not asked lately), `unconfirmable` (invisible in the capped listing, not yet settled by a create) and `abandoned` (legacy). Coverage is verified + assumedLive; `verified` alone is bounded by the listing ceiling, not by reality.",
     inputSchema: z.object({}),
     outputSchema: z.object({
       accounts: z.array(
         z.object({
           account: z.string(),
           verified: z.number(),
+          assumedLive: z.number(),
           unverified: z.number(),
-          missing: z.number(),
+          unconfirmable: z.number(),
           abandoned: z.number(),
           total: z.number(),
           nextExpiry: z.string().nullable(),

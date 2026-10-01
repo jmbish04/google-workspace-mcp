@@ -27,20 +27,22 @@ import { keepaliveGoogleTokens } from "@/backend/auth/oauth-keepalive";
 import { countLiveSubscriptions } from "@/backend/workspace-events/subscription-manager";
 
 /**
- * Workspace Events coverage, judged on what Google CONFIRMED.
+ * Workspace Events coverage.
  *
- * The first version of this check counted rows in our own table and reported
- * 252 for an account Google was holding about 100 subscriptions for. So the
- * verdict now keys on `verified` — rows a per-folder lookup confirmed inside
- * the freshness window — and unverified rows count against it rather than for
- * it. If that reads pessimistic right after a deploy, that is correct: nothing
- * has been proven yet.
+ * The verdict must NOT key on `verified` alone. `verified` depends on
+ * `subscriptions.list`, which caps at 100 rows per user with no cursor, so for
+ * an account with more folders than that it is bounded by the instrument rather
+ * than by reality. Keying on it reported `fail` over a pipeline that was
+ * delivering events — proven 2026-10-01, when a folder counted as missing
+ * produced three CloudEvents seconds after a write.
  *
- * - fail: an account has no verified coverage at all, or anything abandoned
- *   (abandoned means we gave up recreating a folder's subscription because
- *   something upstream keeps dropping it — a real, sized problem).
- * - degraded: coverage exists but part of it is unproven or known-missing.
- * - ok: every row on every account is verified.
+ * Coverage is `verified` (confirmed and renewable) plus `assumedLive`
+ * (confirmed by ALREADY_EXISTS, unrenewable, recreated each TTL).
+ *
+ * - fail: an account has no coverage at all, or rows abandoned (legacy — the
+ *   sweep no longer creates them).
+ * - degraded: coverage exists but some rows are unproven or unsettled.
+ * - ok: every row on every account is accounted for.
  */
 async function checkWorkspaceSubscriptions(
   env: Env,
@@ -48,12 +50,13 @@ async function checkWorkspaceSubscriptions(
   const coverage = await countLiveSubscriptions(env);
   if (!coverage.length) return { status: "fail", accounts: [] };
 
-  const anyBare = coverage.some((c) => c.verified === 0);
-  const anyAbandoned = coverage.some((c) => c.abandoned > 0);
-  if (anyBare || anyAbandoned) return { status: "fail", accounts: coverage };
+  const covered = (c: (typeof coverage)[number]) => c.verified + c.assumedLive;
+  if (coverage.some((c) => covered(c) === 0 || c.abandoned > 0)) {
+    return { status: "fail", accounts: coverage };
+  }
 
-  const anyUnproven = coverage.some((c) => c.unverified > 0 || c.missing > 0);
-  return { status: anyUnproven ? "degraded" : "ok", accounts: coverage };
+  const anyUnsettled = coverage.some((c) => c.unverified > 0 || c.unconfirmable > 0);
+  return { status: anyUnsettled ? "degraded" : "ok", accounts: coverage };
 }
 
 /**

@@ -94,30 +94,25 @@ describe("reconcileWorkspaceSubscriptions", () => {
     });
     const [r] = await reconcileWorkspaceSubscriptions({} as Env, d);
     expect(r.confirmed).toBe(1);
-    expect(r.missing).toBe(0);
+    expect(r.unconfirmable).toBe(0);
     expect(updates[0].set.verifiedAt).toEqual(NOW);
     expect(updates[0].set.missingStreak).toBe(0);
   });
 
-  it("clears a row Google does not have so the next sweep recreates it", async () => {
+  it("does NOT treat a lookup miss as absence — the listing caps at 100 rows", async () => {
+    // Proven 2026-10-01: a folder whose target_resource lookup returned nothing
+    // delivered three CloudEvents seconds after a write. `subscriptions.list`
+    // caps at 100 rows per user with no cursor, so a miss above that ceiling is
+    // a fact about the listing. Concluding absence here abandoned 153 live
+    // subscriptions, so the row keeps its identity for the sweep to settle.
     rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1");
     const [r] = await reconcileWorkspaceSubscriptions({} as Env, deps());
-    expect(r.missing).toBe(1);
+    expect(r.unconfirmable).toBe(1);
     expect(r.abandoned).toBe(0);
-    // Nulling these is what puts the folder back on the create path.
-    expect(updates[0].set.subscriptionName).toBeNull();
-    expect(updates[0].set.expireAt).toBeNull();
-    expect(updates[0].set.missingStreak).toBe(1);
-  });
-
-  it("abandons a row after repeated disappearances instead of looping forever", async () => {
-    // missingStreak 2 + this run = 3 = MAX_MISSING_RETRIES.
-    rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1", { missingStreak: 2 });
-    const [r] = await reconcileWorkspaceSubscriptions({} as Env, deps());
-    expect(r.abandoned).toBe(1);
-    expect(updates[0].set.state).toBe("ABANDONED");
-    // It must NOT be cleared for recreation — that is the loop this prevents.
-    expect(updates[0].set.subscriptionName).not.toBeNull();
+    expect(updates[0].set.state).toBe("UNCONFIRMABLE");
+    // Identity must survive — nulling it is what caused the phantom recreations.
+    expect(updates[0].set).not.toHaveProperty("subscriptionName");
+    expect(updates[0].set.verifiedAt).toBeNull();
   });
 
   it("leaves the previous verdict alone when the lookup itself fails", async () => {
@@ -131,7 +126,7 @@ describe("reconcileWorkspaceSubscriptions", () => {
     });
     const [r] = await reconcileWorkspaceSubscriptions({} as Env, d);
     expect(r.errors).toBe(1);
-    expect(r.missing).toBe(0);
+    expect(r.unconfirmable).toBe(0);
     expect(updates).toHaveLength(0);
   });
 });
@@ -166,15 +161,30 @@ describe("countLiveSubscriptions", () => {
     expect(c.unverified).toBe(1);
   });
 
-  it("reports abandoned rows separately so the real problem has a size", async () => {
+  it("counts an ALREADY_EXISTS-confirmed row as coverage, not as a failure", async () => {
+    // Live and delivering events; merely unrenewable, because the capped listing
+    // will not yield a resource name. Excluding these is what made the health
+    // check report fail over a working pipeline.
     rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1", {
-      state: "ABANDONED",
-      missingStreak: 3,
+      state: "ACTIVE_UNRENEWABLE",
+      subscriptionName: null,
+      expireAt: null,
       verifiedAt: NOW,
     });
     const [c] = await countLiveSubscriptions({} as Env, NOW);
-    expect(c.abandoned).toBe(1);
+    expect(c.assumedLive).toBe(1);
+    expect(c.abandoned).toBe(0);
+  });
+
+  it("keeps unconfirmable rows out of coverage without calling them missing", async () => {
+    rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1", {
+      state: "UNCONFIRMABLE",
+      verifiedAt: null,
+    });
+    const [c] = await countLiveSubscriptions({} as Env, NOW);
+    expect(c.unconfirmable).toBe(1);
     expect(c.verified).toBe(0);
+    expect(c.assumedLive).toBe(0);
   });
 });
 

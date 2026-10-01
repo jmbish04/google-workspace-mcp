@@ -72,12 +72,27 @@ const VERIFY_PER_RUN = 80;
 const VERIFY_FRESH_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Stop recreating a folder's subscription after this many consecutive lookups
- * that found nothing. Beyond this, something upstream is dropping them and
- * retrying forever would churn writes while reporting activity and never
- * improving coverage. The row is left alone and reported instead.
+ * State for a subscription Google asserts exists (`409 ALREADY_EXISTS`) but
+ * whose resource name we cannot obtain, because `subscriptions.list` caps at
+ * 100 rows per user with no `nextPageToken`.
+ *
+ * It is LIVE — proven 2026-10-01: `Paperless Inbox` returned nothing from a
+ * `target_resource` lookup, `create` returned ALREADY_EXISTS, and a document
+ * written into it delivered three CloudEvents within seconds. What it is not is
+ * renewable: with no resource name there is nothing to PATCH, so it expires at
+ * its 7-day TTL and the next sweep's create succeeds and makes a fresh one.
+ * Coverage therefore self-heals weekly rather than breaking.
  */
-const MAX_MISSING_RETRIES = 3;
+const STATE_UNRENEWABLE = "ACTIVE_UNRENEWABLE";
+
+/**
+ * State for a row whose subscription we hold a name for but could not confirm.
+ *
+ * NOT the same as absent. A lookup miss above the listing's 100-row ceiling is
+ * a fact about the listing, not about Google — treating it as absence is what
+ * previously marked 153 working subscriptions as abandoned.
+ */
+const STATE_UNCONFIRMABLE = "UNCONFIRMABLE";
 const WRITE_SPACING_MS = Math.ceil(60_000 / WRITES_PER_MINUTE);
 
 /** What one sweep did, per account. */
@@ -100,6 +115,12 @@ export interface SubscriptionSweepResult {
   pruned: number;
   /** Folders the reconcile pass gave up on; not retried by this sweep. */
   abandoned: number;
+  /**
+   * Folders Google confirmed via ALREADY_EXISTS but whose resource name the
+   * listing would not surface. Live, but not renewable — see
+   * {@link STATE_UNRENEWABLE}.
+   */
+  unrenewable: number;
   /** Per-folder failures (folder id → message), capped for legibility. */
   errors: { folderId: string; error: string }[];
 }
@@ -177,6 +198,7 @@ export async function syncWorkspaceSubscriptions(
       folders: 0,
       created: 0,
       renewed: 0,
+      unrenewable: 0,
       skipped: 0,
       adopted: 0,
       pruned: 0,
@@ -256,25 +278,29 @@ export async function syncWorkspaceSubscriptions(
         // Record the folder so the next sweep renews rather than re-creating,
         // and do not count it as a failure the operator must act on.
         if (isAlreadyExists(message)) {
-          // Google already holds a subscription for this folder that we have no
-          // row for — typically one created by hand before this table existed.
-          // Adopting it is not cosmetic: without its resource name we could
-          // never renew it, so it would expire in 7 days and stay dead while
-          // the sweep kept "succeeding" against ALREADY_EXISTS forever.
+          // `409 ALREADY_EXISTS` is Google telling us the subscription IS there.
+          // It is the most reliable evidence available — more so than a lookup,
+          // which cannot see past the listing's 100-row ceiling. Treating it as
+          // a failure is what produced 109 phantom errors and 153 phantom
+          // abandonments over subscriptions that were delivering events.
+          //
+          // Try to recover the resource name so the row stays renewable; if the
+          // listing cannot show it, record it as live-but-unrenewable rather
+          // than pretending either that it is missing or that we can renew it.
+          let found: { name?: string; state?: string; expireTime?: string } | null = null;
           try {
-            const found = await deps.findByFolder(ref, folder.id);
-            if (found) {
-              await upsertRow(db, email, folder, found, now);
-              result.adopted++;
-              continue;
-            }
-            result.errors.push({
-              folderId: folder.id,
-              error: "ALREADY_EXISTS but no subscription found for this target",
-            });
-          } catch (lookupError) {
-            result.errors.push({ folderId: folder.id, error: describe(lookupError).slice(0, 300) });
+            found = await deps.findByFolder(ref, folder.id);
+          } catch {
+            // Lookup failure changes nothing: ALREADY_EXISTS already proved it.
           }
+          if (found) {
+            await upsertRow(db, email, folder, found, now);
+            result.adopted++;
+          } else {
+            await markUnrenewable(db, email, folder, now);
+            result.unrenewable++;
+          }
+          continue;
         } else {
           result.errors.push({ folderId: folder.id, error: message.slice(0, 300) });
         }
@@ -371,8 +397,14 @@ export interface SubscriptionCoverage {
    * defect this split exists to prevent.
    */
   unverified: number;
-  /** Rows Google confirmed it does NOT have, still queued for recreation. */
-  missing: number;
+  /**
+   * Rows Google confirmed exist via ALREADY_EXISTS but whose resource name the
+   * listing would not surface. LIVE and delivering events — just not renewable,
+   * so each expires at its 7-day TTL and the next sweep recreates it.
+   */
+  assumedLive: number;
+  /** Rows the listing could not show and the sweep has not yet settled. */
+  unconfirmable: number;
   /** Rows given up on after repeated disappearances — the real problem, named. */
   abandoned: number;
   /** Rows in the table for this account. */
@@ -414,11 +446,15 @@ export async function countLiveSubscriptions(
       r.verifiedAt !== null && now.getTime() - r.verifiedAt.getTime() < VERIFY_FRESH_MS;
 
     const abandoned = mine.filter((r) => r.state === "ABANDONED");
+    // ALREADY_EXISTS is confirmation, so these count as coverage — they are
+    // simply unrenewable. Excluding them is what made 153 live subscriptions
+    // read as a failure.
+    const assumedLive = mine.filter(
+      (r) => r.state === STATE_UNRENEWABLE && freshlyVerified(r),
+    );
+    const unconfirmable = mine.filter((r) => r.state === STATE_UNCONFIRMABLE);
     const verified = mine.filter((r) => looksLive(r) && freshlyVerified(r));
     const unverified = mine.filter((r) => looksLive(r) && !freshlyVerified(r));
-    const missing = mine.filter(
-      (r) => r.state !== "ABANDONED" && !looksLive(r) && r.missingStreak > 0,
-    );
 
     const next = verified
       .map((r) => r.expireAt as Date)
@@ -427,8 +463,9 @@ export async function countLiveSubscriptions(
     return {
       account,
       verified: verified.length,
+      assumedLive: assumedLive.length,
       unverified: unverified.length,
-      missing: missing.length,
+      unconfirmable: unconfirmable.length,
       abandoned: abandoned.length,
       total: mine.length,
       nextExpiry: next ? next.toISOString() : null,
@@ -503,10 +540,12 @@ export interface ReconcileResult {
   /** Rows Google confirmed. */
   confirmed: number;
   /**
-   * Rows Google had no subscription for, despite a create having reported
-   * success. Cleared for recreation unless they have exhausted their retries.
+   * Rows the listing could not show. NOT absent — the listing caps at 100 rows
+   * per user, so this is a limit of the instrument. The sweep's `create` settles
+   * each one: ALREADY_EXISTS means live, a clean create means it was genuinely
+   * gone and now is not.
    */
-  missing: number;
+  unconfirmable: number;
   /**
    * Rows that have gone missing {@link MAX_MISSING_RETRIES} times in a row.
    * These will NOT be recreated again — something upstream is dropping them,
@@ -577,7 +616,7 @@ export async function reconcileWorkspaceSubscriptions(
       account: email,
       checked: 0,
       confirmed: 0,
-      missing: 0,
+      unconfirmable: 0,
       abandoned: 0,
       errors: 0,
     };
@@ -620,30 +659,82 @@ export async function reconcileWorkspaceSubscriptions(
         continue;
       }
 
-      const streak = row.missingStreak + 1;
-      const abandoned = streak >= MAX_MISSING_RETRIES;
+      // A lookup that found nothing is NOT evidence of absence. `subscriptions.list`
+      // caps at 100 rows per user with no cursor, so above that ceiling a live
+      // subscription is simply invisible — proven 2026-10-01, when a folder the
+      // lookup denied delivered three CloudEvents seconds after a write.
+      //
+      // So: keep the identity, mark the row unconfirmable, and let the sweep's
+      // `create` settle it. ALREADY_EXISTS there means live; a clean create means
+      // it really was gone and now is not. Concluding "missing" here is what
+      // abandoned 153 working subscriptions.
       await db
         .update(workspaceSubscriptions)
         .set({
-          // Null these so the next sweep takes the create path — unless we have
-          // given up, in which case leave the record of what we last knew.
-          subscriptionName: abandoned ? row.subscriptionName : null,
-          expireAt: abandoned ? row.expireAt : null,
-          state: abandoned ? "ABANDONED" : null,
-          missingStreak: streak,
-          verifiedAt: now,
-          lastError: abandoned
-            ? `Google reported no subscription ${streak} times running; not recreating.`
-            : "Google reported no subscription for this folder despite a successful create.",
+          state: STATE_UNCONFIRMABLE,
+          missingStreak: row.missingStreak + 1,
+          verifiedAt: null,
+          lastError:
+            "Not visible in subscriptions.list (capped at 100 rows); the sweep's create will settle it.",
           updatedAt: now,
         })
         .where(eq(workspaceSubscriptions.id, row.id));
-      result.missing++;
-      if (abandoned) result.abandoned++;
+      result.unconfirmable++;
     }
 
     out.push(result);
   }
 
   return out;
+}
+
+/**
+ * Record a folder as live-but-unrenewable: Google answered ALREADY_EXISTS, so
+ * the subscription demonstrably exists, but the listing would not yield its
+ * resource name so there is nothing to renew.
+ *
+ * `verifiedAt` IS stamped, because ALREADY_EXISTS is confirmation — it is
+ * stronger evidence than the lookup that cannot see past 100 rows.
+ *
+ * @param db - Drizzle handle
+ * @param account - Account email
+ * @param folder - The watched folder
+ * @param now - Clock
+ */
+async function markUnrenewable(
+  db: ReturnType<typeof getDb>,
+  account: string,
+  folder: { id: string; name: string },
+  now: Date,
+): Promise<void> {
+  const values = {
+    id: `${account}:${folder.id}`,
+    account,
+    folderId: folder.id,
+    folderName: folder.name,
+    subscriptionName: null,
+    state: STATE_UNRENEWABLE,
+    expireAt: null,
+    lastError: null,
+    missingStreak: 0,
+    verifiedAt: now,
+    lastSyncedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db
+    .insert(workspaceSubscriptions)
+    .values(values)
+    .onConflictDoUpdate({
+      target: workspaceSubscriptions.id,
+      set: {
+        folderName: values.folderName,
+        state: STATE_UNRENEWABLE,
+        verifiedAt: now,
+        missingStreak: 0,
+        lastError: null,
+        lastSyncedAt: now,
+        updatedAt: now,
+      },
+    });
 }
