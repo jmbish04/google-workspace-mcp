@@ -106,6 +106,7 @@ import { listWorkspaceEventsE2eRuns, runWorkspaceEventsE2e } from "@/backend/wor
 import {
   countLiveSubscriptions,
   reconcileWorkspaceSubscriptions,
+  resetAbandonedSubscriptions,
   syncWorkspaceSubscriptions,
 } from "@/backend/workspace-events/subscription-manager";
 import { getDb } from "@/db";
@@ -1399,6 +1400,24 @@ export const TOOLS: ToolDef[] = [
     }),
     async run({ env }) {
       return { result: { accounts: await reconcileWorkspaceSubscriptions(env) } };
+    },
+  },
+  {
+    name: "reset_abandoned_subscriptions",
+    description:
+      "Clear the ABANDONED verdict on standing Workspace Events subscriptions so the next sweep retries those folders. Google caps active subscriptions at 100 per user (measured; undocumented), and the sweep stops recreating a folder after it has been dropped three times so it does not churn writes forever. That cap is not permanent — nesting folders under a shared parent frees slots, because includeDescendants covers a subtree for one slot. Call this after capacity has actually changed, then run the sweep. Deliberately manual: automatic un-abandoning would restore the infinite retry loop.",
+    inputSchema: z.object({
+      as_user: z
+        .string()
+        .email()
+        .optional()
+        .describe("Limit the reset to one account; omit to reset every account."),
+    }),
+    outputSchema: z.object({
+      accounts: z.array(z.object({ account: z.string(), reset: z.number() })),
+    }),
+    async run({ env }, a) {
+      return { result: { accounts: await resetAbandonedSubscriptions(env, a.as_user) } };
     },
   },
   {

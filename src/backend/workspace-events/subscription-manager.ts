@@ -439,6 +439,58 @@ export async function countLiveSubscriptions(
 /** Re-exported so callers do not need to reach into `e2e.ts` for the topic. */
 export { DEFAULT_PUBSUB_TOPIC };
 
+/**
+ * Clear the ABANDONED verdict so the next sweep tries these folders again.
+ *
+ * Needed because abandonment is deliberately sticky: once Google has dropped a
+ * folder's subscription three times the sweep stops recreating it, which is what
+ * keeps it from churning writes forever against the 100-per-user cap. But the
+ * cap is not permanent — nesting folders under a shared parent frees slots,
+ * since a subscription with `includeDescendants` covers a whole subtree for one
+ * slot. When capacity appears, nothing would ever retry without this.
+ *
+ * Deliberately NOT automatic: a sweep that un-abandons on its own would restore
+ * the infinite retry loop that abandonment exists to stop. Someone has to know
+ * that capacity actually changed.
+ *
+ * @param env - Worker env
+ * @param account - Limit to one account, or omit for all
+ * @returns How many rows were reset, per account
+ * @example
+ * await resetAbandonedSubscriptions(env, "justin@126colby.com");
+ */
+export async function resetAbandonedSubscriptions(
+  env: Env,
+  account?: string,
+): Promise<{ account: string; reset: number }[]> {
+  const db = getDb(env);
+  const rows = (await db.select().from(workspaceSubscriptions)).filter(
+    (r) => r.state === "ABANDONED" && (!account || r.account === account),
+  );
+  const now = new Date();
+
+  for (const row of rows) {
+    await db
+      .update(workspaceSubscriptions)
+      .set({
+        // Null the subscription identity so the sweep takes the create path,
+        // and zero the streak so it gets a full set of attempts again.
+        subscriptionName: null,
+        expireAt: null,
+        state: null,
+        missingStreak: 0,
+        verifiedAt: null,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(eq(workspaceSubscriptions.id, row.id));
+  }
+
+  const byAccount = new Map<string, number>();
+  for (const row of rows) byAccount.set(row.account, (byAccount.get(row.account) ?? 0) + 1);
+  return [...byAccount].map(([acct, reset]) => ({ account: acct, reset }));
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation — ask Google what it actually holds
 // ---------------------------------------------------------------------------
