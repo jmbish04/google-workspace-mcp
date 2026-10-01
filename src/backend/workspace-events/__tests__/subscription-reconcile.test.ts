@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   countLiveSubscriptions,
   reconcileWorkspaceSubscriptions,
+  resetAbandonedSubscriptions,
   type ReconcileDeps,
 } from "../subscription-manager";
 
@@ -174,5 +175,42 @@ describe("countLiveSubscriptions", () => {
     const [c] = await countLiveSubscriptions({} as Env, NOW);
     expect(c.abandoned).toBe(1);
     expect(c.verified).toBe(0);
+  });
+});
+
+describe("resetAbandonedSubscriptions", () => {
+  it("clears an ABANDONED row so the sweep will try it again", async () => {
+    rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1", {
+      state: "ABANDONED",
+      missingStreak: 3,
+      verifiedAt: NOW,
+    });
+    const out = await resetAbandonedSubscriptions({} as Env);
+    expect(out).toEqual([{ account: "justin@126colby.com", reset: 1 }]);
+    // Nulling the identity is what puts it back on the create path; zeroing the
+    // streak is what gives it a full set of attempts rather than instant re-abandon.
+    expect(updates[0].set.state).toBeNull();
+    expect(updates[0].set.subscriptionName).toBeNull();
+    expect(updates[0].set.missingStreak).toBe(0);
+  });
+
+  it("leaves a healthy row untouched", async () => {
+    rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1", { verifiedAt: NOW });
+    const out = await resetAbandonedSubscriptions({} as Env);
+    expect(out).toEqual([]);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("scopes the reset to one account when asked", async () => {
+    rows["justin@126colby.com:f1"] = unverifiedRow("justin@126colby.com:f1", {
+      state: "ABANDONED",
+      missingStreak: 3,
+    });
+    rows["other@example.test:f2"] = {
+      ...unverifiedRow("other@example.test:f2", { state: "ABANDONED", missingStreak: 3 }),
+      account: "other@example.test",
+    };
+    const out = await resetAbandonedSubscriptions({} as Env, "justin@126colby.com");
+    expect(out).toEqual([{ account: "justin@126colby.com", reset: 1 }]);
   });
 });
