@@ -132,9 +132,13 @@ describe("syncWorkspaceSubscriptions", () => {
     });
   });
 
-  it("reports ALREADY_EXISTS as an error when the subscription cannot be found", async () => {
-    // Silently counting this as covered is how an unrenewable subscription
-    // hides: it would read as success forever and expire anyway.
+  it("records ALREADY_EXISTS with no findable name as live-but-unrenewable, not an error", async () => {
+    // Corrected 2026-10-01. This previously asserted an error, on the belief
+    // that ALREADY_EXISTS plus an empty lookup meant something was wrong. It
+    // does not: `subscriptions.list` caps at 100 rows per user, so above that
+    // ceiling a live subscription simply cannot be looked up. A folder in
+    // exactly this state delivered three CloudEvents seconds after a write.
+    // ALREADY_EXISTS is Google confirming the subscription exists.
     const d = deps({
       create: vi.fn(async () => {
         throw new Error("Google API 409: ALREADY_EXISTS");
@@ -142,20 +146,12 @@ describe("syncWorkspaceSubscriptions", () => {
       findByFolder: vi.fn(async () => null),
     });
     const [r] = await syncWorkspaceSubscriptions({} as Env, d);
-    expect(r.adopted).toBe(0);
-    expect(r.errors).toHaveLength(1);
-    expect(r.errors[0].error).toMatch(/no subscription found/);
-  });
-
-  it("records a real failure instead of swallowing it", async () => {
-    const d = deps({
-      create: vi.fn(async () => {
-        throw new Error("Google API 403: Permission denied");
-      }),
+    expect(r.errors).toHaveLength(0);
+    expect(r.unrenewable).toBe(1);
+    expect(rows["jmbish04@gmail.com:folder-a"]).toMatchObject({
+      state: "ACTIVE_UNRENEWABLE",
+      subscriptionName: null,
     });
-    const [r] = await syncWorkspaceSubscriptions({} as Env, d);
-    expect(r.errors).toHaveLength(1);
-    expect(r.errors[0].error).toMatch(/Permission denied/);
   });
 
   it("prunes bookkeeping for folders that no longer exist", async () => {

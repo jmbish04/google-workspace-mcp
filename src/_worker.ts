@@ -271,10 +271,10 @@ function makeHandler(): ExportedHandler<Env> {
             // would skip those rows as healthy on our own (wrong) bookkeeping.
             const recon = await reconcileWorkspaceSubscriptions(env);
             for (const r of recon) {
-              if (r.missing || r.abandoned || r.errors) {
+              if (r.unconfirmable || r.abandoned || r.errors) {
                 console.warn(
                   `[workspace-subs:reconcile] ${r.account} checked=${r.checked} ` +
-                    `confirmed=${r.confirmed} missing=${r.missing} abandoned=${r.abandoned} errors=${r.errors}`,
+                    `confirmed=${r.confirmed} unconfirmable=${r.unconfirmable} abandoned=${r.abandoned} errors=${r.errors}`,
                 );
               }
             }
@@ -283,7 +283,7 @@ function makeHandler(): ExportedHandler<Env> {
               if (r.created || r.renewed || r.pruned || r.errors.length) {
                 console.log(
                   `[workspace-subs] ${r.account} folders=${r.folders} created=${r.created} ` +
-                    `renewed=${r.renewed} skipped=${r.skipped} pruned=${r.pruned} errors=${r.errors.length}`,
+                    `renewed=${r.renewed} skipped=${r.skipped} unrenewable=${r.unrenewable} pruned=${r.pruned} errors=${r.errors.length}`,
                 );
               }
               for (const e of r.errors.slice(0, 5)) {
