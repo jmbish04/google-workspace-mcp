@@ -89,12 +89,40 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   (values.update; `valueInputOption` defaults to USER_ENTERED, pass RAW for text from an
   untrusted or third-party source so `=IMPORTXML(...)` is stored, not executed).
   The Preserve/Redesign/Clarify editing policy lives in `mcp/code-mode.ts#apiGuide`.
-- **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
-  `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
-  Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,
-  mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`): cumulative encoded
-  25 MiB budget, per-item Drive-link overflow (anyone-with-link) + per-attachment report.
+- **Gmail compose — HTML is the standard** (`backend/gmail/compose.ts`): EVERY outgoing
+  body goes through `composeBody`, which ALWAYS produces an HTML part shaped like
+  Gmail's own compose (`<div dir="ltr">` Arial small #222222, paragraphs as `<div>`
+  separated by a `<div><br></div>` spacer, all styling INLINE via `juice` because
+  Gmail discards `<style>`/classes). A plain `body` string is escaped into the same
+  native blocks — there is no text-only send path any more. It also (a) sanitizes
+  (`<script>`/`<iframe>`/`<form>`/`<svg>`/on*/`javascript:`), (b) STRIPS the hidden
+  `ref:<uuid>` markers and authorship watermarks belonging to OTHER messages, so an
+  agent revising a previous draft no longer stacks up a second and third reference
+  id, (c) stamps exactly one `ref:<uuid>` (`data-plaintext="omit"`, so it stays out
+  of text/plain), (d) refuses a body that sanitizes to nothing (`GmailBodyError`),
+  and (e) returns a `report` of everything removed, surfaced as `body` on the tool
+  result. Never hand-write inline CSS in a tool call — send `markdown` or `html`.
+  `prebuilt: true` ships pre-signed bytes (gmail_draft_html) unchanged.
+  **Sender name**: `From` is `"Justin Bishop" <…>` on sends AND drafts, resolved from
+  `global_config.email_sender_name` (set via the `set_sender_name` tool), else Gmail's
+  own send-as `displayName`, cached 10 min per account; `mime.ts#formatAddress`.
+  Attachments unchanged: unified `attachments[]` (`{driveFileId}` | `{blob,filename,
+  mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`), cumulative
+  encoded 25 MiB budget, per-item Drive-link overflow + per-attachment report.
   MIME in `mime.ts`; orchestration in `build-outgoing.ts`.
+- **Draft studio** (`backend/gmail/draft-studio.ts`, tables `email_drafts` /
+  `email_draft_revisions` / `email_draft_comments`, page `/gws/draft-studio`): an email
+  revised on the worker instead of in Gmail, for when it will take several rounds.
+  MCP `email_draft_studio_create|update|get|list|send`; each update is an append-only
+  numbered revision, so the page can diff any two (`shared/text-diff.ts`). The human
+  edits in PlateJS (`shared/plate-html.ts` converts Plate↔HTML isomorphically — Plate's
+  own serializers need a DOM and emit editor classNames) or highlights a passage and
+  leaves a comment the agent reads back. Live updates come from the `EmailDraftRoom`
+  DO (`draft-room.ts`, hibernatable WebSockets) — it holds NO state, every event is
+  just a cue to re-read D1, so the feature degrades to "press refresh". Notifiers live
+  in `draft-room-notify.ts`: `draft-room.ts` imports `cloudflare:workers`, which only
+  resolves in workerd, so nothing but `_worker.ts` may import it. Gmail is touched only
+  by `as:"gmail_draft"` (promote) or `as:"send"`.
 - **Native-HTML drafts + authorship watermark** (`backend/gmail/authored-html.ts`):
   `gmail_draft_html` ALWAYS builds an HTML body shaped like Gmail's own compose
   (`<div dir="ltr">` Arial small #222222, `<div>` paragraphs + `<div><br></div>`
@@ -151,7 +179,8 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
 - **Accounts**: consumer `@gmail.com`/`@googlemail.com` are OAuth-only (never DWD) —
   `mcp/tokenProvider.ts#isConsumerGoogleAccount`; a missing token → actionable "log in"
   error, not a confusing DWD failure.
-- **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/scheduled-sends`
+- **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/draft-studio`
+  (+ `/gws/draft-studio/[id]`, `client:only="react"` — PlateJS), `/gws/scheduled-sends`
   (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),
   `/gws/email-preview/[id]` (sandboxed iframe), `/gws/events-health` (Workspace
   Events E2E: trigger from UI or MCP `run_workspace_e2e_test` /

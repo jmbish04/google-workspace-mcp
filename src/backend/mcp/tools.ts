@@ -10,6 +10,7 @@ import {
   emailPreviews,
   emailTemplates,
   globalConfig,
+  EMAIL_DRAFT_STATUSES,
   type ScheduledEmailSpec,
 } from "@db/schemas";
 import { eq, desc, and } from "drizzle-orm";
@@ -66,6 +67,18 @@ import { listTags, createTag, applyTags, findByTags } from "@/backend/drive/tags
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { attachmentManifest } from "@/backend/gmail/attachments";
 import { extractBody, type BodyFormat } from "@/backend/gmail/body-extract";
+import {
+  addRevision as addStudioRevision,
+  createStudioDraft,
+  getStudioDraft,
+  listStudioDrafts,
+  promoteStudioDraft,
+  resolveComments as resolveStudioComments,
+  sendStudioDraft,
+  setDraftStatus as setStudioStatus,
+  updateDraftFields as updateStudioFields,
+  type DraftWithHistory,
+} from "@/backend/gmail/draft-studio";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
 import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
 import { isValidCron } from "@/backend/gmail/cron";
@@ -437,6 +450,28 @@ async function placeNewDoc(
     return { folderId: null, folderMatches: (await drive.search(q, 20)).files };
   }
   return { folderId: null, folderMatches: null };
+}
+
+/** Where the user opens a studio draft. Relative when no public base url is set. */
+function studioUrl(env: Env, draftId: string): string {
+  const base = (env as { PUBLIC_BASE_URL?: string }).PUBLIC_BASE_URL;
+  const path = `/gws/draft-studio/${draftId}`;
+  return base ? `${base}${path}` : path;
+}
+
+/** The fields every studio tool reports back, so the model can echo the link. */
+function studioSummary(env: Env, draft: DraftWithHistory) {
+  return {
+    draftId: draft.id,
+    url: studioUrl(env, draft.id),
+    status: draft.status,
+    subject: draft.subject,
+    to: draft.toAddr,
+    cc: draft.ccAddr,
+    revision: draft.currentRevision,
+    openComments: draft.comments.filter((c) => !c.resolved).length,
+    revisions: draft.revisions.map((r) => ({ n: r.n, source: r.source, note: r.note, at: r.createdAt })),
+  };
 }
 
 export const TOOLS: ToolDef[] = [
@@ -2483,6 +2518,158 @@ export const TOOLS: ToolDef[] = [
           action: "create",
           detail: { draft: true, uuid, replyTo: a.replyToMessageId },
         },
+      };
+    },
+  },
+  // ---- Draft studio (revise on the worker page, not in Gmail) -----------
+  {
+    name: "email_draft_studio_create",
+    description:
+      "Start an email in the DRAFT STUDIO — a page on this worker where the draft is revised instead of in Gmail. Use this when the email will go through several rounds (\"draft something and we'll work on it\"): each update is a numbered revision the user can read, diff against the previous one, edit in a rich-text editor, or comment on, and the page updates live while they watch. Nothing reaches Gmail until email_draft_studio_send. Prefer gmail_create_draft/gmail_draft_html instead when the email is one-and-done. Body: send `markdown` (easiest), `html` or `text` — it is rendered to the exact Gmail-native HTML that would be sent. Returns the `url` to give the user.",
+    inputSchema: z.object({
+      to: recipients.optional(),
+      subject: z.string().optional(),
+      cc: recipients.optional(),
+      bcc: recipients.optional(),
+      markdown: z.string().optional(),
+      html: z.string().optional(),
+      text: z.string().optional(),
+      replyToMessageId: z.string().optional().describe("Reply within this message's thread when sent."),
+      note: z.string().optional().describe("One line on what this first revision is."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const draft = await createStudioDraft(env, {
+        account: acct(sub, a),
+        to: addrList(a.to),
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
+        subject: a.subject,
+        markdown: a.markdown,
+        html: a.html,
+        text: a.text,
+        replyToMessageId: a.replyToMessageId,
+        note: a.note,
+        createdBySub: sub,
+      });
+      return { result: studioSummary(env, draft) };
+    },
+  },
+  {
+    name: "email_draft_studio_update",
+    description:
+      "Push a NEW REVISION of a draft-studio email, and/or change its recipients and subject. The user's open page updates live. Send the FULL new body (markdown/html/text) — revisions are whole versions, not patches, which is what makes the diff meaningful. Read the user's comments first with email_draft_studio_get and pass `resolveComments:true` once you have acted on them.",
+    inputSchema: z.object({
+      draftId: z.string(),
+      markdown: z.string().optional(),
+      html: z.string().optional(),
+      text: z.string().optional(),
+      note: z.string().optional().describe("One line on what changed in this revision."),
+      to: recipients.optional(),
+      cc: recipients.optional(),
+      bcc: recipients.optional(),
+      subject: z.string().optional(),
+      resolveComments: z.boolean().optional().describe("Mark the user's open comments handled."),
+    }),
+    async run({ env }, a) {
+      await updateStudioFields(env, a.draftId, {
+        toAddr: addrList(a.to),
+        ccAddr: addrList(a.cc),
+        bccAddr: addrList(a.bcc),
+        subject: a.subject,
+      });
+      let report;
+      if ([a.markdown, a.html, a.text].some((b) => b != null && b !== "")) {
+        const out = await addStudioRevision(
+          env,
+          a.draftId,
+          { markdown: a.markdown, html: a.html, text: a.text },
+          { source: "agent", note: a.note },
+        );
+        report = out.report;
+      }
+      if (a.resolveComments) await resolveStudioComments(env, a.draftId);
+      const draft = await getStudioDraft(env, a.draftId);
+      if (!draft) throw new Error(`Draft ${a.draftId} not found.`);
+      return { result: { ...studioSummary(env, draft), body: report } };
+    },
+  },
+  {
+    name: "email_draft_studio_get",
+    description:
+      "Read a draft-studio email: its recipients, the current body as plain text, every revision with its note, and the user's comments (a comment may quote the exact passage it is about). Call this before revising so you act on what the user actually asked for.",
+    inputSchema: z.object({
+      draftId: z.string(),
+      includeHtml: z.boolean().optional().describe("Also return the rendered HTML body (verbose)."),
+    }),
+    async run({ env }, a) {
+      const draft = await getStudioDraft(env, a.draftId);
+      if (!draft) throw new Error(`Draft ${a.draftId} not found.`);
+      return {
+        result: {
+          ...studioSummary(env, draft),
+          body: draft.current?.text ?? null,
+          ...(a.includeHtml ? { html: draft.current?.html ?? null } : {}),
+          comments: draft.comments.map((c) => ({
+            id: c.id,
+            revision: c.revision,
+            quote: c.quote,
+            comment: c.body,
+            resolved: c.resolved,
+          })),
+        },
+      };
+    },
+  },
+  {
+    name: "email_draft_studio_list",
+    description:
+      "List draft-studio emails, newest first. Default is the ones still being worked on; pass `status` to see those already in Gmail, sent or discarded.",
+    inputSchema: z.object({
+      status: z.array(z.enum(EMAIL_DRAFT_STATUSES)).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    async run({ env }, a) {
+      const drafts = await listStudioDrafts(env, { status: a.status ?? ["drafting", "in_gmail"], limit: a.limit });
+      return {
+        result: {
+          drafts: drafts.map((d) => ({
+            draftId: d.id,
+            subject: d.subject,
+            to: d.toAddr,
+            status: d.status,
+            revision: d.currentRevision,
+            updatedAt: d.updatedAt,
+            url: studioUrl(env, d.id),
+          })),
+        },
+      };
+    },
+  },
+  {
+    name: "email_draft_studio_send",
+    description:
+      "Finish a draft-studio email. `as:'send'` (default) sends the current revision immediately. `as:'gmail_draft'` instead puts it in Gmail as a real draft for a last look there. `as:'discard'` closes it unsent. Confirm with the user before sending — the studio exists so they get the final say.",
+    inputSchema: z.object({
+      draftId: z.string(),
+      as: z.enum(["send", "gmail_draft", "discard"]).optional(),
+    }),
+    async run({ env }, a) {
+      if (a.as === "discard") {
+        await setStudioStatus(env, a.draftId, "discarded");
+        return { result: { draftId: a.draftId, status: "discarded" } };
+      }
+      if (a.as === "gmail_draft") {
+        const out = await promoteStudioDraft(env, a.draftId);
+        return {
+          result: { draftId: a.draftId, status: "in_gmail", ...out },
+          asset: { assetType: "gmail", googleId: out.gmailDraftId, action: "create", detail: { draft: true, studio: a.draftId } },
+        };
+      }
+      const out = await sendStudioDraft(env, a.draftId);
+      return {
+        result: { draftId: a.draftId, status: "sent", ...out },
+        asset: { assetType: "gmail", googleId: out.messageId, action: "create", detail: { studio: a.draftId } },
       };
     },
   },

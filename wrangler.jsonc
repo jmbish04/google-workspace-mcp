@@ -55,6 +55,9 @@
       // Billing circuit breaker — single global kill-switch DO (see
       // src/backend/circuit-breaker.ts).
       { "name": "CIRCUIT_BREAKER", "class_name": "CircuitBreaker" },
+      // Live draft-studio rooms — one per studio draft, pub/sub only
+      // (src/backend/gmail/draft-room.ts).
+      { "name": "EMAIL_DRAFT_ROOM", "class_name": "EmailDraftRoom" },
     ],
   },
   "migrations": [
@@ -77,6 +80,8 @@
     },
     // v3 — billing circuit breaker DO. New tag; v1/v2 are immutable once deployed.
     { "tag": "v3", "new_sqlite_classes": ["CircuitBreaker"] },
+    // v4 — draft-studio live rooms. New tag; v1–v3 are immutable once deployed.
+    { "tag": "v4", "new_sqlite_classes": ["EmailDraftRoom"] },
   ],
   // Worker Loader — required for Agent Skills script execution (agents/skills runner)
   // and for "code mode" (src/backend/mcp/code-mode.ts) sandbox execution.
