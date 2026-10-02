@@ -9,6 +9,7 @@ import {
   scheduledEmails,
   emailPreviews,
   emailTemplates,
+  globalConfig,
   type ScheduledEmailSpec,
 } from "@db/schemas";
 import { eq, desc, and } from "drizzle-orm";
@@ -2301,7 +2302,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_draft",
     description:
-      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
+      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. EVERY draft ships as HTML shaped like Gmail's own compose (Arial small #222222, blank-line spacers between paragraphs, real bullets/numbering/links/bold) — the worker sanitizes, repairs and inlines the CSS, so send `markdown` (easiest) or `html` and do NOT hand-write inline styles. A plain `body` string is turned into the same HTML. The result carries a `body` report naming anything removed. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
     inputSchema: z.object({
       to: recipients,
       subject: z.string(),
@@ -2335,7 +2336,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_reply_draft",
     description:
-      "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review.",
+      "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review. Ships as Gmail-native HTML like the other compose tools: send `markdown` or `html`, never hand-written inline styles.",
     inputSchema: z.object({
       messageId: z.string(),
       body: z.string().optional(),
@@ -2442,7 +2443,7 @@ export const TOOLS: ToolDef[] = [
           sub,
         });
         return {
-          result: { ...d, id: d.draftId, uuid, signedBlocks: body.signedBlocks, search: `"ref:${uuid}"`, via: "appscript" },
+          result: { ...d, id: d.draftId, uuid, signedBlocks: body.signedBlocks, body: body.report, search: `"ref:${uuid}"`, via: "appscript" },
           asset: {
             assetType: "gmail",
             googleId: d.draftId,
@@ -2458,6 +2459,9 @@ export const TOOLS: ToolDef[] = [
         bcc: addrList(a.bcc),
         html: body.html,
         uuid,
+        // The watermark signs exactly these bytes — re-normalising would
+        // invalidate every signature in the message.
+        prebuilt: true,
         attachments: a.attachments,
         driveIds: a.driveIds,
         blobs: a.blobs,
@@ -2471,7 +2475,7 @@ export const TOOLS: ToolDef[] = [
         d = await gmail.createDraft(to, a.subject, body.text, opts);
       }
       return {
-        result: { ...d, uuid, signedBlocks: body.signedBlocks, search: `"ref:${uuid}"`, via: "api" },
+        result: { ...d, uuid, signedBlocks: body.signedBlocks, body: body.report, search: `"ref:${uuid}"`, via: "api" },
         asset: {
           assetType: "gmail",
           googleId: d.id,
@@ -2541,7 +2545,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_send",
     description:
-      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
+      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. EVERY message ships as HTML shaped like Gmail's own compose (Arial small #222222, blank-line spacers, real bullets/numbering/links/bold) — send `markdown` (easiest) or `html`; a plain `body` string becomes the same HTML. The worker sanitizes, repairs and inlines the CSS, sets the sender display name, and stamps one hidden reference id (ids from an earlier draft are stripped), returning a `body` report. Attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
     inputSchema: z.object({
       to: recipients,
       subject: z.string(),
@@ -2745,10 +2749,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const composed = composeBody({ text: a.body, html: a.html, markdown: a.markdown });
-      const html =
-        composed.html ??
-        `<pre style="font-family:ui-monospace,monospace;white-space:pre-wrap;">${composed.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string)}</pre>`;
+      const { html } = composeBody({ text: a.body, html: a.html, markdown: a.markdown });
       const id = crypto.randomUUID();
       const account = await accountEmailFor(env, acct(sub, a)).catch(() => undefined);
       await getDb(env)
@@ -3298,6 +3299,37 @@ export const TOOLS: ToolDef[] = [
           ok: true,
         },
       };
+    },
+  },
+  {
+    name: "set_sender_name",
+    description:
+      "Set the display name outgoing mail is sent under, so a recipient's inbox shows a name instead of a bare address. Pass `account` to set it for one Workspace account, or omit it to set the default used by every account. Stored in global_config as `email_sender_name`; it OVERRIDES Gmail's own send-as display name, which the worker otherwise reads automatically. Pass `name: \"\"` to clear the override and go back to Gmail's.",
+    inputSchema: z.object({
+      name: z.string().describe('Display name, e.g. "Justin Bishop". Empty string clears the override.'),
+      account: z.string().email().optional().describe("Account email this name applies to. Omit for the default."),
+    }),
+    async run({ env }, a) {
+      const db = getDb(env);
+      const current = ((
+        await db.select().from(globalConfig).where(eq(globalConfig.key, "email_sender_name")).limit(1)
+      )[0]?.value ?? {}) as string | { default?: string; byAccount?: Record<string, string> };
+      const value: { default?: string; byAccount: Record<string, string> } =
+        typeof current === "string" ? { default: current, byAccount: {} } : { ...current, byAccount: { ...current.byAccount } };
+      const name = a.name.trim();
+      if (a.account) {
+        const key = a.account.toLowerCase();
+        if (name) value.byAccount[key] = name;
+        else delete value.byAccount[key];
+      } else if (name) value.default = name;
+      else delete value.default;
+      await db
+        .insert(globalConfig)
+        .values({ key: "email_sender_name", value, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: globalConfig.key, set: { value, updatedAt: new Date() } });
+      // The resolver caches per isolate for 10 minutes; say so rather than
+      // letting the caller think the change did not take.
+      return { result: { ok: true, senderName: value, appliesWithin: "10 minutes (resolver cache)" } };
     },
   },
   {
