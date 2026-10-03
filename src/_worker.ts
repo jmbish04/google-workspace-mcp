@@ -331,6 +331,7 @@ export function createExports() {
     CalendarAgent,
     GsuiteService,
     CircuitBreaker,
+    EmailDraftRoom,
   };
 }
 
