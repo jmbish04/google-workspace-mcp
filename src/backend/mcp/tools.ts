@@ -3514,9 +3514,9 @@ export const TOOLS: ToolDef[] = [
         .insert(globalConfig)
         .values({ key: "email_sender_name", value, updatedAt: new Date() })
         .onConflictDoUpdate({ target: globalConfig.key, set: { value, updatedAt: new Date() } });
-      // The resolver caches per isolate for 10 minutes; say so rather than
-      // letting the caller think the change did not take.
-      return { result: { ok: true, senderName: value, appliesWithin: "10 minutes (resolver cache)" } };
+      // Read fresh on every send, so this is live immediately. Saying so
+      // matters: the first version cached it and looked broken for 10 minutes.
+      return { result: { ok: true, senderName: value, appliesTo: "the next message sent" } };
     },
   },
   {

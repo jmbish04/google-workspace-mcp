@@ -65,6 +65,29 @@ describe("GmailService", () => {
     expect(mime).toContain('<div dir="ltr"');
   });
 
+  it("applies a changed sender name to the very next message", async () => {
+    // Measured in production 2026-10-03: the first version cached the whole
+    // resolved From header for 10 minutes, so set_sender_name reported success
+    // and outgoing mail kept the old bare address — and the cache being
+    // per-isolate meant the write could not invalidate it. The override must
+    // therefore be read fresh on every send.
+    const names: (string | undefined)[] = ["Old Name", "New Name"];
+    const svc = new GmailService({} as any, "rename-live");
+    // Stand in for the global_config read the resolver does.
+    (svc as any).configuredSenderName = async () => names.shift();
+
+    const spy = vi.spyOn(globalThis, "fetch");
+    mockIdentity(spy, () => new Response(JSON.stringify({ id: "draft1" }), { status: 200 }));
+
+    await svc.createDraft("a@b.com", "One", "Body");
+    expect(decodeMime(postedTo(spy, "/drafts").body.message.raw)).toContain('From: "Old Name" <me@self.com>');
+
+    spy.mockClear();
+    mockIdentity(spy, () => new Response(JSON.stringify({ id: "draft2" }), { status: 200 }));
+    await svc.createDraft("a@b.com", "Two", "Body");
+    expect(decodeMime(postedTo(spy, "/drafts").body.message.raw)).toContain('From: "New Name" <me@self.com>');
+  });
+
   it("createDraft posts message.raw to drafts", async () => {
     const spy = vi.spyOn(globalThis, "fetch");
     mockIdentity(spy, () => new Response(JSON.stringify({ id: "draft1" }), { status: 200 }));

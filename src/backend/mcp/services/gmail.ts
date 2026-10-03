@@ -71,8 +71,19 @@ function extractEmails(headerValue: string | undefined): string[] {
  */
 const SENDER_NAME_CONFIG = "email_sender_name";
 
-/** Resolved `From` headers, cached per account for the isolate's lifetime. */
-const senderHeaderCache = new Map<string, { header: string; at: number }>();
+/**
+ * Cache for the Gmail send-as lookup ONLY — a Google API round trip that
+ * changes about never.
+ *
+ * The `email_sender_name` override is deliberately NOT cached. Measured in
+ * production 2026-10-03: with the whole resolved header cached for 10 minutes,
+ * `set_sender_name` wrote the config, reported success, and outgoing mail kept
+ * the old bare address — and because the cache is per-isolate there was no way
+ * to invalidate it from the request that did the write. A config knob you
+ * cannot observe working is worse than no knob. One D1 row read per outgoing
+ * email is not a cost worth that confusion (D1 billing is storage, not reads).
+ */
+const sendAsNameCache = new Map<string, { name?: string; at: number }>();
 const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
 
 export class GmailService {
@@ -105,10 +116,6 @@ export class GmailService {
    * path costs no extra Google calls.
    */
   async fromHeader(preferredEmail?: string): Promise<string | undefined> {
-    const cacheKey = `${this.sub}|${preferredEmail?.toLowerCase() ?? ""}`;
-    const hit = senderHeaderCache.get(cacheKey);
-    if (hit && Date.now() - hit.at < SENDER_NAME_TTL_MS) return hit.header;
-
     let email = preferredEmail;
     if (!email) {
       email = await this.getProfile()
@@ -117,27 +124,36 @@ export class GmailService {
     }
     if (!email) return preferredEmail;
 
+    // Read fresh every time: this is the knob a human just turned, and it has
+    // to take effect on the next message, not within ten minutes.
     let name = await this.configuredSenderName(email);
-    if (!name) {
-      try {
-        const out = await googleJson<{
-          sendAs?: { sendAsEmail: string; displayName?: string; isDefault?: boolean; isPrimary?: boolean }[];
-        }>(this.env, this.sub, `${BASE}/settings/sendAs`);
-        const list = out.sendAs ?? [];
-        const match =
-          list.find((x) => x.sendAsEmail?.toLowerCase() === email!.toLowerCase()) ??
-          list.find((x) => x.isDefault) ??
-          list.find((x) => x.isPrimary);
-        name = match?.displayName?.trim() || undefined;
-      } catch {
-        // settings.sendAs needs a Gmail scope the grant may not carry; the
-        // `set_sender_name` config override is the supported way to set it then.
-        name = undefined;
-      }
+    if (!name) name = await this.sendAsDisplayName(email);
+    return formatAddress(email, name);
+  }
+
+  /** Gmail's own send-as display name, cached — best-effort, never fatal. */
+  private async sendAsDisplayName(email: string): Promise<string | undefined> {
+    const key = `${this.sub}|${email.toLowerCase()}`;
+    const hit = sendAsNameCache.get(key);
+    if (hit && Date.now() - hit.at < SENDER_NAME_TTL_MS) return hit.name;
+    let name: string | undefined;
+    try {
+      const out = await googleJson<{
+        sendAs?: { sendAsEmail: string; displayName?: string; isDefault?: boolean; isPrimary?: boolean }[];
+      }>(this.env, this.sub, `${BASE}/settings/sendAs`);
+      const list = out.sendAs ?? [];
+      const match =
+        list.find((x) => x.sendAsEmail?.toLowerCase() === email.toLowerCase()) ??
+        list.find((x) => x.isDefault) ??
+        list.find((x) => x.isPrimary);
+      name = match?.displayName?.trim() || undefined;
+    } catch {
+      // settings.sendAs may not be in the grant's scopes; the config override
+      // above is the supported way to set the name then.
+      name = undefined;
     }
-    const header = formatAddress(email, name);
-    senderHeaderCache.set(cacheKey, { header, at: Date.now() });
-    return header;
+    sendAsNameCache.set(key, { name, at: Date.now() });
+    return name;
   }
 
   async listMessages(query?: string, maxResults = 20): Promise<{ messages: { id: string; threadId: string }[] }> {
