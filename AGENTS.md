@@ -31,6 +31,7 @@ This repository relies heavily on AI agents for rapid prototyping and feature ge
 10. **Frontend Errors:** Never use Chrome/browser alerts. Route every frontend error through the centralized frontend error handling utility and keep the copy-to-clipboard success/error feedback within shadcn components.
 11. **Dependency Hygiene:** Follow `.agent/rules/dependency-maintenance.md` whenever dependencies, Wrangler, or generated Cloudflare types may be stale.
 12. **Architecture Rules:** Follow `.agent/rules/architecture.md` and `.agent/rules/frontend-error-handling.md` for auth, modularization, and frontend error UX conventions.
+12b. **Outgoing email:** Follow `.agent/rules/gmail-html-standard.md` for ANY change to how an email body is built. Never hand-write inline CSS in a tool call — send `markdown` or semantic `html` and let `compose.ts` apply the standard.
 13. **CI Ownership:** If GitHub Actions or Cloudflare PR deployment checks fail because of frozen lockfiles, outdated dependencies, or stale Wrangler types, fix them in the same turn by refreshing pnpm dependencies and re-running validation before handing work back.
 14. **Import Path Aliases:** ALWAYS use tsconfig path aliases (`@/backend/*`, `@/backend/db/*`, `@/backend/ai/*`, etc.) for all backend imports. Never use relative imports (`../../foo`). Run `node scripts/migrate-imports.mjs` to convert existing relative imports. See `.agent/rules/import-paths.md` for details.
 15. **Comprehensive Documentation:** Every backend TypeScript file must have a file-level JSDoc comment explaining its purpose, key features, and usage. Every exported function/class must have JSDoc with `@param`, `@returns`, `@throws`, and `@example` tags where applicable. See `.agent/rules/docstrings.md` for standards.
@@ -89,16 +90,55 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   (values.update; `valueInputOption` defaults to USER_ENTERED, pass RAW for text from an
   untrusted or third-party source so `=IMPORTXML(...)` is stored, not executed).
   The Preserve/Redesign/Clarify editing policy lives in `mcp/code-mode.ts#apiGuide`.
-- **Gmail compose** (`backend/gmail/`): `gmail_send`/`gmail_create_draft`/
-  `gmail_create_reply_draft` accept `html`/`markdown` (sanitized + `juice`-inlined for
-  Gmail — `compose.ts`) and a unified `attachments[]` (`{driveFileId}` | `{blob,filename,
-  mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`): cumulative encoded
-  25 MiB budget, per-item Drive-link overflow (anyone-with-link) + per-attachment report.
+- **Gmail compose — HTML is the standard** (`backend/gmail/compose.ts`): EVERY outgoing
+  body goes through `composeBody`, which ALWAYS produces an HTML part following the
+  **Gmail HTML standard** recorded in the colby-maestro plan *"Gmail HTML standard +
+  draft studio"* (`fc8124b830f8`) — that plan is the authority, this is the summary:
+  Arial/Helvetica **14px/1.5 #222222**; paragraphs are **`<p>` with `margin:0 0 16px 0`**
+  (never an empty paragraph or stacked `<br>` — faked spacing collapses differently in
+  every client, and the blank spacer divs in a body copied out of Gmail are DROPPED);
+  links `#1155cc` underlined; `<ul>/<ol>` `padding-left:24px` with `<li>`
+  `margin-bottom:6px`; `<blockquote>` 2px `#dadce0` left rule; class hooks
+  `.highlight-red` (`#c5221f`/600) and `.signature`; container
+  `max-width:650px;width:100%;text-align:left;background-color:transparent` — explicitly
+  NOT a centered boxed card on a grey field. Every style is INLINE via `juice`: Gmail
+  does support `<style>` with class/element/ID selectors and media queries
+  (developers.google.com/workspace/gmail/design/css), but a `<style>` block does not
+  survive quoting, so only media queries are left in one. A plain `body` string is
+  escaped into the same paragraphs — there is no text-only send path any more, and the
+  text/plain alternative keeps the blank line between paragraphs. It also (a) sanitizes
+  (`<script>`/`<iframe>`/`<form>`/`<svg>`/on*/`javascript:`), (b) STRIPS the hidden
+  `ref:<uuid>` markers and authorship watermarks belonging to OTHER messages, so an
+  agent revising a previous draft no longer stacks up a second and third reference
+  id, (c) stamps exactly one `ref:<uuid>` (`data-plaintext="omit"`, so it stays out
+  of text/plain), (d) refuses a body that sanitizes to nothing (`GmailBodyError`),
+  and (e) returns a `report` of everything removed, surfaced as `body` on the tool
+  result. Never hand-write inline CSS in a tool call — send `markdown` or `html`.
+  `prebuilt: true` ships pre-signed bytes (gmail_draft_html) unchanged.
+  **Sender name**: `From` is `"Justin Bishop" <…>` on sends AND drafts, resolved from
+  `global_config.email_sender_name` (set via the `set_sender_name` tool), else Gmail's
+  own send-as `displayName`, cached 10 min per account; `mime.ts#formatAddress`.
+  Attachments unchanged: unified `attachments[]` (`{driveFileId}` | `{blob,filename,
+  mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`), cumulative
+  encoded 25 MiB budget, per-item Drive-link overflow + per-attachment report.
   MIME in `mime.ts`; orchestration in `build-outgoing.ts`.
+- **Draft studio** (`backend/gmail/draft-studio.ts`, tables `email_drafts` /
+  `email_draft_revisions` / `email_draft_comments`, page `/gws/draft-studio`): an email
+  revised on the worker instead of in Gmail, for when it will take several rounds.
+  MCP `email_draft_studio_create|update|get|list|send`; each update is an append-only
+  numbered revision, so the page can diff any two (`shared/text-diff.ts`). The human
+  edits in PlateJS (`shared/plate-html.ts` converts Plate↔HTML isomorphically — Plate's
+  own serializers need a DOM and emit editor classNames) or highlights a passage and
+  leaves a comment the agent reads back. Live updates come from the `EmailDraftRoom`
+  DO (`draft-room.ts`, hibernatable WebSockets) — it holds NO state, every event is
+  just a cue to re-read D1, so the feature degrades to "press refresh". Notifiers live
+  in `draft-room-notify.ts`: `draft-room.ts` imports `cloudflare:workers`, which only
+  resolves in workerd, so nothing but `_worker.ts` may import it. Gmail is touched only
+  by `as:"gmail_draft"` (promote) or `as:"send"`.
 - **Native-HTML drafts + authorship watermark** (`backend/gmail/authored-html.ts`):
   `gmail_draft_html` ALWAYS builds an HTML body shaped like Gmail's own compose
-  (`<div dir="ltr">` Arial small #222222, `<div>` paragraphs + `<div><br></div>`
-  spacers, never `<p>`), keeps the hidden white `ref:<uuid>`, and appends a hidden
+  (the house standard above — `<p>` paragraphs, 650px container), keeps the hidden
+  white `ref:<uuid>`, and appends a hidden
   `[authored v1 <uuid> <n> <mac12>]` tag to every paragraph/list item (HMAC over
   normalised text + link hrefs). `gmail_verify_authorship` classifies blocks in a
   thread as verified / altered / missing / unmarked (untagged text inside the
@@ -151,7 +191,8 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
 - **Accounts**: consumer `@gmail.com`/`@googlemail.com` are OAuth-only (never DWD) —
   `mcp/tokenProvider.ts#isConsumerGoogleAccount`; a missing token → actionable "log in"
   error, not a confusing DWD failure.
-- **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/scheduled-sends`
+- **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/draft-studio`
+  (+ `/gws/draft-studio/[id]`, `client:only="react"` — PlateJS), `/gws/scheduled-sends`
   (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),
   `/gws/email-preview/[id]` (sandboxed iframe), `/gws/events-health` (Workspace
   Events E2E: trigger from UI or MCP `run_workspace_e2e_test` /

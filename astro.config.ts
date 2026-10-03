@@ -64,6 +64,8 @@ export default defineConfig({
         "GsuiteService",
         // Billing circuit breaker DO (see src/backend/circuit-breaker.ts).
         "CircuitBreaker",
+        // Draft-studio live rooms (see src/backend/gmail/draft-room.ts).
+        "EmailDraftRoom",
       ],
     },
   }),

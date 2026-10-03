@@ -49,6 +49,7 @@ export * from "./schemas/sheet-export-jobs";
 export * from "./schemas/doc-export-jobs";
 export * from "./schemas/scheduled-sends";
 export * from "./schemas/scheduled-emails";
+export * from "./schemas/email-drafts";
 export * from "./schemas/email-previews";
 export * from "./schemas/email-templates";
 export * from "./schemas/pdf-templates";

@@ -12,6 +12,7 @@
 import { and, desc, eq, gte, like, lte } from "drizzle-orm";
 
 import { getDb } from "@/db";
+import { refMarkerHtml } from "@/backend/gmail/compose";
 import { emailRecords, type EmailRecordRow } from "@db/schemas";
 
 /** A fresh tracking id. */
@@ -19,32 +20,13 @@ export function newEmailUuid(): string {
   return crypto.randomUUID();
 }
 
-/** Hidden (white, collapsed) HTML carrying the tracking id — invisible in clients. */
-export function hiddenUuidHtml(uuid: string): string {
-  return `<div style="color:#ffffff;font-size:1px;line-height:1px;max-height:0;overflow:hidden;mso-hide:all">ref:${uuid}</div>`;
-}
-
-export interface BodyInputs {
-  text?: string;
-  html?: string;
-  markdown?: string;
-}
-
 /**
- * Append the hidden tracking marker to whichever body form the caller supplied.
- * HTML/markdown get the invisible white div; a text-only body gets a discreet
- * trailing `ref:` line (plain text can't truly hide, but keeps recall working).
+ * Hidden (white, collapsed) HTML carrying the tracking id — invisible in
+ * clients and omitted from the text/plain alternative. Re-exported from
+ * `compose.ts`, which owns the marker's shape and recognises it when stripping
+ * ids carried over from an earlier draft.
  */
-export function embedUuid(body: BodyInputs, uuid: string): BodyInputs {
-  const out: BodyInputs = { ...body };
-  // Already stamped (body built with this id upstream) → don't add a second ref.
-  if ([out.markdown, out.html, out.text].some((b) => b?.includes(`ref:${uuid}`))) return out;
-  const marker = hiddenUuidHtml(uuid);
-  if (out.markdown != null && out.markdown !== "") out.markdown = `${out.markdown}\n\n${marker}`;
-  else if (out.html != null && out.html !== "") out.html = `${out.html}\n${marker}`;
-  else out.text = `${out.text ?? ""}\n\nref:${uuid}`;
-  return out;
-}
+export const hiddenUuidHtml = refMarkerHtml;
 
 export interface EmailRecordInput {
   uuid: string;

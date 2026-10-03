@@ -1,6 +1,12 @@
+import { eq } from "drizzle-orm";
+
 import { googleJson } from "../googleClient";
+import { getDb } from "@/db";
+import { globalConfig } from "@db/schemas";
 import { buildOutgoingRaw } from "@/backend/gmail/build-outgoing";
-import { newEmailUuid, embedUuid, recordEmail } from "@/backend/gmail/tracking";
+import { formatAddress } from "@/backend/gmail/mime";
+import { newEmailUuid, recordEmail } from "@/backend/gmail/tracking";
+import type { ComposeReport } from "@/backend/gmail/compose";
 import type { BlobInput, AttachmentSpec, AttachmentReportItem } from "@/backend/gmail/outgoing-attachments";
 
 export type GmailMessage = { id: string; snippet: string; payload?: unknown };
@@ -27,6 +33,12 @@ export interface RichContent {
   driveIds?: string[];
   /** Legacy: inline base64 blobs to attach (auto-fallback to shared links over the size cap). */
   blobs?: BlobInput[];
+  /**
+   * The `html` was already normalised and stamped upstream (e.g. by
+   * `buildAuthoredBody`). Ship it byte-identical instead of re-normalising —
+   * the authorship watermark signs exactly these bytes.
+   */
+  prebuilt?: boolean;
 }
 
 /** Pass the caller's attachment inputs through to the MIME builder. */
@@ -51,8 +63,82 @@ function extractEmails(headerValue: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/**
+ * `global_config` key holding the sender display name. Either a plain string,
+ * or `{ default?: string, byAccount?: { "<email>": "<name>" } }`. It is the
+ * override: when set it wins over whatever Gmail's send-as settings say, which
+ * is what makes the name fixable without touching Google.
+ */
+const SENDER_NAME_CONFIG = "email_sender_name";
+
+/** Resolved `From` headers, cached per account for the isolate's lifetime. */
+const senderHeaderCache = new Map<string, { header: string; at: number }>();
+const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
+
 export class GmailService {
   constructor(private env: Env, private sub: string) {}
+
+  /** The configured override for this account, if any. */
+  private async configuredSenderName(email: string): Promise<string | undefined> {
+    try {
+      const row = (
+        await getDb(this.env).select().from(globalConfig).where(eq(globalConfig.key, SENDER_NAME_CONFIG)).limit(1)
+      )[0]?.value as string | { default?: string; byAccount?: Record<string, string> } | undefined;
+      if (!row) return undefined;
+      if (typeof row === "string") return row || undefined;
+      return row.byAccount?.[email.toLowerCase()] ?? row.default ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The `From` header to send as: `"Justin Bishop" <justin@example.com>`.
+   *
+   * Without a display name the recipient's inbox shows a bare address, so this
+   * is resolved on EVERY send and draft. Order: the `email_sender_name` config
+   * override, then Gmail's own send-as `displayName` (the same name the Gmail
+   * UI would put on the message). Best-effort — any lookup failure falls back
+   * to the bare address and never blocks the send.
+   *
+   * The whole header is cached per (account, requested address) so the common
+   * path costs no extra Google calls.
+   */
+  async fromHeader(preferredEmail?: string): Promise<string | undefined> {
+    const cacheKey = `${this.sub}|${preferredEmail?.toLowerCase() ?? ""}`;
+    const hit = senderHeaderCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < SENDER_NAME_TTL_MS) return hit.header;
+
+    let email = preferredEmail;
+    if (!email) {
+      email = await this.getProfile()
+        .then((p) => p.emailAddress)
+        .catch(() => undefined);
+    }
+    if (!email) return preferredEmail;
+
+    let name = await this.configuredSenderName(email);
+    if (!name) {
+      try {
+        const out = await googleJson<{
+          sendAs?: { sendAsEmail: string; displayName?: string; isDefault?: boolean; isPrimary?: boolean }[];
+        }>(this.env, this.sub, `${BASE}/settings/sendAs`);
+        const list = out.sendAs ?? [];
+        const match =
+          list.find((x) => x.sendAsEmail?.toLowerCase() === email!.toLowerCase()) ??
+          list.find((x) => x.isDefault) ??
+          list.find((x) => x.isPrimary);
+        name = match?.displayName?.trim() || undefined;
+      } catch {
+        // settings.sendAs needs a Gmail scope the grant may not carry; the
+        // `set_sender_name` config override is the supported way to set it then.
+        name = undefined;
+      }
+    }
+    const header = formatAddress(email, name);
+    senderHeaderCache.set(cacheKey, { header, at: Date.now() });
+    return header;
+  }
 
   async listMessages(query?: string, maxResults = 20): Promise<{ messages: { id: string; threadId: string }[] }> {
     const params = new URLSearchParams({ maxResults: String(maxResults) });
@@ -109,7 +195,7 @@ export class GmailService {
     subject: string,
     body: string,
     opts?: { from?: string; replyToMessageId?: string; threadId?: string } & RichContent,
-  ): Promise<{ id: string; threadId?: string; attachments: AttachmentReportItem[] }> {
+  ): Promise<{ id: string; threadId?: string; uuid: string; attachments: AttachmentReportItem[]; body: ComposeReport }> {
     let threadId = opts?.threadId;
     let finalSubject = subject;
     let inReplyTo: string | undefined;
@@ -130,18 +216,19 @@ export class GmailService {
     }
 
     const uuid = opts?.uuid ?? newEmailUuid();
-    const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
-    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
-      from: opts?.from,
+      from: await this.fromHeader(opts?.from),
       cc: opts?.cc,
       bcc: opts?.bcc,
       subject: finalSubject,
       inReplyTo,
       references,
-      text: b.text ?? "",
-      html: b.html,
-      markdown: b.markdown,
+      text: body,
+      html: opts?.html,
+      markdown: opts?.markdown,
+      uuid,
+      prebuilt: opts?.prebuilt,
       ...attachmentOpts(opts),
     });
 
@@ -155,7 +242,7 @@ export class GmailService {
       uuid, account: this.sub, action: "send", subject: finalSubject, to, cc: opts?.cc, bcc: opts?.bcc,
       body: opts?.markdown ?? opts?.html ?? body, threadId: sent.threadId ?? threadId, messageId: sent.id, sub: this.sub,
     });
-    return { ...sent, attachments: attachmentReport };
+    return { ...sent, uuid, attachments: attachmentReport, body: bodyReport };
   }
 
   async createDraft(
@@ -163,17 +250,19 @@ export class GmailService {
     subject: string,
     body: string,
     opts?: RichContent,
-  ): Promise<{ id: string; message?: { id: string }; attachments: AttachmentReportItem[] }> {
+  ): Promise<{ id: string; message?: { id: string }; uuid: string; attachments: AttachmentReportItem[]; body: ComposeReport }> {
     const uuid = opts?.uuid ?? newEmailUuid();
-    const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
-    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
       to,
+      from: await this.fromHeader(),
       cc: opts?.cc,
       bcc: opts?.bcc,
       subject,
-      text: b.text ?? "",
-      html: b.html,
-      markdown: b.markdown,
+      text: body,
+      html: opts?.html,
+      markdown: opts?.markdown,
+      uuid,
+      prebuilt: opts?.prebuilt,
       ...attachmentOpts(opts),
     });
     const draft = await googleJson<{ id: string; message?: { id: string } }>(this.env, this.sub, `${BASE}/drafts`, {
@@ -184,7 +273,7 @@ export class GmailService {
       uuid, account: this.sub, action: "draft", subject, to, cc: opts?.cc, bcc: opts?.bcc,
       body: opts?.markdown ?? opts?.html ?? body, messageId: draft.id, sub: this.sub,
     });
-    return { ...draft, attachments: attachmentReport };
+    return { ...draft, uuid, attachments: attachmentReport, body: bodyReport };
   }
 
   /** Send an existing draft by id (used by the scheduled-send sweep). */
@@ -220,7 +309,7 @@ export class GmailService {
     messageId: string,
     body: string,
     opts?: { to?: string[]; replyAll?: boolean } & RichContent,
-  ): Promise<{ id: string; message?: { id: string; threadId?: string }; attachments: AttachmentReportItem[] }> {
+  ): Promise<{ id: string; message?: { id: string; threadId?: string }; uuid: string; attachments: AttachmentReportItem[]; body: ComposeReport }> {
     const [{ headers, threadId }, profile] = await Promise.all([this.getMessageHeaders(messageId), this.getProfile()]);
     const self = profile.emailAddress.toLowerCase();
 
@@ -246,17 +335,19 @@ export class GmailService {
     const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
 
     const uuid = opts?.uuid ?? newEmailUuid();
-    const b = embedUuid({ text: body, html: opts?.html, markdown: opts?.markdown }, uuid);
-    const { raw, attachmentReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
       to: recipients.join(", "),
+      from: await this.fromHeader(profile.emailAddress),
       cc: opts?.cc,
       bcc: opts?.bcc,
       subject,
       inReplyTo: messageIdHeader || undefined,
       references: references || undefined,
-      text: b.text ?? "",
-      html: b.html,
-      markdown: b.markdown,
+      text: body,
+      html: opts?.html,
+      markdown: opts?.markdown,
+      uuid,
+      prebuilt: opts?.prebuilt,
       ...attachmentOpts(opts),
     });
 
@@ -268,7 +359,7 @@ export class GmailService {
       uuid, account: this.sub, action: "reply_draft", subject, to: recipients.join(", "), cc: opts?.cc, bcc: opts?.bcc,
       body: opts?.markdown ?? opts?.html ?? body, threadId, messageId: draft.id, sub: this.sub,
     });
-    return { ...draft, attachments: attachmentReport };
+    return { ...draft, uuid, attachments: attachmentReport, body: bodyReport };
   }
 
   async listLabels(): Promise<{ labels: unknown[] }> {

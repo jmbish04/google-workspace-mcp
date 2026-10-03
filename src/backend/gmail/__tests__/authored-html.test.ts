@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 
-import { buildAuthoredBody, verifyAuthoredHtml, GMAIL_NATIVE_STYLE } from "../authored-html";
+import { buildAuthoredBody, verifyAuthoredHtml, GMAIL_BODY_STYLE } from "../authored-html";
 import { composeBody } from "../compose";
-import { embedUuid } from "../tracking";
 
 const KEY = "a".repeat(64);
 const OTHER_KEY = "b".repeat(64);
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
+const OTHER_UUID = "99999999-e89b-42d3-a456-426614174000";
 const AUTHOR = "justin@126colby.com";
 
 async function build(input: { html?: string; markdown?: string; text?: string }) {
@@ -23,20 +23,21 @@ function gmailQuote(originalHtml: string, replyAbove = "<div>Sounds good.</div>"
 }
 
 describe("buildAuthoredBody — native Gmail shape", () => {
-  it("wraps in Gmail's compose style and uses div + <div><br></div> paragraphs, never <p>", async () => {
+  it("uses the house container and <p> paragraphs, with marks and links intact", async () => {
     const { html } = await build({ markdown: "First para with **bold** and [a link](https://example.com).\n\nSecond para." });
-    expect(html.startsWith(`<div dir="ltr" style="${GMAIL_NATIVE_STYLE}">`)).toBe(true);
-    expect(html).not.toMatch(/<p[\s>]/);
-    expect(html).toContain("<div><br></div>");
+    expect(html.startsWith(`<div dir="ltr" style="${GMAIL_BODY_STYLE}">`)).toBe(true);
+    expect(html.match(/<p[^>]*>/g)).toHaveLength(2);
     expect(html).toMatch(/<strong[^>]*>bold<\/strong>/);
     expect(html).toMatch(/<a href="https:\/\/example.com"[^>]*>a link<\/a>/);
   });
 
-  it("keeps the searchable ref:<uuid> hidden in white, and in the text part", async () => {
+  it("keeps the searchable ref:<uuid> hidden in white, and out of the text part", async () => {
     const { html, text } = await build({ text: "Hello" });
     expect(html).toContain(`ref:${UUID}`);
     expect(html).toMatch(/color:#ffffff[^"]*"[^>]*>ref:/);
-    expect(text).toContain(`ref:${UUID}`);
+    // Hidden in HTML must mean hidden everywhere: a plain-text client would
+    // otherwise show the bare machine id at the bottom of the mail.
+    expect(text).not.toContain("ref:");
   });
 
   it("text part is clean: no tags, no legend, no markdown, no entities", async () => {
@@ -50,10 +51,10 @@ describe("buildAuthoredBody — native Gmail shape", () => {
 
   it("the draft pipeline's own text/plain part (derived from html) leaks no tags or legend", async () => {
     const { html } = await build({ markdown: "Hello **there**.\n\n- one" });
-    const { text } = composeBody({ html });
+    const { text } = composeBody({ html }, { uuid: UUID, prebuilt: true });
     expect(text).not.toMatch(/authored v1|Authorship watermark/);
     expect(text).toContain("Hello there.");
-    expect(text).toContain(`ref:${UUID}`);
+    expect(text).not.toContain("ref:");
   });
 
   it("escapes plain text input instead of rendering it as HTML", async () => {
@@ -61,15 +62,36 @@ describe("buildAuthoredBody — native Gmail shape", () => {
     expect(html).toContain("a &lt;b&gt;not bold&lt;/b&gt;<br>line two");
   });
 
+  it("signs <p> paragraphs — the block the house format actually emits", async () => {
+    // SIGNABLE missing "p" would silently sign nothing and the watermark would
+    // be decorative.
+    const r = await build({ markdown: "One.\n\nTwo." });
+    expect(r.signedBlocks).toBe(2);
+    expect((await verifyAuthoredHtml(r.html, KEY)).signed).toHaveLength(2);
+  });
+
   it("signs each paragraph and each list item", async () => {
     const r = await build({ markdown: "Intro.\n\n- one\n- two\n\nOutro." });
     expect(r.signedBlocks).toBe(4);
   });
 
-  it("does not get a second ref when passed through the existing draft pipeline", async () => {
-    const { html } = await build({ text: "Hello" });
-    const stamped = embedUuid({ html }, UUID);
-    expect(stamped.html!.split(`ref:${UUID}`).length - 1).toBe(1);
+  it("drops reference ids and watermarks carried over from an earlier draft", async () => {
+    // The real failure: an agent asked to "revise that draft" feeds the previous
+    // body back in, and every revision adds another reference id.
+    const first = await build({ text: "Version one." });
+    const second = await buildAuthoredBody({
+      html: first.html,
+      uuid: OTHER_UUID,
+      author: AUTHOR,
+      keyHex: KEY,
+    });
+    expect(second.html.split("ref:").length - 1).toBe(1);
+    expect(second.html).toContain(`ref:${OTHER_UUID}`);
+    expect(second.html).not.toContain(UUID);
+    expect(second.report.removedRefs).toEqual([UUID]);
+    // Only the new signature survives, so verification cannot cite a stale one.
+    const r = await verifyAuthoredHtml(second.html, KEY);
+    expect(r.signed.every((b) => b.uuid === OTHER_UUID && b.verdict === "verified")).toBe(true);
   });
 });
 
@@ -84,7 +106,7 @@ describe("verifyAuthoredHtml", () => {
 
   it("still verifies after the Worker's draft pipeline (sanitize + juice) re-serialises it", async () => {
     const { html } = await build({ markdown: "It's Tom & Jerry's \"deal\".\n\n- a\n- b" });
-    const shipped = composeBody({ html }).html!;
+    const shipped = composeBody({ html }, { uuid: UUID, prebuilt: true }).html;
     const r = await verifyAuthoredHtml(shipped, KEY);
     expect(r.signed.length).toBe(3);
     expect(r.signed.every((b) => b.verdict === "verified")).toBe(true);
@@ -93,7 +115,7 @@ describe("verifyAuthoredHtml", () => {
   it("flags text a counterparty typed INLINE inside the quoted original", async () => {
     const { html } = await build({ markdown: "Please confirm the $4,000 price.\n\nWork starts Monday." });
     // Counterparty clicks into the quote and types between Justin's paragraphs.
-    const tampered = html.replace("<div><br></div>", "<div><br></div><div>&gt;&gt; We never agreed to that price.</div>");
+    const tampered = html.replace(/(<\/p>)(<p)/, "$1<div>&gt;&gt; We never agreed to that price.</div>$2");
     const r = await verifyAuthoredHtml(gmailQuote(tampered), KEY);
     expect(r.signed.every((b) => b.verdict === "verified")).toBe(true);
     expect(r.unmarked).toEqual([">> We never agreed to that price."]);
@@ -120,7 +142,7 @@ describe("verifyAuthoredHtml", () => {
 
   it("detects a signed paragraph deleted from the quote", async () => {
     const { html } = await build({ text: "One.\n\nTwo.\n\nThree." });
-    const root = html.replace(/<div>Two\.<span[^>]*>[^<]*<\/span><\/div>/, "");
+    const root = html.replace(/<p[^>]*>Two\.<span[^>]*>[^<]*<\/span><\/p>/, "");
     const r = await verifyAuthoredHtml(root, KEY);
     expect(r.missing).toEqual([{ uuid: UUID, index: 1 }]);
   });

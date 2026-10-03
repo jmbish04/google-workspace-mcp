@@ -63,6 +63,7 @@ import {
 } from "./backend/ai/agents";
 import { GsuiteService } from "./backend/rpc";
 import { CircuitBreaker, getBreaker, type CircuitKind } from "./backend/circuit-breaker";
+import { EmailDraftRoom } from "./backend/gmail/draft-room";
 
 // Re-export Durable Object agent classes + the RPC entrypoint so the Astro
 // Cloudflare adapter (and wrangler's `durable_objects`/service bindings) can
@@ -79,6 +80,7 @@ export {
   CalendarAgent,
   GsuiteService,
   CircuitBreaker,
+  EmailDraftRoom,
 };
 
 // ---------------------------------------------------------------------------

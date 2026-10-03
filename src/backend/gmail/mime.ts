@@ -28,6 +28,20 @@ function encodeHeaderValue(value: string): string {
   return `=?UTF-8?B?${bytesToBase64(new TextEncoder().encode(value))}?=`;
 }
 
+/**
+ * Build a `From`/`To` header value with a display name:
+ * `"Justin Bishop" <justin@example.com>`. Gmail shows the display name in the
+ * recipient's inbox list; without it the recipient sees only a bare address.
+ * A non-ASCII name is RFC2047-encoded (encoded-words are never quoted).
+ */
+export function formatAddress(email: string, displayName?: string): string {
+  const name = displayName?.trim();
+  if (!name) return email;
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7F]*$/.test(name)) return `"${name.replace(/["\\]/g, "")}" <${email}>`;
+  return `${encodeHeaderValue(name)} <${email}>`;
+}
+
 /** Wrap base64 into 76-char lines per MIME. */
 function wrap76(b64: string): string {
   return b64.replace(/.{1,76}/g, "$&\r\n").trimEnd();

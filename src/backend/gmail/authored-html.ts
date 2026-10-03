@@ -3,13 +3,12 @@
  * @description Build a Gmail-NATIVE-looking HTML body that carries two hidden
  * layers, and verify them later.
  *
- * 1. **Native look.** Gmail's own compose writes `<div dir="ltr">` wrapped
- *    paragraphs as `<div>…</div>` separated by `<div><br></div>`, in Arial
- *    `small` #222222. We emit exactly that shape (not `<p>` with margins), so the
- *    message — and every quoted copy of it — looks hand-typed in Gmail, while
- *    still allowing links, bold/italic, colour, lists.
+ * 1. **House formatting.** The body is built by `compose.ts`, so it already
+ *    follows the Gmail HTML standard (Arial 14px/1.5 #222222, `<p>` with a 16px
+ *    bottom margin, `#1155cc` links, 650px container). The watermark is applied
+ *    to those exact bytes, never to a separately-rendered copy.
  * 2. **Hidden reference id.** The existing `ref:<uuid>` marker
- *    (`tracking.ts#hiddenUuidHtml`, white + collapsed) so Gmail search on the uuid
+ *    (`compose.ts#refMarkerHtml`, white + collapsed) so Gmail search on the uuid
  *    finds the thread.
  * 3. **Authorship watermark.** Every paragraph/list item ends with a hidden
  *    (white, 1px) tag `[authored v1 <uuid> <index> <mac>]`, where `mac` is an
@@ -40,18 +39,23 @@ import { parse, type HTMLElement, type Node } from "node-html-parser";
 
 import { getDb } from "@/db";
 import { globalConfig } from "@db/schemas";
-import { htmlToPlainText, inlineGmailStyles } from "@/backend/gmail/compose";
-import { hiddenUuidHtml } from "@/backend/gmail/tracking";
+import {
+  AUTHORED_TAG_RE,
+  composeBody,
+  escapeHtml,
+  GMAIL_BODY_STYLE,
+  HIDDEN_STYLE,
+  htmlToPlainText,
+  LEGEND_MARK,
+  type ComposeReport,
+} from "@/backend/gmail/compose";
 
-/** Gmail compose defaults: the wrapper every native message has. */
-export const GMAIL_NATIVE_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:small;color:#222222";
+export { GMAIL_BODY_STYLE };
 
-const HIDDEN_STYLE = "color:#ffffff;font-size:1px;line-height:1px;mso-hide:all";
-const TAG_RE = /\[authored v1 ([0-9a-f-]{36}) (\d{1,4}) ([0-9a-f]{12})\]/g;
-const LEGEND_MARK = "Authorship watermark v1";
+/** Global-flagged copy for `String.replace` (AUTHORED_TAG_RE itself is exec-safe). */
+const TAG_RE = new RegExp(AUTHORED_TAG_RE.source, "g");
 const KEY_CONFIG = "email_authorship_key";
-const BLOCK_TAGS = new Set(["div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "table", "ul", "ol", "hr"]);
-const SIGNABLE = new Set(["div", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "li"]);
+const SIGNABLE = new Set(["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "li"]);
 
 /* ------------------------------------------------------------------ key --- */
 
@@ -102,52 +106,8 @@ function macInput(uuid: string, index: number, fingerprint: string): string {
 
 /* ---------------------------------------------------------------- build --- */
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 function isElement(n: Node): n is HTMLElement {
   return n.nodeType === 1;
-}
-
-/**
- * Reshape arbitrary html into Gmail-native blocks: top-level `<p>` → `<div>`,
- * loose inline content grouped into `<div>`s, and a `<div><br></div>` spacer
- * between paragraphs (Gmail's own blank line).
- */
-function toNativeBlocks(html: string): string {
-  const root = parse(html, { comment: false });
-  const blocks: string[] = [];
-  let inline = "";
-  const flush = () => {
-    if (inline.replace(/<br\s*\/?>/gi, "").trim()) blocks.push(`<div>${inline.trim()}</div>`);
-    inline = "";
-  };
-  for (const node of root.childNodes) {
-    const tag = isElement(node) ? node.tagName.toLowerCase() : "";
-    if (!BLOCK_TAGS.has(tag)) {
-      inline += node.toString();
-      continue;
-    }
-    flush();
-    const el = node as HTMLElement;
-    if (tag === "p") blocks.push(`<div>${el.innerHTML}</div>`);
-    else if (tag === "div" && !el.text.trim() && !el.querySelector("img")) continue; // drop existing blank spacers
-    else blocks.push(el.toString());
-  }
-  flush();
-  return blocks.join("<div><br></div>");
-}
-
-/** Plain text → escaped native divs (blank line = new paragraph, newline = <br>). */
-function textToHtml(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .split(/\n{2,}/)
-    .map((para) => para.trim())
-    .filter(Boolean)
-    .map((para) => `<div>${para.split("\n").map(escapeHtml).join("<br>")}</div>`)
-    .join("");
 }
 
 /** Every block that gets its own tag, in document order. */
@@ -156,6 +116,9 @@ function signableBlocks(container: HTMLElement): HTMLElement[] {
   for (const child of container.childNodes) {
     if (!isElement(child)) continue;
     const tag = child.tagName.toLowerCase();
+    // Hidden machine-readable markers (the ref id, the legend) are not the
+    // sender's prose and must not be signed as if they were.
+    if (child.getAttribute("data-plaintext") === "omit") continue;
     if (tag === "ul" || tag === "ol") out.push(...child.querySelectorAll("li"));
     else if (SIGNABLE.has(tag) && child.text.trim()) out.push(child);
   }
@@ -174,24 +137,24 @@ export interface AuthoredBodyInput {
 
 export interface AuthoredBody {
   html: string;
-  /** text/plain alternative: readable, tags and legend omitted, ref kept for search. */
+  /** text/plain alternative: readable, hidden markers omitted. */
   text: string;
   signedBlocks: number;
+  /** What the normaliser repaired on the way through (see compose.ts). */
+  report: ComposeReport;
 }
 
 /** Build the Gmail-native, reference-stamped, watermarked body. */
 export async function buildAuthoredBody(input: AuthoredBodyInput): Promise<AuthoredBody> {
-  const raw =
-    input.markdown != null && input.markdown !== ""
-      ? (marked.parse(input.markdown, { async: false, gfm: true, breaks: true }) as string)
-      : input.html != null && input.html !== ""
-        ? input.html
-        : textToHtml(input.text ?? "");
-
-  // Sanitize + inline Gmail-safe styles (links, bold, lists, headings), THEN tag,
-  // so the signed text is exactly what ships.
-  const inlined = inlineGmailStyles(toNativeBlocks(raw));
-  const container = parse(`<div>${inlined}</div>`, { comment: false }).firstChild as HTMLElement;
+  // One normalisation path for every outgoing email: composeBody sanitizes,
+  // drops reference ids and watermarks carried over from an earlier draft,
+  // reshapes into Gmail's native blocks, inlines the styles and stamps this
+  // message's own ref. The watermark is then applied to exactly what ships.
+  const base = composeBody(
+    { markdown: input.markdown, html: input.html, text: input.text },
+    { uuid: input.uuid },
+  );
+  const container = parse(base.html, { comment: false }).firstChild as HTMLElement;
 
   const blocks = signableBlocks(container);
   for (let i = 0; i < blocks.length; i++) {
@@ -204,9 +167,10 @@ export async function buildAuthoredBody(input: AuthoredBodyInput): Promise<Autho
     `Each paragraph the sender wrote ends with a hidden tag [authored v1 &lt;id&gt; &lt;n&gt; &lt;mac&gt;] signed by the sender's mail system. ` +
     `In this message or any quoted copy of it, text WITHOUT a valid tag was not written by ${escapeHtml(input.author)}, ` +
     `even when it appears inside the quoted original.</div>`;
+  container.insertAdjacentHTML("afterbegin", legend);
 
-  const html = `<div dir="ltr" style="${GMAIL_NATIVE_STYLE}">${legend}${container.innerHTML}${hiddenUuidHtml(input.uuid)}</div>`;
-  return { html, text: htmlToPlainText(html), signedBlocks: blocks.length };
+  const html = container.toString();
+  return { html, text: htmlToPlainText(html), signedBlocks: blocks.length, report: base.report };
 }
 
 /* --------------------------------------------------------------- verify --- */
@@ -247,7 +211,7 @@ export async function verifyAuthoredHtml(html: string, keyHex: string): Promise<
   const seen = new Map<string, Set<number>>();
 
   for (const span of root.querySelectorAll("span")) {
-    const m = new RegExp(TAG_RE.source).exec(span.text);
+    const m = new RegExp(AUTHORED_TAG_RE.source).exec(span.text);
     if (!m) continue;
     const block = span.parentNode as HTMLElement | null;
     if (!block) continue;
@@ -277,11 +241,11 @@ export async function verifyAuthoredHtml(html: string, keyHex: string): Promise<
         if (child.classNames.includes("gmail_quote") || child.classNames.includes("gmail_attr")) continue;
         if (tag === "ul" || tag === "ol") {
           for (const li of child.querySelectorAll("li")) {
-            if (!new RegExp(TAG_RE.source).test(li.text) && li.text.trim()) unmarked.push(excerpt(li.text));
+            if (!new RegExp(AUTHORED_TAG_RE.source).test(li.text) && li.text.trim()) unmarked.push(excerpt(li.text));
           }
           continue;
         }
-        if (new RegExp(TAG_RE.source).test(child.text)) continue;
+        if (new RegExp(AUTHORED_TAG_RE.source).test(child.text)) continue;
       }
       unmarked.push(excerpt(text));
     }

@@ -96,6 +96,7 @@ class HealthCoordinator {
     const checks = await Promise.all([
       this.checkD1(),
       this.checkWorkersAI(),
+      this.checkDraftStudio(),
       ...AGENT_BINDINGS.map((descriptor) => this.pingAgent(descriptor)),
     ]);
 
@@ -155,6 +156,49 @@ class HealthCoordinator {
         durationMs: Date.now() - start,
       };
     }
+  }
+
+  /**
+   * The draft studio. Reads every table it depends on rather than reporting
+   * that a binding exists — a migration that never reached production fails
+   * exactly here, and would otherwise only surface as a 500 the first time
+   * someone opened a draft.
+   *
+   * Severity is split on purpose: the tables are the feature (`fail`), while
+   * the live-update room only removes the automatic refresh (`warn`).
+   */
+  private async checkDraftStudio(): Promise<CheckResult> {
+    const start = Date.now();
+    try {
+      await this.env.DB.prepare(
+        "SELECT (SELECT COUNT(*) FROM email_drafts) + (SELECT COUNT(*) FROM email_draft_revisions) + (SELECT COUNT(*) FROM email_draft_comments) AS n",
+      ).first<{ n: number }>();
+    } catch (error) {
+      return {
+        category: "database",
+        name: "draft_studio_tables",
+        status: "fail",
+        message: error instanceof Error ? error.message : "draft studio tables unreadable",
+        durationMs: Date.now() - start,
+      };
+    }
+    const ns = (this.env as unknown as { EMAIL_DRAFT_ROOM?: DurableObjectNamespace }).EMAIL_DRAFT_ROOM;
+    if (!ns) {
+      return {
+        category: "database",
+        name: "draft_studio_tables",
+        status: "warn",
+        message: "Tables readable, but EMAIL_DRAFT_ROOM is unbound — studio pages will not update live",
+        durationMs: Date.now() - start,
+      };
+    }
+    return {
+      category: "database",
+      name: "draft_studio_tables",
+      status: "ok",
+      message: "Draft studio tables readable and the live-update room is bound",
+      durationMs: Date.now() - start,
+    };
   }
 
   private async checkWorkersAI(): Promise<CheckResult> {

@@ -9,6 +9,8 @@ import {
   scheduledEmails,
   emailPreviews,
   emailTemplates,
+  globalConfig,
+  EMAIL_DRAFT_STATUSES,
   type ScheduledEmailSpec,
 } from "@db/schemas";
 import { eq, desc, and } from "drizzle-orm";
@@ -65,6 +67,18 @@ import { listTags, createTag, applyTags, findByTags } from "@/backend/drive/tags
 import { uploadMessageAttachments, subjectFromPayload } from "@/backend/gmail/attachment-drive";
 import { attachmentManifest } from "@/backend/gmail/attachments";
 import { extractBody, type BodyFormat } from "@/backend/gmail/body-extract";
+import {
+  addRevision as addStudioRevision,
+  createStudioDraft,
+  getStudioDraft,
+  listStudioDrafts,
+  promoteStudioDraft,
+  resolveComments as resolveStudioComments,
+  sendStudioDraft,
+  setDraftStatus as setStudioStatus,
+  updateDraftFields as updateStudioFields,
+  type DraftWithHistory,
+} from "@/backend/gmail/draft-studio";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
 import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
 import { isValidCron } from "@/backend/gmail/cron";
@@ -436,6 +450,28 @@ async function placeNewDoc(
     return { folderId: null, folderMatches: (await drive.search(q, 20)).files };
   }
   return { folderId: null, folderMatches: null };
+}
+
+/** Where the user opens a studio draft. Relative when no public base url is set. */
+function studioUrl(env: Env, draftId: string): string {
+  const base = (env as { PUBLIC_BASE_URL?: string }).PUBLIC_BASE_URL;
+  const path = `/gws/draft-studio/${draftId}`;
+  return base ? `${base}${path}` : path;
+}
+
+/** The fields every studio tool reports back, so the model can echo the link. */
+function studioSummary(env: Env, draft: DraftWithHistory) {
+  return {
+    draftId: draft.id,
+    url: studioUrl(env, draft.id),
+    status: draft.status,
+    subject: draft.subject,
+    to: draft.toAddr,
+    cc: draft.ccAddr,
+    revision: draft.currentRevision,
+    openComments: draft.comments.filter((c) => !c.resolved).length,
+    revisions: draft.revisions.map((r) => ({ n: r.n, source: r.source, note: r.note, at: r.createdAt })),
+  };
 }
 
 export const TOOLS: ToolDef[] = [
@@ -2301,7 +2337,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_draft",
     description:
-      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. For formatting use `html` or `markdown` (the worker inlines CSS for Gmail); attach files with `driveIds`/`blobs`. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
+      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. EVERY draft ships as HTML following the house Gmail standard (Arial/Helvetica 14px/1.5 #222222, `<p>` paragraphs with a 16px bottom margin, #1155cc underlined links, 24px list indent, real bullets/numbering/bold, 650px left-aligned container) — the worker sanitizes, repairs and inlines every style, so send `markdown` (easiest) or semantic `html` and do NOT hand-write inline CSS. A plain `body` string is turned into the same HTML. The result carries a `body` report naming anything removed. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
     inputSchema: z.object({
       to: recipients,
       subject: z.string(),
@@ -2335,7 +2371,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_reply_draft",
     description:
-      "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review.",
+      "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review. Ships as house-standard Gmail HTML like the other compose tools: send `markdown` or semantic `html`, never hand-written inline CSS.",
     inputSchema: z.object({
       messageId: z.string(),
       body: z.string().optional(),
@@ -2374,7 +2410,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_draft_html",
     description:
-      "Create a Gmail DRAFT whose body is ALWAYS HTML shaped exactly like Gmail's own compose (Arial, small, #222222, <div> paragraphs with Gmail's blank-line spacer) — so links, bold/italic, colour and lists work while it still looks hand-typed. Supply ONE of `markdown`, `html` or `text`. Every draft is stamped with a hidden white `ref:<uuid>` (returned as `uuid`; search Gmail for it later) and a hidden per-paragraph authorship watermark, so gmail_verify_authorship can later tell the sender's text apart from text someone typed inline inside the quoted original. New draft: pass `to` + `subject`. Reply draft in the same thread: pass `replyToMessageId` (reply-all by default; `replyAll:false` for sender only).",
+      "Create a Gmail DRAFT whose body is ALWAYS HTML following the house Gmail standard (Arial/Helvetica 14px/1.5 #222222, `<p>` paragraphs with a 16px bottom margin, #1155cc underlined links, 24px list indent) — so links, bold/italic, colour and lists all survive Gmail's renderer. Supply ONE of `markdown`, `html` or `text`. Every draft is stamped with a hidden white `ref:<uuid>` (returned as `uuid`; search Gmail for it later) and a hidden per-paragraph authorship watermark, so gmail_verify_authorship can later tell the sender's text apart from text someone typed inline inside the quoted original. New draft: pass `to` + `subject`. Reply draft in the same thread: pass `replyToMessageId` (reply-all by default; `replyAll:false` for sender only).",
     inputSchema: z.object({
       to: recipients.optional(),
       subject: z.string().optional(),
@@ -2442,7 +2478,7 @@ export const TOOLS: ToolDef[] = [
           sub,
         });
         return {
-          result: { ...d, id: d.draftId, uuid, signedBlocks: body.signedBlocks, search: `"ref:${uuid}"`, via: "appscript" },
+          result: { ...d, id: d.draftId, uuid, signedBlocks: body.signedBlocks, body: body.report, search: `"ref:${uuid}"`, via: "appscript" },
           asset: {
             assetType: "gmail",
             googleId: d.draftId,
@@ -2458,6 +2494,9 @@ export const TOOLS: ToolDef[] = [
         bcc: addrList(a.bcc),
         html: body.html,
         uuid,
+        // The watermark signs exactly these bytes — re-normalising would
+        // invalidate every signature in the message.
+        prebuilt: true,
         attachments: a.attachments,
         driveIds: a.driveIds,
         blobs: a.blobs,
@@ -2471,7 +2510,7 @@ export const TOOLS: ToolDef[] = [
         d = await gmail.createDraft(to, a.subject, body.text, opts);
       }
       return {
-        result: { ...d, uuid, signedBlocks: body.signedBlocks, search: `"ref:${uuid}"`, via: "api" },
+        result: { ...d, uuid, signedBlocks: body.signedBlocks, body: body.report, search: `"ref:${uuid}"`, via: "api" },
         asset: {
           assetType: "gmail",
           googleId: d.id,
@@ -2479,6 +2518,158 @@ export const TOOLS: ToolDef[] = [
           action: "create",
           detail: { draft: true, uuid, replyTo: a.replyToMessageId },
         },
+      };
+    },
+  },
+  // ---- Draft studio (revise on the worker page, not in Gmail) -----------
+  {
+    name: "email_draft_studio_create",
+    description:
+      "Start an email in the DRAFT STUDIO — a page on this worker where the draft is revised instead of in Gmail. Use this when the email will go through several rounds (\"draft something and we'll work on it\"): each update is a numbered revision the user can read, diff against the previous one, edit in a rich-text editor, or comment on, and the page updates live while they watch. Nothing reaches Gmail until email_draft_studio_send. Prefer gmail_create_draft/gmail_draft_html instead when the email is one-and-done. Body: send `markdown` (easiest), `html` or `text` — it is rendered to the exact house-standard HTML that would be sent. Returns the `url` to give the user.",
+    inputSchema: z.object({
+      to: recipients.optional(),
+      subject: z.string().optional(),
+      cc: recipients.optional(),
+      bcc: recipients.optional(),
+      markdown: z.string().optional(),
+      html: z.string().optional(),
+      text: z.string().optional(),
+      replyToMessageId: z.string().optional().describe("Reply within this message's thread when sent."),
+      note: z.string().optional().describe("One line on what this first revision is."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const draft = await createStudioDraft(env, {
+        account: acct(sub, a),
+        to: addrList(a.to),
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
+        subject: a.subject,
+        markdown: a.markdown,
+        html: a.html,
+        text: a.text,
+        replyToMessageId: a.replyToMessageId,
+        note: a.note,
+        createdBySub: sub,
+      });
+      return { result: studioSummary(env, draft) };
+    },
+  },
+  {
+    name: "email_draft_studio_update",
+    description:
+      "Push a NEW REVISION of a draft-studio email, and/or change its recipients and subject. The user's open page updates live. Send the FULL new body (markdown/html/text) — revisions are whole versions, not patches, which is what makes the diff meaningful. Read the user's comments first with email_draft_studio_get and pass `resolveComments:true` once you have acted on them.",
+    inputSchema: z.object({
+      draftId: z.string(),
+      markdown: z.string().optional(),
+      html: z.string().optional(),
+      text: z.string().optional(),
+      note: z.string().optional().describe("One line on what changed in this revision."),
+      to: recipients.optional(),
+      cc: recipients.optional(),
+      bcc: recipients.optional(),
+      subject: z.string().optional(),
+      resolveComments: z.boolean().optional().describe("Mark the user's open comments handled."),
+    }),
+    async run({ env }, a) {
+      await updateStudioFields(env, a.draftId, {
+        toAddr: addrList(a.to),
+        ccAddr: addrList(a.cc),
+        bccAddr: addrList(a.bcc),
+        subject: a.subject,
+      });
+      let report;
+      if ([a.markdown, a.html, a.text].some((b) => b != null && b !== "")) {
+        const out = await addStudioRevision(
+          env,
+          a.draftId,
+          { markdown: a.markdown, html: a.html, text: a.text },
+          { source: "agent", note: a.note },
+        );
+        report = out.report;
+      }
+      if (a.resolveComments) await resolveStudioComments(env, a.draftId);
+      const draft = await getStudioDraft(env, a.draftId);
+      if (!draft) throw new Error(`Draft ${a.draftId} not found.`);
+      return { result: { ...studioSummary(env, draft), body: report } };
+    },
+  },
+  {
+    name: "email_draft_studio_get",
+    description:
+      "Read a draft-studio email: its recipients, the current body as plain text, every revision with its note, and the user's comments (a comment may quote the exact passage it is about). Call this before revising so you act on what the user actually asked for.",
+    inputSchema: z.object({
+      draftId: z.string(),
+      includeHtml: z.boolean().optional().describe("Also return the rendered HTML body (verbose)."),
+    }),
+    async run({ env }, a) {
+      const draft = await getStudioDraft(env, a.draftId);
+      if (!draft) throw new Error(`Draft ${a.draftId} not found.`);
+      return {
+        result: {
+          ...studioSummary(env, draft),
+          body: draft.current?.text ?? null,
+          ...(a.includeHtml ? { html: draft.current?.html ?? null } : {}),
+          comments: draft.comments.map((c) => ({
+            id: c.id,
+            revision: c.revision,
+            quote: c.quote,
+            comment: c.body,
+            resolved: c.resolved,
+          })),
+        },
+      };
+    },
+  },
+  {
+    name: "email_draft_studio_list",
+    description:
+      "List draft-studio emails, newest first. Default is the ones still being worked on; pass `status` to see those already in Gmail, sent or discarded.",
+    inputSchema: z.object({
+      status: z.array(z.enum(EMAIL_DRAFT_STATUSES)).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    async run({ env }, a) {
+      const drafts = await listStudioDrafts(env, { status: a.status ?? ["drafting", "in_gmail"], limit: a.limit });
+      return {
+        result: {
+          drafts: drafts.map((d) => ({
+            draftId: d.id,
+            subject: d.subject,
+            to: d.toAddr,
+            status: d.status,
+            revision: d.currentRevision,
+            updatedAt: d.updatedAt,
+            url: studioUrl(env, d.id),
+          })),
+        },
+      };
+    },
+  },
+  {
+    name: "email_draft_studio_send",
+    description:
+      "Finish a draft-studio email. `as:'send'` (default) sends the current revision immediately. `as:'gmail_draft'` instead puts it in Gmail as a real draft for a last look there. `as:'discard'` closes it unsent. Confirm with the user before sending — the studio exists so they get the final say.",
+    inputSchema: z.object({
+      draftId: z.string(),
+      as: z.enum(["send", "gmail_draft", "discard"]).optional(),
+    }),
+    async run({ env }, a) {
+      if (a.as === "discard") {
+        await setStudioStatus(env, a.draftId, "discarded");
+        return { result: { draftId: a.draftId, status: "discarded" } };
+      }
+      if (a.as === "gmail_draft") {
+        const out = await promoteStudioDraft(env, a.draftId);
+        return {
+          result: { draftId: a.draftId, status: "in_gmail", ...out },
+          asset: { assetType: "gmail", googleId: out.gmailDraftId, action: "create", detail: { draft: true, studio: a.draftId } },
+        };
+      }
+      const out = await sendStudioDraft(env, a.draftId);
+      return {
+        result: { draftId: a.draftId, status: "sent", ...out },
+        asset: { assetType: "gmail", googleId: out.messageId, action: "create", detail: { studio: a.draftId } },
       };
     },
   },
@@ -2541,7 +2732,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_send",
     description:
-      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. Use `html` or `markdown` for formatting (the worker inlines CSS for Gmail); attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
+      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. EVERY message ships as HTML following the house Gmail standard (Arial/Helvetica 14px/1.5 #222222, `<p>` paragraphs with a 16px bottom margin, #1155cc underlined links, 24px list indent, real bullets/numbering/bold, 650px left-aligned container) — send `markdown` (easiest) or semantic `html`; a plain `body` string becomes the same HTML. Never hand-write inline CSS. The worker sanitizes, repairs and inlines the CSS, sets the sender display name, and stamps one hidden reference id (ids from an earlier draft are stripped), returning a `body` report. Attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
     inputSchema: z.object({
       to: recipients,
       subject: z.string(),
@@ -2745,10 +2936,7 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const composed = composeBody({ text: a.body, html: a.html, markdown: a.markdown });
-      const html =
-        composed.html ??
-        `<pre style="font-family:ui-monospace,monospace;white-space:pre-wrap;">${composed.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string)}</pre>`;
+      const { html } = composeBody({ text: a.body, html: a.html, markdown: a.markdown });
       const id = crypto.randomUUID();
       const account = await accountEmailFor(env, acct(sub, a)).catch(() => undefined);
       await getDb(env)
@@ -3298,6 +3486,37 @@ export const TOOLS: ToolDef[] = [
           ok: true,
         },
       };
+    },
+  },
+  {
+    name: "set_sender_name",
+    description:
+      "Set the display name outgoing mail is sent under, so a recipient's inbox shows a name instead of a bare address. Pass `account` to set it for one Workspace account, or omit it to set the default used by every account. Stored in global_config as `email_sender_name`; it OVERRIDES Gmail's own send-as display name, which the worker otherwise reads automatically. Pass `name: \"\"` to clear the override and go back to Gmail's.",
+    inputSchema: z.object({
+      name: z.string().describe('Display name, e.g. "Justin Bishop". Empty string clears the override.'),
+      account: z.string().email().optional().describe("Account email this name applies to. Omit for the default."),
+    }),
+    async run({ env }, a) {
+      const db = getDb(env);
+      const current = ((
+        await db.select().from(globalConfig).where(eq(globalConfig.key, "email_sender_name")).limit(1)
+      )[0]?.value ?? {}) as string | { default?: string; byAccount?: Record<string, string> };
+      const value: { default?: string; byAccount: Record<string, string> } =
+        typeof current === "string" ? { default: current, byAccount: {} } : { ...current, byAccount: { ...current.byAccount } };
+      const name = a.name.trim();
+      if (a.account) {
+        const key = a.account.toLowerCase();
+        if (name) value.byAccount[key] = name;
+        else delete value.byAccount[key];
+      } else if (name) value.default = name;
+      else delete value.default;
+      await db
+        .insert(globalConfig)
+        .values({ key: "email_sender_name", value, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: globalConfig.key, set: { value, updatedAt: new Date() } });
+      // The resolver caches per isolate for 10 minutes; say so rather than
+      // letting the caller think the change did not take.
+      return { result: { ok: true, senderName: value, appliesWithin: "10 minutes (resolver cache)" } };
     },
   },
   {

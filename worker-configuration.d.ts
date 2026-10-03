@@ -48,11 +48,12 @@ interface __BaseEnv_Env {
 	DRIVE_AGENT: DurableObjectNamespace<import("./dist/_worker.js/index").DriveAgent>;
 	CALENDAR_AGENT: DurableObjectNamespace<import("./dist/_worker.js/index").CalendarAgent>;
 	CIRCUIT_BREAKER: DurableObjectNamespace<import("./dist/_worker.js/index").CircuitBreaker>;
+	EMAIL_DRAFT_ROOM: DurableObjectNamespace<import("./dist/_worker.js/index").EmailDraftRoom>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./dist/_worker.js/index");
-		durableNamespaces: "OrchestratorAgent" | "GmailAgent" | "DocsAgent" | "SheetsAgent" | "SlidesAgent" | "AppsScriptAgent" | "DriveAgent" | "CalendarAgent" | "CircuitBreaker";
+		durableNamespaces: "OrchestratorAgent" | "GmailAgent" | "DocsAgent" | "SheetsAgent" | "SlidesAgent" | "AppsScriptAgent" | "DriveAgent" | "CalendarAgent" | "CircuitBreaker" | "EmailDraftRoom";
 	}
 	interface Env extends __BaseEnv_Env {}
 }
