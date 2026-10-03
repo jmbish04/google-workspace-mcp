@@ -106,10 +106,10 @@ importers:
         version: 3.4.11
       drizzle-orm:
         specifier: ^0.45.2
-        version: 0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)
+        version: 0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9)
       drizzle-zod:
         specifier: 0.8.3
-        version: 0.8.3(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1))(zod@4.4.3)
+        version: 0.8.3(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9))(zod@4.4.3)
       entities:
         specifier: ^4.5.0
         version: 4.5.0
@@ -146,6 +146,9 @@ importers:
       platejs:
         specifier: 53.2.4
         version: 53.2.4(@types/react@19.2.15)(immer@11.1.8)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(scheduler@0.27.0)(use-sync-external-store@1.6.0(react@19.2.6))
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
       react:
         specifier: ^19.2.5
         version: 19.2.6
@@ -5799,6 +5802,10 @@ packages:
     resolution: {integrity: sha512-FfR8sjd4em2T6fb3I2MwAJU7HWVMr9zba+enmQeeWFfCbm+UOC/0X4DS8XtpUTMwWMGbjKYP7xjfNekzyGmB3A==}
     engines: {node: ^10 || ^12 || >=14}
 
+  postgres@3.4.9:
+    resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
+    engines: {node: '>=12'}
+
   powershell-utils@0.1.0:
     resolution: {integrity: sha512-dM0jVuXJPsDN6DvRpea484tCUaMiXWjuCn++HGTqUWzGDjv5tZkEZldAJ/UMlqRYGFrD/etByo4/xOuC/snX2A==}
     engines: {node: '>=20'}
@@ -10751,14 +10758,15 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.22.3
 
-  drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1):
+  drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9):
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260525.1
       '@opentelemetry/api': 1.9.1
+      postgres: 3.4.9
 
-  drizzle-zod@0.8.3(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1))(zod@4.4.3):
+  drizzle-zod@0.8.3(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9))(zod@4.4.3):
     dependencies:
-      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)
+      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260525.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9)
       zod: 4.4.3
 
   dset@3.1.4: {}
@@ -12524,6 +12532,8 @@ snapshots:
       nanoid: 3.3.12
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  postgres@3.4.9: {}
 
   powershell-utils@0.1.0: {}
 

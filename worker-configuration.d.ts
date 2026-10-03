@@ -6,6 +6,7 @@ interface __BaseEnv_Env {
 	R2_FILES_BUCKET: R2Bucket;
 	R2_PREVIEWS_BUCKET: R2Bucket;
 	DB: D1Database;
+	HYPERDRIVE: Hyperdrive;
 	VECTORIZE_EMAILS: VectorizeIndex;
 	VECTORIZE_DOCS: VectorizeIndex;
 	VECTORIZE_GENERAL: VectorizeIndex;

@@ -164,6 +164,14 @@
       "remote": true,
     },
   ],
+  // Postgres on LXC 109 (192.168.1.50), reached over Cloudflare Access on
+  // postgres-db.hacolby.app — the same pattern the maestro, licenses, tesla,
+  // pipeline and core-resumes configs already use against this database.
+  // sslmode is verify-full against the uploaded CA; the origin is addressed by
+  // HOSTNAME so its Let's Encrypt cert matches. Do not switch this to an
+  // IP/VPC origin — the cert cannot match an IP and the only way out of that
+  // is weakening verification.
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "df893f41194e43f395329725a42b6bc4" }],
   "d1_databases": [
     {
       "binding": "DB",
