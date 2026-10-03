@@ -1,16 +1,25 @@
 /**
  * @file gmail/compose.ts
  * @description The ONE place every outgoing email body is turned into a
- * Gmail-native HTML part. HTML is the standard — a text-only body is crap mail
+ * Gmail-ready HTML part. HTML is the standard — a text-only body is crap mail
  * (no bullets, no numbered lists, no links, no bold, no paragraph spacing), so
  * `composeBody` always produces an HTML part and derives the text/plain
  * alternative from it.
  *
- * "Gmail-native" means: what Gmail's own compose window emits. A
- * `<div dir="ltr">` wrapper in Arial `small` #222222, paragraphs as `<div>`
- * separated by a `<div><br></div>` spacer (the blank line you get from pressing
- * Return twice), and every style INLINE — Gmail's renderer throws away `<style>`
- * blocks and CSS classes. White background, black text, nothing fancy.
+ * The house formatting rules are the Gmail HTML standard recorded in the
+ * colby-maestro plan "Gmail HTML standard + draft studio": Arial/Helvetica
+ * 14px/1.5 #222222, paragraphs as `<p>` with a 16px bottom margin (never faked
+ * with empty paragraphs or stacked `<br>`), `#1155cc` underlined links, 24px
+ * list indent with 6px between items, and a plain left-aligned
+ * `max-width:650px` container — NOT a centered boxed card on a grey field.
+ * This is personal mail, not a newsletter.
+ *
+ * On `<style>`: Gmail does support class/element/ID selectors and media queries
+ * in a `<style>` block (developers.google.com/workspace/gmail/design/css). We
+ * inline everything static anyway, because a `<style>` block is unreliable the
+ * moment the message is quoted in a reply, forwarded, or read in another
+ * client. Media queries are the exception — they cannot be inlined, so juice
+ * leaves those in place.
  *
  * Pipeline (`composeBody`):
  *   1. SOURCE   markdown → rendered · html → as-is · text → escaped paragraphs
@@ -18,11 +27,11 @@
  *   3. DESTAMP  remove hidden `ref:<uuid>` markers and authorship tags belonging
  *               to OTHER messages — an agent that edits a previous draft carries
  *               them along, and three revisions means three reference ids
- *   4. NATIVE   reshape into Gmail's own block structure (toNativeBlocks)
+ *   4. BLOCKS   reshape into `<p>` paragraphs (toEmailBlocks)
  *   5. INLINE   flatten the Gmail default stylesheet + the html's own <style>
  *               blocks into inline `style=""` (juice: correct CSS specificity
  *               and shorthand handling) — the "Mailchimp inliner" step
- *   6. WRAP     the <div dir="ltr"> Arial wrapper, and stamp this message's ref
+ *   6. WRAP     the <div dir="ltr"> 650px Arial wrapper, and stamp the ref
  *   7. VALIDATE reject a body that sanitizes down to nothing
  *
  * Workers-safe: juice.inlineContent (no filesystem/remote fetch), marked, and
@@ -32,8 +41,18 @@ import juice from "juice";
 import { marked } from "marked";
 import { parse, type HTMLElement, type Node } from "node-html-parser";
 
-/** Gmail compose defaults: the wrapper every natively-composed message has. */
-export const GMAIL_NATIVE_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:small;color:#222222";
+/** The typography every block repeats, because Gmail does not reliably inherit it. */
+const TYPOGRAPHY = "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222222;";
+
+/**
+ * The body wrapper. `max-width:650px` keeps a line readable on a 32-inch
+ * monitor, `width:100%` lets it scale down on a phone, and the transparent
+ * background keeps it looking like mail rather than a marketing card.
+ */
+export const GMAIL_BODY_STYLE = `max-width:650px;width:100%;text-align:left;background-color:transparent;${TYPOGRAPHY}`;
+
+/** @deprecated Use `GMAIL_BODY_STYLE`. Kept so older callers still compile. */
+export const GMAIL_NATIVE_STYLE = GMAIL_BODY_STYLE;
 
 /** Style used for machine-readable markers that must be invisible to a reader. */
 export const HIDDEN_STYLE = "color:#ffffff;font-size:1px;line-height:1px;mso-hide:all";
@@ -48,48 +67,55 @@ export const LEGEND_MARK = "Authorship watermark v1";
 const REF_TEXT_RE = /^ref:([0-9a-f-]{36})$/i;
 
 /**
- * Gmail-safe default style per tag, inlined as a stylesheet (the author's own
- * inline styles and more-specific rules win via CSS specificity). Only the
- * properties Gmail actually honours inline are used: color, background-color,
- * font-*, text-decoration, text-align, margin, padding, border*, line-height.
+ * The element styling spec, inlined as a stylesheet so juice resolves CSS
+ * specificity and shorthand correctly (an author's own inline style still
+ * wins). Only properties on Gmail's supported list are used.
  *
- * Paragraphs carry NO margin: `toNativeBlocks` separates them with Gmail's own
- * `<div><br></div>` spacer instead, which is what the Return key produces and
- * what survives every client's quoting.
+ * Note what is NOT here: `<p>` carries its own typography rather than
+ * inheriting it, because Gmail drops the wrapper's font on quoted replies.
  */
 const TAG_STYLES: Record<string, string> = {
-  h1: "font-size:24px;font-weight:700;margin:16px 0 8px;line-height:1.3;",
-  h2: "font-size:20px;font-weight:700;margin:16px 0 8px;line-height:1.3;",
-  h3: "font-size:17px;font-weight:700;margin:14px 0 6px;line-height:1.3;",
-  h4: "font-size:15px;font-weight:700;margin:12px 0 6px;",
-  h5: "font-size:13px;font-weight:700;margin:12px 0 6px;",
-  h6: "font-size:12px;font-weight:700;margin:12px 0 6px;color:#5f6368;",
-  p: "margin:0 0 12px;line-height:1.5;",
-  a: "color:#1a73e8;text-decoration:underline;",
-  strong: "font-weight:700;",
-  b: "font-weight:700;",
+  p: `margin:0 0 16px 0;${TYPOGRAPHY}`,
+  h1: `font-size:24px;font-weight:700;margin:0 0 12px;line-height:1.3;font-family:Arial,Helvetica,sans-serif;color:#222222;`,
+  h2: `font-size:20px;font-weight:700;margin:0 0 12px;line-height:1.3;font-family:Arial,Helvetica,sans-serif;color:#222222;`,
+  h3: `font-size:16px;font-weight:700;margin:0 0 10px;line-height:1.3;font-family:Arial,Helvetica,sans-serif;color:#222222;`,
+  h4: `font-size:14px;font-weight:700;margin:0 0 10px;font-family:Arial,Helvetica,sans-serif;color:#222222;`,
+  h5: `font-size:14px;font-weight:700;margin:0 0 10px;font-family:Arial,Helvetica,sans-serif;color:#222222;`,
+  h6: `font-size:13px;font-weight:700;margin:0 0 10px;font-family:Arial,Helvetica,sans-serif;color:#5f6368;`,
+  a: "color:#1155cc;text-decoration:underline;",
+  strong: "font-weight:700;color:#222222;",
+  b: "font-weight:700;color:#222222;",
   em: "font-style:italic;",
   i: "font-style:italic;",
-  // Lists: Gmail's own indent, a visible marker, and breathing room between
-  // items. `list-style-position:outside` keeps wrapped lines aligned under the
-  // text rather than under the bullet.
-  ul: "margin:0;padding:0 0 0 40px;list-style-type:disc;list-style-position:outside;",
-  ol: "margin:0;padding:0 0 0 40px;list-style-type:decimal;list-style-position:outside;",
-  li: "margin:0 0 4px;line-height:1.5;",
-  blockquote: "margin:0 0 12px;padding:8px 12px;border-left:3px solid #dadce0;color:#5f6368;",
+  ul: `margin:0 0 16px 0;padding-left:24px;list-style-type:disc;list-style-position:outside;${TYPOGRAPHY}`,
+  ol: `margin:0 0 16px 0;padding-left:24px;list-style-type:decimal;list-style-position:outside;${TYPOGRAPHY}`,
+  li: "margin-bottom:6px;",
+  blockquote:
+    "margin:12px 0 16px 16px;padding-left:12px;border-left:2px solid #dadce0;color:#5f6368;font-style:italic;",
   code: "font-family:ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;padding:2px 4px;border-radius:3px;font-size:90%;",
-  pre: "font-family:ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;padding:12px;border-radius:6px;overflow:auto;margin:0 0 12px;",
+  pre: "font-family:ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;padding:12px;border-radius:6px;overflow:auto;margin:0 0 16px;",
   hr: "border:none;border-top:1px solid #dadce0;margin:16px 0;",
-  table: "border-collapse:collapse;margin:0 0 12px;",
+  table: `border-collapse:collapse;margin:0 0 16px;${TYPOGRAPHY}`,
   th: "border:1px solid #dadce0;padding:6px 10px;text-align:left;background:#f8f9fa;",
   td: "border:1px solid #dadce0;padding:6px 10px;",
   img: "max-width:100%;height:auto;",
 };
 
-/** The default stylesheet as CSS, fed to juice as the base rules. */
-const DEFAULT_GMAIL_CSS = Object.entries(TAG_STYLES)
-  .map(([tag, style]) => `${tag}{${style}}`)
-  .join("\n");
+/**
+ * Class hooks an author can use by name. juice inlines these the same way, so
+ * `<span class="highlight-red">` arrives styled even though Gmail's handling of
+ * `<style>` is unreliable in quoted copies.
+ */
+const CLASS_STYLES: Record<string, string> = {
+  "highlight-red": "color:#c5221f;font-weight:600;",
+  signature: `margin-top:24px;${TYPOGRAPHY}`,
+};
+
+/** The spec as CSS, fed to juice as the base rules. */
+const DEFAULT_GMAIL_CSS = [
+  ...Object.entries(TAG_STYLES).map(([tag, style]) => `${tag}{${style}}`),
+  ...Object.entries(CLASS_STYLES).map(([cls, style]) => `.${cls}{${style}}`),
+].join("\n");
 
 /**
  * Elements that must never survive into a Gmail-bound HTML part: active content
@@ -196,18 +222,21 @@ export function stripForeignStamps(root: HTMLElement, keepUuid?: string): { refs
 /* ------------------------------------------------------------ structure --- */
 
 /**
- * Reshape arbitrary html into Gmail's own block structure: top-level `<p>` →
- * `<div>`, loose inline content grouped into a `<div>`, and a `<div><br></div>`
- * spacer between paragraphs — the blank line a person gets by pressing Return
- * twice in the Gmail editor. This is what fixes the "AI wrote one wall of text"
- * problem: the spacing is structural, not a margin a client can drop.
+ * Reshape arbitrary html into the house block structure: every paragraph is a
+ * `<p>`, which the stylesheet gives a 16px bottom margin.
+ *
+ * This is what fixes the "AI wrote one wall of text" problem. Note what it does
+ * NOT do: it never emits an empty paragraph or a stacked `<br>` to make a gap,
+ * and it DROPS the blank spacer divs that arrive in a body copied out of Gmail
+ * — faked spacing collapses differently in every client, so the gap has to be
+ * the margin.
  */
-export function toNativeBlocks(html: string): string {
+export function toEmailBlocks(html: string): string {
   const root = parse(html, { comment: false });
   const blocks: string[] = [];
   let inline = "";
   const flush = () => {
-    if (inline.replace(/<br\s*\/?>/gi, "").trim()) blocks.push(`<div>${inline.trim()}</div>`);
+    if (inline.replace(/<br\s*\/?>/gi, "").trim()) blocks.push(`<p>${inline.trim()}</p>`);
     inline = "";
   };
   for (const node of root.childNodes) {
@@ -218,22 +247,35 @@ export function toNativeBlocks(html: string): string {
     }
     flush();
     const el = node as HTMLElement;
-    if (tag === "p") blocks.push(`<div>${el.innerHTML}</div>`);
-    else if (tag === "div" && !el.text.trim() && !el.querySelector("img")) continue; // drop existing blank spacers
-    else blocks.push(el.toString());
+    // A bare <div> paragraph (what Gmail's own compose emits) becomes a <p>;
+    // an empty one was only ever a spacer, and the margin replaces it.
+    if (tag === "div" || tag === "p") {
+      if (!el.text.trim() && !el.querySelector("img")) continue;
+      blocks.push(`<p${attrsOf(el)}>${el.innerHTML}</p>`);
+    } else {
+      blocks.push(el.toString());
+    }
   }
   flush();
-  return blocks.join("<div><br></div>");
+  return blocks.join("");
 }
 
-/** Plain text → escaped native divs (blank line = new paragraph, newline = `<br>`). */
+/** Re-emit the attributes worth keeping when a block is retagged as `<p>`. */
+function attrsOf(el: HTMLElement): string {
+  const keep = ["class", "dir", "data-plaintext", "id"];
+  return keep
+    .map((a) => (el.getAttribute(a) ? ` ${a}="${escapeHtml(el.getAttribute(a)!)}"` : ""))
+    .join("");
+}
+
+/** Plain text → escaped paragraphs (blank line = new paragraph, newline = `<br>`). */
 export function textToHtml(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
     .split(/\n{2,}/)
     .map((para) => para.trim())
     .filter(Boolean)
-    .map((para) => `<div>${para.split("\n").map(escapeHtml).join("<br>")}</div>`)
+    .map((para) => `<p>${para.split("\n").map(escapeHtml).join("<br>")}</p>`)
     .join("");
 }
 
@@ -265,9 +307,9 @@ export function refMarkerHtml(uuid: string): string {
   return `<div data-plaintext="omit" style="${HIDDEN_STYLE};max-height:0;overflow:hidden">ref:${uuid}</div>`;
 }
 
-/** Wrap inner HTML in Gmail's own compose wrapper, unless it already is one. */
+/** Wrap inner HTML in the house body container. */
 export function wrapGmailNative(inner: string): string {
-  return `<div dir="ltr" style="${GMAIL_NATIVE_STYLE}">${inner}</div>`;
+  return `<div dir="ltr" style="${GMAIL_BODY_STYLE}">${inner}</div>`;
 }
 
 /**
@@ -291,7 +333,13 @@ export function htmlToPlainText(html: string): string {
   root.querySelectorAll("style,script").forEach((n) => n.remove());
   root.querySelectorAll('[data-plaintext="omit"]').forEach((n) => n.remove());
   root.querySelectorAll("br").forEach((n) => n.replaceWith("\n"));
-  for (const tag of ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "blockquote"]) {
+  // A paragraph break is a BLANK line in text/plain. Without this the
+  // text alternative runs every paragraph together, which is the same defect
+  // the HTML part exists to fix.
+  for (const tag of ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre"]) {
+    root.querySelectorAll(tag).forEach((n) => n.insertAdjacentHTML("afterend", "\n\n"));
+  }
+  for (const tag of ["li", "tr"]) {
     root.querySelectorAll(tag).forEach((n) => n.insertAdjacentHTML("afterend", "\n"));
   }
   return root.textContent.replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n").trim();
@@ -381,7 +429,7 @@ export function composeBody(
   report.removedRefs = stripped.refs;
   report.removedAuthorTags = stripped.tags;
 
-  let inner = inlineGmailStyles(toNativeBlocks(root.toString()));
+  let inner = inlineGmailStyles(toEmailBlocks(root.toString()));
   if (opts.uuid && !inner.includes(`ref:${opts.uuid}`)) inner += refMarkerHtml(opts.uuid);
   const html = wrapGmailNative(inner);
 

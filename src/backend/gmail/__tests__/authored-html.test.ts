@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { buildAuthoredBody, verifyAuthoredHtml, GMAIL_NATIVE_STYLE } from "../authored-html";
+import { buildAuthoredBody, verifyAuthoredHtml, GMAIL_BODY_STYLE } from "../authored-html";
 import { composeBody } from "../compose";
 
 const KEY = "a".repeat(64);
@@ -23,11 +23,10 @@ function gmailQuote(originalHtml: string, replyAbove = "<div>Sounds good.</div>"
 }
 
 describe("buildAuthoredBody — native Gmail shape", () => {
-  it("wraps in Gmail's compose style and uses div + <div><br></div> paragraphs, never <p>", async () => {
+  it("uses the house container and <p> paragraphs, with marks and links intact", async () => {
     const { html } = await build({ markdown: "First para with **bold** and [a link](https://example.com).\n\nSecond para." });
-    expect(html.startsWith(`<div dir="ltr" style="${GMAIL_NATIVE_STYLE}">`)).toBe(true);
-    expect(html).not.toMatch(/<p[\s>]/);
-    expect(html).toContain("<div><br></div>");
+    expect(html.startsWith(`<div dir="ltr" style="${GMAIL_BODY_STYLE}">`)).toBe(true);
+    expect(html.match(/<p[^>]*>/g)).toHaveLength(2);
     expect(html).toMatch(/<strong[^>]*>bold<\/strong>/);
     expect(html).toMatch(/<a href="https:\/\/example.com"[^>]*>a link<\/a>/);
   });
@@ -61,6 +60,14 @@ describe("buildAuthoredBody — native Gmail shape", () => {
   it("escapes plain text input instead of rendering it as HTML", async () => {
     const { html } = await build({ text: "a <b>not bold</b>\nline two" });
     expect(html).toContain("a &lt;b&gt;not bold&lt;/b&gt;<br>line two");
+  });
+
+  it("signs <p> paragraphs — the block the house format actually emits", async () => {
+    // SIGNABLE missing "p" would silently sign nothing and the watermark would
+    // be decorative.
+    const r = await build({ markdown: "One.\n\nTwo." });
+    expect(r.signedBlocks).toBe(2);
+    expect((await verifyAuthoredHtml(r.html, KEY)).signed).toHaveLength(2);
   });
 
   it("signs each paragraph and each list item", async () => {
@@ -108,7 +115,7 @@ describe("verifyAuthoredHtml", () => {
   it("flags text a counterparty typed INLINE inside the quoted original", async () => {
     const { html } = await build({ markdown: "Please confirm the $4,000 price.\n\nWork starts Monday." });
     // Counterparty clicks into the quote and types between Justin's paragraphs.
-    const tampered = html.replace("<div><br></div>", "<div><br></div><div>&gt;&gt; We never agreed to that price.</div>");
+    const tampered = html.replace(/(<\/p>)(<p)/, "$1<div>&gt;&gt; We never agreed to that price.</div>$2");
     const r = await verifyAuthoredHtml(gmailQuote(tampered), KEY);
     expect(r.signed.every((b) => b.verdict === "verified")).toBe(true);
     expect(r.unmarked).toEqual([">> We never agreed to that price."]);
@@ -135,7 +142,7 @@ describe("verifyAuthoredHtml", () => {
 
   it("detects a signed paragraph deleted from the quote", async () => {
     const { html } = await build({ text: "One.\n\nTwo.\n\nThree." });
-    const root = html.replace(/<div>Two\.<span[^>]*>[^<]*<\/span><\/div>/, "");
+    const root = html.replace(/<p[^>]*>Two\.<span[^>]*>[^<]*<\/span><\/p>/, "");
     const r = await verifyAuthoredHtml(root, KEY);
     expect(r.missing).toEqual([{ uuid: UUID, index: 1 }]);
   });

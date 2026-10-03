@@ -3,11 +3,10 @@
  * @description Build a Gmail-NATIVE-looking HTML body that carries two hidden
  * layers, and verify them later.
  *
- * 1. **Native look.** Gmail's own compose writes `<div dir="ltr">` wrapped
- *    paragraphs as `<div>…</div>` separated by `<div><br></div>`, in Arial
- *    `small` #222222. We emit exactly that shape (not `<p>` with margins), so the
- *    message — and every quoted copy of it — looks hand-typed in Gmail, while
- *    still allowing links, bold/italic, colour, lists.
+ * 1. **House formatting.** The body is built by `compose.ts`, so it already
+ *    follows the Gmail HTML standard (Arial 14px/1.5 #222222, `<p>` with a 16px
+ *    bottom margin, `#1155cc` links, 650px container). The watermark is applied
+ *    to those exact bytes, never to a separately-rendered copy.
  * 2. **Hidden reference id.** The existing `ref:<uuid>` marker
  *    (`compose.ts#refMarkerHtml`, white + collapsed) so Gmail search on the uuid
  *    finds the thread.
@@ -44,19 +43,19 @@ import {
   AUTHORED_TAG_RE,
   composeBody,
   escapeHtml,
-  GMAIL_NATIVE_STYLE,
+  GMAIL_BODY_STYLE,
   HIDDEN_STYLE,
   htmlToPlainText,
   LEGEND_MARK,
   type ComposeReport,
 } from "@/backend/gmail/compose";
 
-export { GMAIL_NATIVE_STYLE };
+export { GMAIL_BODY_STYLE };
 
 /** Global-flagged copy for `String.replace` (AUTHORED_TAG_RE itself is exec-safe). */
 const TAG_RE = new RegExp(AUTHORED_TAG_RE.source, "g");
 const KEY_CONFIG = "email_authorship_key";
-const SIGNABLE = new Set(["div", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "li"]);
+const SIGNABLE = new Set(["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "li"]);
 
 /* ------------------------------------------------------------------ key --- */
 

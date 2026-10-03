@@ -42,7 +42,7 @@ export type PlateNode = PlateElement | PlateText;
 export type PlateValue = PlateElement[];
 
 const BLOCK_TAG: Record<string, string> = {
-  p: "div",
+  p: "p",
   h1: "h1",
   h2: "h2",
   h3: "h3",
@@ -116,7 +116,7 @@ export function plateToHtml(value: PlateValue): string {
       out.push(`<pre><code>${lines}</code></pre>`);
       continue;
     }
-    const tag = BLOCK_TAG[block.type] ?? "div";
+    const tag = BLOCK_TAG[block.type] ?? "p";
     const inner = inlineToHtml(block.children);
     out.push(inner ? `<${tag}>${inner}</${tag}>` : `<${tag}><br></${tag}>`);
   }

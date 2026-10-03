@@ -10,7 +10,7 @@ describe("plateToHtml", () => {
       { type: "p", children: [{ type: "a", url: "https://a.b", children: [{ text: "link" }] }] },
     ];
     const html = plateToHtml(value);
-    expect(html).toBe('<div>Hello <strong>there</strong>.</div><div><a href="https://a.b">link</a></div>');
+    expect(html).toBe('<p>Hello <strong>there</strong>.</p><p><a href="https://a.b">link</a></p>');
   });
 
   it("regroups Plate's indent-based list blocks into real <ul>/<ol>", () => {
@@ -31,7 +31,7 @@ describe("plateToHtml", () => {
 
   it("escapes text so an email body cannot inject markup", () => {
     expect(plateToHtml([{ type: "p", children: [{ text: "<script>x</script>" }] }])).toBe(
-      "<div>&lt;script&gt;x&lt;/script&gt;</div>",
+      "<p>&lt;script&gt;x&lt;/script&gt;</p>",
     );
   });
 });

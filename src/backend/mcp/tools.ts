@@ -2337,7 +2337,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_draft",
     description:
-      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. EVERY draft ships as HTML shaped like Gmail's own compose (Arial small #222222, blank-line spacers between paragraphs, real bullets/numbering/links/bold) — the worker sanitizes, repairs and inlines the CSS, so send `markdown` (easiest) or `html` and do NOT hand-write inline styles. A plain `body` string is turned into the same HTML. The result carries a `body` report naming anything removed. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
+      "Create a Gmail DRAFT (not sent) so a human can review before sending. `to` (and cc/bcc) accept MULTIPLE recipients — pass an array of addresses or a comma-separated string. Preferred over gmail_send for agent workflows. EVERY draft ships as HTML following the house Gmail standard (Arial/Helvetica 14px/1.5 #222222, `<p>` paragraphs with a 16px bottom margin, #1155cc underlined links, 24px list indent, real bullets/numbering/bold, 650px left-aligned container) — the worker sanitizes, repairs and inlines every style, so send `markdown` (easiest) or semantic `html` and do NOT hand-write inline CSS. A plain `body` string is turned into the same HTML. The result carries a `body` report naming anything removed. To draft a reply-all within an existing thread, use gmail_create_reply_draft instead.",
     inputSchema: z.object({
       to: recipients,
       subject: z.string(),
@@ -2371,7 +2371,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_create_reply_draft",
     description:
-      "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review. Ships as Gmail-native HTML like the other compose tools: send `markdown` or `html`, never hand-written inline styles.",
+      "Create a DRAFT reply to an existing message (same thread, proper In-Reply-To/References). Defaults to REPLY-ALL (original sender + all To/Cc, minus you). Pass `to` to reply to specific addresses only, or replyAll:false to reply to the sender only. Draft, not sent — for human review. Ships as house-standard Gmail HTML like the other compose tools: send `markdown` or semantic `html`, never hand-written inline CSS.",
     inputSchema: z.object({
       messageId: z.string(),
       body: z.string().optional(),
@@ -2410,7 +2410,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_draft_html",
     description:
-      "Create a Gmail DRAFT whose body is ALWAYS HTML shaped exactly like Gmail's own compose (Arial, small, #222222, <div> paragraphs with Gmail's blank-line spacer) — so links, bold/italic, colour and lists work while it still looks hand-typed. Supply ONE of `markdown`, `html` or `text`. Every draft is stamped with a hidden white `ref:<uuid>` (returned as `uuid`; search Gmail for it later) and a hidden per-paragraph authorship watermark, so gmail_verify_authorship can later tell the sender's text apart from text someone typed inline inside the quoted original. New draft: pass `to` + `subject`. Reply draft in the same thread: pass `replyToMessageId` (reply-all by default; `replyAll:false` for sender only).",
+      "Create a Gmail DRAFT whose body is ALWAYS HTML following the house Gmail standard (Arial/Helvetica 14px/1.5 #222222, `<p>` paragraphs with a 16px bottom margin, #1155cc underlined links, 24px list indent) — so links, bold/italic, colour and lists all survive Gmail's renderer. Supply ONE of `markdown`, `html` or `text`. Every draft is stamped with a hidden white `ref:<uuid>` (returned as `uuid`; search Gmail for it later) and a hidden per-paragraph authorship watermark, so gmail_verify_authorship can later tell the sender's text apart from text someone typed inline inside the quoted original. New draft: pass `to` + `subject`. Reply draft in the same thread: pass `replyToMessageId` (reply-all by default; `replyAll:false` for sender only).",
     inputSchema: z.object({
       to: recipients.optional(),
       subject: z.string().optional(),
@@ -2525,7 +2525,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "email_draft_studio_create",
     description:
-      "Start an email in the DRAFT STUDIO — a page on this worker where the draft is revised instead of in Gmail. Use this when the email will go through several rounds (\"draft something and we'll work on it\"): each update is a numbered revision the user can read, diff against the previous one, edit in a rich-text editor, or comment on, and the page updates live while they watch. Nothing reaches Gmail until email_draft_studio_send. Prefer gmail_create_draft/gmail_draft_html instead when the email is one-and-done. Body: send `markdown` (easiest), `html` or `text` — it is rendered to the exact Gmail-native HTML that would be sent. Returns the `url` to give the user.",
+      "Start an email in the DRAFT STUDIO — a page on this worker where the draft is revised instead of in Gmail. Use this when the email will go through several rounds (\"draft something and we'll work on it\"): each update is a numbered revision the user can read, diff against the previous one, edit in a rich-text editor, or comment on, and the page updates live while they watch. Nothing reaches Gmail until email_draft_studio_send. Prefer gmail_create_draft/gmail_draft_html instead when the email is one-and-done. Body: send `markdown` (easiest), `html` or `text` — it is rendered to the exact house-standard HTML that would be sent. Returns the `url` to give the user.",
     inputSchema: z.object({
       to: recipients.optional(),
       subject: z.string().optional(),
@@ -2732,7 +2732,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_send",
     description:
-      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. EVERY message ships as HTML shaped like Gmail's own compose (Arial small #222222, blank-line spacers, real bullets/numbering/links/bold) — send `markdown` (easiest) or `html`; a plain `body` string becomes the same HTML. The worker sanitizes, repairs and inlines the CSS, sets the sender display name, and stamps one hidden reference id (ids from an earlier draft are stripped), returning a `body` report. Attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
+      "Send an email immediately. `to` (and cc/bcc) accept MULTIPLE recipients — an array or a comma-separated string. EVERY message ships as HTML following the house Gmail standard (Arial/Helvetica 14px/1.5 #222222, `<p>` paragraphs with a 16px bottom margin, #1155cc underlined links, 24px list indent, real bullets/numbering/bold, 650px left-aligned container) — send `markdown` (easiest) or semantic `html`; a plain `body` string becomes the same HTML. Never hand-write inline CSS. The worker sanitizes, repairs and inlines the CSS, sets the sender display name, and stamps one hidden reference id (ids from an earlier draft are stripped), returning a `body` report. Attach with `driveIds`/`blobs` (auto Drive-link fallback over 25 MiB). Pass replyToMessageId (or threadId) to reply within an existing thread. Prefer gmail_create_draft when a human should review first.",
     inputSchema: z.object({
       to: recipients,
       subject: z.string(),
