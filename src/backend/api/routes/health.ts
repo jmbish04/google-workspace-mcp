@@ -93,12 +93,17 @@ class HealthCoordinator {
   async runAllChecks(trigger: "manual" | "scheduled" | "agent") {
     const start = Date.now();
 
+    // Each check is isolated. A health run that dies because ONE probe threw
+    // reports nothing about the other eleven — the panel goes dark exactly
+    // when something is wrong, which is the failure mode this whole module
+    // exists to prevent. Measured 2026-10-03: POST /api/health/run returned
+    // 500 in production while every individual route stayed 200.
     const checks = await Promise.all([
-      this.checkD1(),
-      this.checkWorkersAI(),
-      this.checkDraftStudio(),
-      this.checkPostgres(),
-      ...AGENT_BINDINGS.map((descriptor) => this.pingAgent(descriptor)),
+      this.isolate("database", "d1_roundtrip", () => this.checkD1()),
+      this.isolate("ai", "workers_ai_binding", () => this.checkWorkersAI()),
+      this.isolate("database", "draft_studio_tables", () => this.checkDraftStudio()),
+      this.isolate("database", "postgres_hyperdrive", () => this.checkPostgres()),
+      ...AGENT_BINDINGS.map((d) => this.isolate("agents", d.name, () => this.pingAgent(d))),
     ]);
 
     const durationMs = Date.now() - start;
@@ -107,6 +112,49 @@ class HealthCoordinator {
     const runId = crypto.randomUUID();
     const db = getDb(this.env);
 
+    // Persistence is a nice-to-have; the CALLER still gets the verdict even if
+    // the history write fails. Previously a failed insert threw away a
+    // complete, correct set of results.
+    try {
+      await this.persist(runId, status, trigger, durationMs, checks, db);
+    } catch (error) {
+      console.error("health: results could not be persisted", error);
+      return {
+        run: { id: runId, status, trigger, durationMs, createdAt: new Date(), metadata: { checkCount: checks.length, persisted: false } },
+        results: checks.map((c) => ({ id: crypto.randomUUID(), runId, ...c })),
+      } as unknown as Awaited<ReturnType<typeof this.getRunById>>;
+    }
+    return this.getRunById(runId);
+  }
+
+  /** Never let one probe's throw escape — turn it into a failed check. */
+  private async isolate(
+    category: string,
+    name: string,
+    run: () => Promise<CheckResult>,
+  ): Promise<CheckResult> {
+    const start = Date.now();
+    try {
+      return await run();
+    } catch (error) {
+      return {
+        category,
+        name,
+        status: "fail",
+        message: `check threw: ${error instanceof Error ? error.message : String(error)}`,
+        durationMs: Date.now() - start,
+      } as CheckResult;
+    }
+  }
+
+  private async persist(
+    runId: string,
+    status: ReturnType<typeof aggregateStatus>,
+    trigger: "manual" | "scheduled" | "agent",
+    durationMs: number,
+    checks: CheckResult[],
+    db: ReturnType<typeof getDb>,
+  ) {
     await db.insert(healthRuns).values({
       id: runId,
       status,
@@ -129,8 +177,6 @@ class HealthCoordinator {
         })),
       );
     }
-
-    return this.getRunById(runId);
   }
 
   // -----------------------------------------------------------------------
