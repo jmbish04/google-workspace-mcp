@@ -10,9 +10,11 @@
  *
  * Two rules the driver has to follow on Workers, and both bite silently:
  *
- * 1. `max: 5` and `fetch_types: false`. Hyperdrive is already the pool, so a
- *    second pool in the isolate just burns connections, and postgres.js's
- *    startup type-introspection round trip is wasted on every cold start.
+ * 1. `max: 5` and `fetch_types: false` — Hyperdrive is already the pool, so a
+ *    second pool in the isolate just burns connections, and the startup
+ *    type-introspection round trip is wasted on every cold start. But NEVER
+ *    `prepare: false`: Cloudflare documents that it breaks under Hyperdrive's
+ *    transaction pooling, and it cost a 500 on the health route to learn.
  * 2. **A client is per-request.** A connection opened in one request must not
  *    be reused by another — Workers may run them in different contexts, and a
  *    cached client outlives the I/O context it was created in. So `getSql()`
@@ -37,9 +39,16 @@ export function getSql(env: Env): postgres.Sql {
   return postgres(hyperdrive.connectionString, {
     // Hyperdrive pools on its own; a second pool here wastes origin connections.
     max: 5,
-    // Skip the startup type-introspection round trip (unsupported on Workers).
+    // No array types in this schema, so skip the extra type-discovery round trip.
     fetch_types: false,
-    prepare: false,
+    // `prepare` is left at its default (true) ON PURPOSE. Cloudflare's docs are
+    // explicit: do NOT set `prepare: false` with Postgres.js, because it then
+    // sends extra protocol messages to discover parameter types before every
+    // query, and Hyperdrive's transaction pooling mode does not reliably
+    // support that — "this can cause queries to hang or fail intermittently".
+    // Measured 2026-10-03: with `prepare: false`, POST /api/health/run returned
+    // 500 in production while every other route stayed 200.
+    // https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/
   });
 }
 
