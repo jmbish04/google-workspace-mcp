@@ -1,7 +1,7 @@
 # Postgres on Proxmox, or the Cloudflare stores already running?
 
 - **Date:** 2026-10-03
-- **Status:** Open — needs Justin
+- **Status:** Decided 2026-10-03 — option 2, full migration to Postgres
 - **Raised by:** Claude (Opus 5), while starting Phase 1 of the V7 roadmap
 - **Maestro:** plan `425423745986`, tasks `task-wrangler-setup`, `task-pg-schema-ddl`, `epic-lxc-python`
 
@@ -71,4 +71,48 @@ because those are the parts that are expensive to undo.
 
 ## Decision
 
-_(awaiting Justin)_
+**2026-10-03 — Justin: "I want everything on Postgres. Postgres is free running
+on my local machine." Option 2, in full: Postgres becomes the system of record,
+and RAG moves to pgvector with it.**
+
+### What I had wrong when I raised this
+
+I wrote that no Postgres was documented. That was a fact about the docs, not
+about the machine, and I should not have let it stand as the second. Measured
+2026-10-03 after the decision:
+
+- **PostgreSQL 17.5** is live on **LXC 109, `192.168.1.50:5432`**, hostssl
+  scram, reachable over the LAN, already carrying nine databases including
+  `maestro` (65 MB) and `homeassistant` (7.9 GB).
+- A **Cloudflare Tunnel already exists for it** — `postgres-db.hacolby.app`,
+  tunnel `f291dfcb-8a41-459e-99f4-fca8d481370f`
+  (`CLOUDFLARED_POSTGRES_LXC109_TUNNEL_TOKEN`).
+- Credentials are already in the tokens CLI
+  (`POSTGRES_LXC109_SUPERUSER_PASSWORD`), and `gh_tools` is an existing
+  precedent for a project owning a database on this box.
+
+So the infrastructure half of Phase 1 was never missing — it was undocumented.
+`~/AGENTS-proxmox.md` says nothing about Postgres, which is worth fixing.
+
+### The one gap, and the one caveat
+
+- **pgvector is NOT installed.** `pg_available_extensions` on LXC 109 offers
+  `pg_trgm`, `pgcrypto` and `uuid-ossp` only. "Everything on Postgres" includes
+  RAG, so `postgresql-17-pgvector` has to go on the box before the Vectorize
+  indexes can move.
+- **Stated once, not an argument:** the Worker currently has no dependency on
+  the house being up. After this it does — if LXC 109 is down, the Worker's
+  database is down. Hyperdrive caches reads, which softens it, but writes fail.
+  That is the trade being made deliberately in exchange for free storage and
+  one store to reason about.
+
+### How it gets connected
+
+Cloudflare's current recommended path for a private database (changelog
+2026-04-29) is a **Workers VPC service** over the existing tunnel, with
+**Hyperdrive** on top — which collapses two of `task-wrangler-setup`'s four
+requirements into one flow:
+
+    npx wrangler hyperdrive create <name> \
+      --service-id <VPC_SERVICE_ID> --database <db> \
+      --user <user> --password <pw> --scheme postgresql

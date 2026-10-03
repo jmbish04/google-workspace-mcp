@@ -79,6 +79,7 @@
     "node-html-parser": "^9.0.1",
     "notebooklm-sdk": "^0.3.4",
     "platejs": "53.2.4",
+    "postgres": "^3.4.9",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-markdown": "^9.1.0",

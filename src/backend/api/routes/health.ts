@@ -97,6 +97,7 @@ class HealthCoordinator {
       this.checkD1(),
       this.checkWorkersAI(),
       this.checkDraftStudio(),
+      this.checkPostgres(),
       ...AGENT_BINDINGS.map((descriptor) => this.pingAgent(descriptor)),
     ]);
 
@@ -199,6 +200,56 @@ class HealthCoordinator {
       message: "Draft studio tables readable and the live-update room is bound",
       durationMs: Date.now() - start,
     };
+  }
+
+  /**
+   * Postgres through Hyperdrive — the system of record as of 2026-10-03.
+   *
+   * Runs a real query rather than reporting that a binding exists: the origin
+   * is a box on a home LAN behind a Cloudflare Tunnel, so "bound" and
+   * "reachable" are genuinely different facts. pgvector's presence is asserted
+   * too, because RAG depends on it and a missing extension is otherwise only
+   * discovered by the first embedding write.
+   */
+  private async checkPostgres(): Promise<CheckResult> {
+    const start = Date.now();
+    const base = { category: "database" as const, name: "postgres_hyperdrive" };
+    if (!(this.env as { HYPERDRIVE?: unknown }).HYPERDRIVE) {
+      return { ...base, status: "fail", message: "env.HYPERDRIVE is not bound", durationMs: Date.now() - start };
+    }
+    try {
+      const { withPg } = await import("@/backend/db/postgres");
+      const row = await withPg(this.env, async (_db, sql) => {
+        const r = await sql`select current_database() as db,
+                                   (select extversion from pg_extension where extname = 'vector') as vector`;
+        return r[0] as { db: string; vector: string | null };
+      });
+      if (!row?.db) {
+        return { ...base, status: "fail", message: "Postgres answered but returned no row", durationMs: Date.now() - start };
+      }
+      if (!row.vector) {
+        return {
+          ...base,
+          status: "warn",
+          message: `Connected to ${row.db}, but pgvector is NOT installed — RAG writes will fail`,
+          durationMs: Date.now() - start,
+        };
+      }
+      return {
+        ...base,
+        status: "ok",
+        message: `Connected to ${row.db} via Hyperdrive; pgvector ${row.vector}`,
+        details: { database: row.db, pgvector: row.vector },
+        durationMs: Date.now() - start,
+      };
+    } catch (error) {
+      return {
+        ...base,
+        status: "fail",
+        message: error instanceof Error ? error.message : "Postgres unreachable through Hyperdrive",
+        durationMs: Date.now() - start,
+      };
+    }
   }
 
   private async checkWorkersAI(): Promise<CheckResult> {
