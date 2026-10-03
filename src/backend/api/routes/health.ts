@@ -219,11 +219,18 @@ class HealthCoordinator {
     }
     try {
       const { withPg } = await import("@/backend/db/postgres");
-      const row = await withPg(this.env, async (_db, sql) => {
-        const r = await sql`select current_database() as db,
-                                   (select extversion from pg_extension where extname = 'vector') as vector`;
-        return r[0] as { db: string; vector: string | null };
-      });
+      // A health check MUST NOT be able to hang the request that runs it.
+      // Measured 2026-10-03: without this bound, an unreachable origin left
+      // postgres.js waiting and POST /api/health/run returned 500 for every
+      // check, not just this one — the instrument took down the panel.
+      const row = await withDeadline(
+        POSTGRES_CHECK_TIMEOUT_MS,
+        withPg(this.env, async (_db, sql) => {
+          const r = await sql`select current_database() as db,
+                                     (select extversion from pg_extension where extname = 'vector') as vector`;
+          return r[0] as { db: string; vector: string | null };
+        }),
+      );
       if (!row?.db) {
         return { ...base, status: "fail", message: "Postgres answered but returned no row", durationMs: Date.now() - start };
       }
@@ -243,10 +250,11 @@ class HealthCoordinator {
         durationMs: Date.now() - start,
       };
     } catch (error) {
+      const msg = error instanceof Error ? error.message : "Postgres unreachable through Hyperdrive";
       return {
         ...base,
-        status: "fail",
-        message: error instanceof Error ? error.message : "Postgres unreachable through Hyperdrive",
+        status: msg === POSTGRES_TIMEOUT_MESSAGE ? "timeout" : "fail",
+        message: msg,
         durationMs: Date.now() - start,
       };
     }
@@ -410,6 +418,22 @@ const latestResponseSchema = z.object({
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
+
+/** Budget for the Postgres probe: Hyperdrive cold start + the home tunnel. */
+const POSTGRES_CHECK_TIMEOUT_MS = 6000;
+const POSTGRES_TIMEOUT_MESSAGE = `Postgres did not answer within ${POSTGRES_CHECK_TIMEOUT_MS}ms through Hyperdrive`;
+
+/**
+ * Reject if `work` has not settled in time. The losing promise is left to
+ * settle on its own — a health probe must bound the REQUEST, and cannot
+ * cancel an in-flight socket.
+ */
+function withDeadline<T>(ms: number, work: Promise<T>): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(POSTGRES_TIMEOUT_MESSAGE)), ms)),
+  ]);
+}
 
 export const healthRouter = new OpenAPIHono<{ Bindings: Env }>();
 
