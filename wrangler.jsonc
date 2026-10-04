@@ -13,6 +13,10 @@
   "upload_source_maps": true,
   "workers_dev": true,
   "preview_urls": true,
+  // Smart Placement: run the Worker near its slowest backend (Hyperdrive/Postgres LXC109, D1, Google APIs).
+  "placement": { "mode": "smart" },
+  // Workers Caching: respects Cache-Control the Worker sets; authed/dynamic responses stay uncached.
+  "cache": { "enabled": true },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
