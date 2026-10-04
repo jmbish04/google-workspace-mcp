@@ -54,10 +54,11 @@ const badgeVariants = cva(
       size: {
         xs: "px-1 py-0.25 text-[0.6rem] leading-none h-4 min-w-4 gap-1",
         sm: "px-1 py-0.25 text-[0.625rem] leading-none h-4.5 min-w-4.5 gap-1",
-        defalt: "px-1.25 py-0.5 text-xs h-5 min-w-5 gap-1",
+        default: "px-1.25 py-0.5 text-xs h-5 min-w-5 gap-1",
         lg: "px-1.5 py-0.5 text-xs h-5.5 min-w-5.5 gap-1",
         xl: "px-2 py-0.75 text-sm h-6 min-w-6 gap-1.5",
       },
+      /** `default`: active style radius. `full`: pill radius. */
       radius: {
         default:
           "rounded-sm",
@@ -70,4 +71,32 @@ const badgeVariants = cva(
       radius: "default",
     },
   }
-))
+)
+
+interface BadgeProps extends useRender.ComponentProps<"span"> {
+  variant?: VariantProps<typeof badgeVariants>["variant"]
+  size?: VariantProps<typeof badgeVariants>["size"]
+  radius?: VariantProps<typeof badgeVariants>["radius"]
+}
+
+function Badge({
+  className,
+  variant,
+  size,
+  radius,
+  render,
+  ...props
+}: BadgeProps) {
+  const defaultProps = {
+    "data-slot": "badge",
+    className: cn(badgeVariants({ variant, size, radius, className })),
+  }
+
+  return useRender({
+    defaultTagName: "span",
+    render,
+    props: mergeProps<"span">(defaultProps, props),
+  })
+}
+
+export { Badge, badgeVariants, type BadgeProps }

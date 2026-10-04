@@ -2,7 +2,7 @@
  * @fileoverview Kbd — a tiny inline keyboard-hint chip. No external dependency;
  * just a styled `<kbd>` tuned for the dark Monolith theme (ring-based surface,
  * no 1px border). Used by {@link file://./rich-text-composer.tsx} to annotate
- * toolbar shortcuts (⌘B, ⌘↵, …).
+ * toolbar shortcuts (⌘B, ⌘⇧, …).
  */
 
 import * as React from "react";
@@ -28,6 +28,25 @@ export function Kbd({ className, children, ...props }: React.ComponentProps<"kbd
     >
       {children}
     </kbd>
+  );
+}
+
+/**
+ * Group multiple Kbd chips together with consistent spacing, e.g. to render
+ * a chord like ⌘+K as a single unit.
+ *
+ * @example
+ * <KbdGroup><Kbd>⌘</Kbd><Kbd>K</Kbd></KbdGroup>
+ */
+export function KbdGroup({ className, children, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="kbd-group"
+      className={cn("inline-flex items-center gap-1", className)}
+      {...props}
+    >
+      {children}
+    </div>
   );
 }
 
