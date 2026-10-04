@@ -20,6 +20,7 @@ import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
+import { collaborationRouter } from "@/backend/api/routes/collaboration";
 import { documentsRouter } from "@/backend/api/routes/documents";
 
 import { agentAuthMiddleware } from "./middleware/agent-auth";
@@ -214,6 +215,7 @@ app.route("/api/gws-health-check", gwsHealthCheckRouter);
 app.route("/api/seed", seedRouter);
 app.route("/api/pdf", pdfRouter);
 app.route("/api/documents", documentsRouter);
+app.route("/api/collaboration", collaborationRouter);
 
 // Ported chat/tasks-scheduler surfaces (core-gsuite-tools Phase 3). Open —
 // same "feature APIs" convention as above — except the OAuth consent routes,

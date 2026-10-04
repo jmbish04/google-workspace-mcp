@@ -89,6 +89,7 @@
     "jose": "^6.2.4",
     "js-md5": "^0.9.2",
     "juice": "^12.1.2",
+    "lib0": "^0.2.119",
     "lucide-react": "^0.575.0",
     "marked": "^18.0.9",
     "mind-elixir": "5.13.0",
@@ -112,6 +113,7 @@
     "unpdf": "^1.8.0",
     "workers-ai-provider": "^3.1.14",
     "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
     "yjs": "^13.6.33",
     "zod": "^4.4.2",
     "zod-to-json-schema": "^3.25.2"
@@ -120,6 +122,7 @@
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.2",
     "drizzle-kit": "^0.31.10",
     "oxfmt": "^0.35.0",
     "oxlint": "^1.62.0",
@@ -127,7 +130,8 @@
     "typescript": "^5.9.3",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.1.10",
-    "wrangler": "^4.87.0"
+    "wrangler": "^4.87.0",
+    "ws": "^8.22.0"
   },
   "engines": {
     "node": ">=22.0.0"

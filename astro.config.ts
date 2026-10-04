@@ -1,10 +1,9 @@
-// @ts-check
-import { fileURLToPath } from "node:url";
-
 import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
+// @ts-check
+import { fileURLToPath } from "node:url";
 
 // The `ai` pkg transitively imports @ai-sdk/mcp's stdio transport which needs
 // child_process.spawn — not available in browser/Worker bundles and never
@@ -66,6 +65,7 @@ export default defineConfig({
         "CircuitBreaker",
         // Draft-studio live rooms (see src/backend/gmail/draft-room.ts).
         "EmailDraftRoom",
+        "DocumentCollaborationRoom",
       ],
     },
   }),
