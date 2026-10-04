@@ -66,6 +66,7 @@ import {
   reconcileWorkspaceSubscriptions,
   syncWorkspaceSubscriptions,
 } from "./backend/workspace-events/subscription-manager";
+import { DocumentReviewRoom } from "./backend/documents/review-room";
 
 // Re-export Durable Object agent classes + the RPC entrypoint so the Astro
 // Cloudflare adapter (and wrangler's `durable_objects`/service bindings) can
@@ -84,6 +85,7 @@ export {
   CircuitBreaker,
   EmailDraftRoom,
   DocumentCollaborationRoom,
+  DocumentReviewRoom,
 };
 
 // ---------------------------------------------------------------------------
@@ -345,6 +347,7 @@ export function createExports() {
     CircuitBreaker,
     EmailDraftRoom,
     DocumentCollaborationRoom,
+    DocumentReviewRoom,
   };
 }
 

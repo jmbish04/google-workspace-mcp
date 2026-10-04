@@ -52,12 +52,13 @@ interface __BaseEnv_Env {
 	CIRCUIT_BREAKER: DurableObjectNamespace<import("./dist/_worker.js/index").CircuitBreaker>;
 	EMAIL_DRAFT_ROOM: DurableObjectNamespace<import("./dist/_worker.js/index").EmailDraftRoom>;
 	DOCUMENT_COLLABORATION: DurableObjectNamespace<import("./dist/_worker.js/index").DocumentCollaborationRoom>;
+	DOCUMENT_REVIEW: DurableObjectNamespace<import("./dist/_worker.js/index").DocumentReviewRoom>;
 	SELF_RPC: Service<typeof import("./dist/_worker.js/index").GsuiteService>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./dist/_worker.js/index");
-		durableNamespaces: "OrchestratorAgent" | "GmailAgent" | "DocsAgent" | "SheetsAgent" | "SlidesAgent" | "AppsScriptAgent" | "DriveAgent" | "CalendarAgent" | "CircuitBreaker" | "EmailDraftRoom" | "DocumentCollaborationRoom";
+		durableNamespaces: "OrchestratorAgent" | "GmailAgent" | "DocsAgent" | "SheetsAgent" | "SlidesAgent" | "AppsScriptAgent" | "DriveAgent" | "CalendarAgent" | "CircuitBreaker" | "EmailDraftRoom" | "DocumentCollaborationRoom" | "DocumentReviewRoom";
 	}
 	interface Env extends __BaseEnv_Env {}
 }
