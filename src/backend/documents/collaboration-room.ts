@@ -23,6 +23,7 @@ import {
   MESSAGE_QUERY_AWARENESS,
   MESSAGE_SYNC,
   readAwarenessClientIds,
+  rebuildDoc,
 } from "@/backend/documents/collaboration-protocol";
 const COMPACT_AFTER_UPDATES = 100;
 
@@ -50,11 +51,14 @@ export class DocumentCollaborationRoom extends DurableObject<Env> {
       const snapshot = this.ctx.storage.sql
         .exec<{ state_blob: ArrayBuffer }>("SELECT state_blob FROM y_snapshot WHERE singleton = 1")
         .toArray()[0];
-      if (snapshot) Y.applyUpdate(this.doc, new Uint8Array(snapshot.state_blob), "storage");
-      for (const row of this.ctx.storage.sql
+      const updateRows = this.ctx.storage.sql
         .exec<{ update_blob: ArrayBuffer }>("SELECT update_blob FROM y_updates ORDER BY seq")
-        .toArray())
-        Y.applyUpdate(this.doc, new Uint8Array(row.update_blob), "storage");
+        .toArray();
+      rebuildDoc(
+        this.doc,
+        snapshot ? new Uint8Array(snapshot.state_blob) : undefined,
+        updateRows.map((row) => new Uint8Array(row.update_blob)),
+      );
       for (const socket of this.ctx.getWebSockets()) {
         const attachment = socket.deserializeAttachment() as SocketAttachment | null;
         if (attachment?.awarenessUpdate)

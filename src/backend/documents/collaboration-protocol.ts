@@ -1,5 +1,3 @@
-import type * as Y from "yjs";
-
 /**
  * @fileoverview Pure codecs for the standard y-websocket binary protocol.
  *
@@ -10,10 +8,36 @@ import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
+import * as Y from "yjs";
 
 export const MESSAGE_SYNC = 0;
 export const MESSAGE_AWARENESS = 1;
 export const MESSAGE_QUERY_AWARENESS = 3;
+
+/**
+ * Rebuild a Y.Doc from a persisted snapshot and ordered incremental updates.
+ *
+ * This is the exact reload path the collaboration Durable Object runs on cold
+ * start and after a hibernation eviction: apply the compacted snapshot first
+ * (when one exists), then replay every update recorded since it, in sequence
+ * order. Factoring it out of the room keeps the "collaboration survives
+ * reconnect" guarantee testable in Node without a workerd runtime.
+ *
+ * @param doc - Target document, mutated in place.
+ * @param snapshot - Compacted `Y.encodeStateAsUpdate` blob, or undefined before the first compaction.
+ * @param updates - Incremental update blobs in insertion order.
+ * @returns The same `doc`, now carrying all persisted state.
+ * @example `rebuildDoc(new Y.Doc(), snapshotBlob, updateBlobs)`
+ */
+export function rebuildDoc(
+  doc: Y.Doc,
+  snapshot: Uint8Array | undefined,
+  updates: Iterable<Uint8Array>,
+): Y.Doc {
+  if (snapshot) Y.applyUpdate(doc, snapshot, "storage");
+  for (const update of updates) Y.applyUpdate(doc, update, "storage");
+  return doc;
+}
 
 /** @param doc - Target Y.Doc. @returns A framed y-websocket sync-step-1 message. */
 export function encodeSyncStep1(doc: Y.Doc): Uint8Array {

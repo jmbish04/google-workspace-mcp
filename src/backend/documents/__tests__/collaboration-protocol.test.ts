@@ -16,6 +16,7 @@ import {
   MESSAGE_AWARENESS,
   MESSAGE_SYNC,
   readAwarenessClientIds,
+  rebuildDoc,
 } from "@/backend/documents/collaboration-protocol";
 
 describe("collaboration protocol", () => {
@@ -43,5 +44,37 @@ describe("collaboration protocol", () => {
     const decoder = decoding.createDecoder(encoding.toUint8Array(frame));
     expect(decoding.readVarUint(decoder)).toBe(MESSAGE_AWARENESS);
     expect(readAwarenessClientIds(decoding.readVarUint8Array(decoder))).toEqual([doc.clientID]);
+  });
+
+  it("rebuilds a document from a snapshot plus later updates, as the room does after eviction", () => {
+    // Simulate the room's persistence: a compacted snapshot, then the updates
+    // recorded after it. A reconnecting client must see snapshot AND tail.
+    const source = new Y.Doc();
+    source.getText("content").insert(0, "hello ");
+    const snapshot = Y.encodeStateAsUpdate(source);
+    const tail: Uint8Array[] = [];
+    source.on("update", (update: Uint8Array) => tail.push(update));
+    source.getText("content").insert(6, "world");
+    expect(tail.length).toBeGreaterThan(0);
+
+    const reloaded = rebuildDoc(new Y.Doc(), snapshot, tail);
+
+    // Dropping the snapshot yields only "world"; dropping the tail yields only
+    // "hello " — so this asserts both halves of the reload path.
+    expect(reloaded.getText("content").toString()).toBe("hello world");
+  });
+
+  it("compacts the update log into a snapshot that alone reconstructs the document", () => {
+    // The room snapshots and DELETEs its update log past a threshold; the
+    // snapshot by itself has to carry the whole document forward.
+    const doc = new Y.Doc();
+    const text = doc.getText("content");
+    for (let index = 0; index < 120; index += 1) text.insert(text.length, "x");
+    const snapshot = Y.encodeStateAsUpdate(doc);
+
+    const rebuilt = rebuildDoc(new Y.Doc(), snapshot, []);
+
+    expect(rebuilt.getText("content").length).toBe(120);
+    expect(rebuilt.getText("content").toString()).toBe(doc.getText("content").toString());
   });
 });
