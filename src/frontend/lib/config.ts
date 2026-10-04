@@ -55,6 +55,7 @@ export const siteConfig: SiteConfig = {
         { href: "/gws/templates", label: "Templates" },
         { href: "/gws/operations", label: "Operations Log" },
         { href: "/gws/draft-studio", label: "Draft Studio" },
+        { href: "/gws/editor-kitchen-sink", label: "Editor Kitchen Sink" },
         { href: "/gws/scheduled-sends", label: "Scheduled Sends" },
         { href: "/gws/email-templates", label: "Email Templates" },
         { href: "/gws/template-gallery", label: "Template Gallery" },
