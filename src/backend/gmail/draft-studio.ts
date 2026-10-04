@@ -26,15 +26,17 @@ import { composeBody, type ComposeReport } from "@/backend/gmail/compose";
 import { notifyDraftRoom } from "@/backend/gmail/draft-room-notify";
 import { newEmailUuid } from "@/backend/gmail/tracking";
 import { GmailService } from "@/backend/mcp/services/gmail";
-import { plateToHtml, type PlateValue } from "@/shared/plate-html";
+// Import from `tiptap-email` (the pure serialiser), NOT `tiptap-html` — the
+// latter pulls `@tiptap/html/server` → `happy-dom`, which cannot run in workerd.
+import { tiptapToHtml, type TiptapDoc } from "@/shared/tiptap-email";
 
 /** Body in any of the forms a caller may have. */
 export interface StudioBodyInput {
   markdown?: string;
   html?: string;
   text?: string;
-  /** A PlateJS value from the frontend editor. */
-  plate?: PlateValue;
+  /** A Tiptap document (ProseMirror JSON) from the frontend editor. */
+  doc?: TiptapDoc;
 }
 
 export interface DraftWithHistory extends EmailDraft {
@@ -46,12 +48,12 @@ export interface DraftWithHistory extends EmailDraft {
 
 /** Normalise any supported body form into the exact bytes that would be sent. */
 export function renderStudioBody(input: StudioBodyInput, uuid: string): { html: string; text: string; report: ComposeReport } {
-  const html = input.plate?.length ? plateToHtml(input.plate) : input.html;
+  const html = input.doc?.content?.length ? tiptapToHtml(input.doc) : input.html;
   return composeBody({ markdown: input.markdown, html, text: input.text }, { uuid });
 }
 
 function hasBody(input: StudioBodyInput): boolean {
-  return Boolean(input.plate?.length || input.markdown || input.html || input.text);
+  return Boolean(input.doc?.content?.length || input.markdown || input.html || input.text);
 }
 
 export interface CreateDraftInput extends StudioBodyInput {

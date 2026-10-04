@@ -48,11 +48,14 @@ function SheetContent({
   side = "left",
   children,
   showClose = true,
+  showCloseButton,
   ...props
 }: SheetPrimitive.Popup.Props & {
   side?: SheetSide;
   showClose?: boolean;
+  showCloseButton?: boolean;
 }) {
+  const isCloseShown = showCloseButton !== undefined ? showCloseButton : showClose;
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -70,7 +73,7 @@ function SheetContent({
         {...props}
       >
         {children}
-        {showClose ? (
+        {isCloseShown ? (
           <SheetPrimitive.Close
             data-slot="sheet-close-button"
             className="absolute top-4 right-4 rounded-md p-1 text-muted-foreground opacity-70 transition-opacity hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -89,6 +92,16 @@ function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="sheet-header"
       className={cn("flex flex-col gap-1 p-6 pb-2", className)}
+      {...props}
+    />
+  );
+}
+
+function SheetFooter({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sheet-footer"
+      className={cn("flex flex-col-reverse sm:flex-row sm:justify-end sm:gap-2", className)}
       {...props}
     />
   );
@@ -119,6 +132,7 @@ export {
   SheetClose,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetOverlay,
   SheetPortal,

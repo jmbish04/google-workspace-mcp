@@ -1,25 +1,23 @@
 /**
  * Ambient augmentation of the generated `Env` (worker-configuration.d.ts) with
- * bindings that `wrangler types` doesn't emit a precise shape for.
+ * bindings/vars that `wrangler types` does not emit.
  *
- * `SELF_RPC` is this Worker's own `services` self-binding to the `GsuiteService`
- * WorkerEntrypoint (wrangler.jsonc → services). Typed as the class so code mode
- * gets `SELF_RPC.callTool(...)`; over a service binding each method returns a
- * Promise, which `callTool` already does.
+ * Keep this in sync with what `wrangler types` generates: a member declared
+ * here that `wrangler types` ALSO emits collides on the global `interface Env`
+ * (declaration merging with a different type), which makes `Env` fail the
+ * `agents` package's `Agent<Env extends Cloudflare.Env>` constraint and breaks
+ * the whole agent/RPC layer's types. That is exactly what happened when the
+ * draft-studio integration regenerated `worker-configuration.d.ts`: it now
+ * emits precise shapes for `SELF_RPC` (the `services` self-binding →
+ * `Service<typeof GsuiteService>`, which already exposes `callTool` as a
+ * Promise) and `WORKSPACE_EVENTS_ACCOUNT` (a `vars` entry), so both were
+ * removed from here. Only vars `wrangler types` cannot know about stay.
  */
-import type { GsuiteService } from "@/backend/rpc";
 
 declare global {
   interface Env {
-    SELF_RPC?: GsuiteService;
     /** Comma-separated emails forced to OAuth (never DWD). Optional var. */
     GOOGLE_OAUTH_ONLY_ACCOUNTS?: string;
-    /**
-     * Account that owns every Workspace Events subscription. Pinned to the
-     * consumer account so the Pub/Sub pipeline is not subject to Workspace
-     * Google Cloud session control. Optional var (wrangler.jsonc).
-     */
-    WORKSPACE_EVENTS_ACCOUNT?: string;
   }
 }
 

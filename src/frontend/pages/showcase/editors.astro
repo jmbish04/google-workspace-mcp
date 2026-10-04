@@ -1,0 +1,17 @@
+---
+/**
+ * `/showcase/editors` — alias route mounting all five ReUI Tiptap rich-text-editor
+ * blocks + sheet-10.
+ *
+ * HARD RULE: Every editor island mounts `client:only="react"` — NOT `client:load`.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { EditorKitchenSink } from "@/components/editor-kitchen-sink";
+---
+
+<BaseLayout
+  title="Rich Text Editors Showcase"
+  description="All five ReUI Tiptap rich-text-editor blocks plus sheet-10 AI assistant sheet."
+>
+  <EditorKitchenSink client:only="react" />
+</BaseLayout>

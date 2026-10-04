@@ -25,32 +25,14 @@
  * names re-exported here.
  */
 
-import { App } from "astro/app";
-import { handle } from "@astrojs/cloudflare/handler";
 import type { ExportedHandler } from "@cloudflare/workers-types";
+
+import { handle } from "@astrojs/cloudflare/handler";
 import { routeAgentRequest } from "agents";
+import { App } from "astro/app";
 
-import { app as honoApp } from "./backend/api/index";
-import { handleMcpRequest } from "./backend/mcp/server"; // added in Task 14
-import { syncLabelsForAllAccounts } from "./backend/gmail/sync-service";
-import { captureAllAccounts } from "./backend/gmail/capture-service";
-import { purgeOldRenders } from "./backend/docs/browser-render";
-import { purgeExpiredPreviews } from "./backend/docs/preview-store";
-import { sweepComments } from "./backend/docs/comment-collab";
-import { sweepScheduledSends } from "./backend/gmail/scheduled-send";
-import { sweepScheduledEmails } from "./backend/gmail/scheduled-email";
-import { keepaliveGoogleTokens } from "./backend/auth/oauth-keepalive";
-import {
-  reconcileWorkspaceSubscriptions,
-  syncWorkspaceSubscriptions,
-} from "./backend/workspace-events/subscription-manager";
-import { handleGoogleAuth } from "./backend/api/routes/auth-google"; // added in Task 6
-import { handleOAuth } from "./backend/mcp/oauth"; // MCP OAuth authorization server
+import { DocumentCollaborationRoom } from "@/backend/documents/collaboration-room";
 
-import { getWorkerApiKey } from "./backend/utils/secrets";
-import { verifySessionToken } from "./backend/auth/session-token";
-import { readVerifiedSession } from "./backend/auth/read-session";
-import { constantTimeEqual } from "./backend/lib/crypto";
 import {
   AppsScriptAgent,
   CalendarAgent,
@@ -61,9 +43,30 @@ import {
   SheetsAgent,
   SlidesAgent,
 } from "./backend/ai/agents";
-import { GsuiteService } from "./backend/rpc";
+import { app as honoApp } from "./backend/api/index";
+import { handleGoogleAuth } from "./backend/api/routes/auth-google"; // added in Task 6
+import { keepaliveGoogleTokens } from "./backend/auth/oauth-keepalive";
+import { readVerifiedSession } from "./backend/auth/read-session";
+import { verifySessionToken } from "./backend/auth/session-token";
 import { CircuitBreaker, getBreaker, type CircuitKind } from "./backend/circuit-breaker";
+import { purgeOldRenders } from "./backend/docs/browser-render";
+import { sweepComments } from "./backend/docs/comment-collab";
+import { purgeExpiredPreviews } from "./backend/docs/preview-store";
+import { captureAllAccounts } from "./backend/gmail/capture-service";
 import { EmailDraftRoom } from "./backend/gmail/draft-room";
+import { sweepScheduledEmails } from "./backend/gmail/scheduled-email";
+import { sweepScheduledSends } from "./backend/gmail/scheduled-send";
+import { syncLabelsForAllAccounts } from "./backend/gmail/sync-service";
+import { constantTimeEqual } from "./backend/lib/crypto";
+import { handleOAuth } from "./backend/mcp/oauth"; // MCP OAuth authorization server
+import { handleMcpRequest } from "./backend/mcp/server"; // added in Task 14
+import { GsuiteService } from "./backend/rpc";
+import { getWorkerApiKey } from "./backend/utils/secrets";
+import {
+  reconcileWorkspaceSubscriptions,
+  syncWorkspaceSubscriptions,
+} from "./backend/workspace-events/subscription-manager";
+import { DocumentReviewRoom } from "./backend/documents/review-room";
 
 // Re-export Durable Object agent classes + the RPC entrypoint so the Astro
 // Cloudflare adapter (and wrangler's `durable_objects`/service bindings) can
@@ -81,6 +84,8 @@ export {
   GsuiteService,
   CircuitBreaker,
   EmailDraftRoom,
+  DocumentCollaborationRoom,
+  DocumentReviewRoom,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,7 +131,11 @@ async function isCircuitOpen(env: Env): Promise<boolean> {
 
 /** Fire-and-forget usage recording. Never lets a DO error affect the response. */
 function recordUsage(env: Env, ctx: ExecutionContext, kind: CircuitKind): void {
-  ctx.waitUntil(getBreaker(env).record(kind).catch(() => {}));
+  ctx.waitUntil(
+    getBreaker(env)
+      .record(kind)
+      .catch(() => {}),
+  );
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */
@@ -208,6 +217,11 @@ function makeHandler(): ExportedHandler<Env> {
       }
       if (url.pathname.startsWith("/auth/google")) {
         return handleGoogleAuth(request as any, env);
+      }
+      const collaborationMatch = url.pathname.match(/^\/api\/collaboration\/([0-9a-f-]+)$/i);
+      if (collaborationMatch && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        recordUsage(env, ctx, "request");
+        return env.DOCUMENT_COLLABORATION.getByName(collaborationMatch[1]).fetch(request);
       }
       // MCP OAuth authorization server: /.well-known/oauth-*, /register,
       // /authorize, /token. Returns null for any non-OAuth path.
@@ -332,6 +346,8 @@ export function createExports() {
     GsuiteService,
     CircuitBreaker,
     EmailDraftRoom,
+    DocumentCollaborationRoom,
+    DocumentReviewRoom,
   };
 }
 

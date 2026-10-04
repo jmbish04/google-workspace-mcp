@@ -191,6 +191,12 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
 - **Accounts**: consumer `@gmail.com`/`@googlemail.com` are OAuth-only (never DWD) —
   `mcp/tokenProvider.ts#isConsumerGoogleAccount`; a missing token → actionable "log in"
   error, not a confusing DWD failure.
+- **Collaborative documents** (`backend/db/schemas/documents/`, Postgres via
+  Hyperdrive): `documents`, `suggestions`, and `document_comments` are
+  first-class records with drizzle-zod schemas. CRUD/list is mounted at
+  `/api/documents`, service health at `/api/documents/health`, and the separate
+  Postgres migration target is `pnpm db:generate:postgres` →
+  `drizzle-postgres/` (never mix these tables into the D1 migration target).
 - **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/draft-studio`
   (+ `/gws/draft-studio/[id]`, `client:only="react"` — PlateJS), `/gws/scheduled-sends`
   (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),

@@ -129,6 +129,7 @@ import { GoogleApiError } from "./googleClient";
 import type { AssetAction } from "./logging";
 
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
+import { documentAgentTools } from "./document-tools";
 import { AppsScriptService } from "./services/appsscript";
 import { CalendarService } from "./services/calendar";
 import { ChangesService } from "./services/changes";
@@ -5608,6 +5609,12 @@ export const TOOLS: ToolDef[] = [
       return { result: { success: true, ...sent } };
     },
   },
+
+  // ---- Agent document editing (Phase 5) ----------------------------------
+  // Registered here, NOT in MCP_EXPOSED_TOOLS: this server is code-mode-only,
+  // so these are reachable in-sandbox via `await tools.document_*(args)`.
+  // Agent edits are SUGGESTIONS by default; see document-tools.ts.
+  ...documentAgentTools,
 ];
 
 

@@ -58,6 +58,13 @@
       // Live draft-studio rooms — one per studio draft, pub/sub only
       // (src/backend/gmail/draft-room.ts).
       { "name": "EMAIL_DRAFT_ROOM", "class_name": "EmailDraftRoom" },
+      // Yjs collaboration rooms — one persisted CRDT room per document, syncs
+      // the document BODY (src/backend/documents/collaboration-room.ts).
+      { "name": "DOCUMENT_COLLABORATION", "class_name": "DocumentCollaborationRoom" },
+      // Review-object cue rooms — one per document, pub/sub only (suggestions/
+      // comments); an open editor re-reads Postgres on a cue (Phase 5, Task B).
+      // Distinct from the Yjs body-sync room (src/backend/documents/review-room.ts).
+      { "name": "DOCUMENT_REVIEW", "class_name": "DocumentReviewRoom" },
     ],
   },
   "migrations": [
@@ -82,6 +89,10 @@
     { "tag": "v3", "new_sqlite_classes": ["CircuitBreaker"] },
     // v4 — draft-studio live rooms. New tag; v1–v3 are immutable once deployed.
     { "tag": "v4", "new_sqlite_classes": ["EmailDraftRoom"] },
+    // v5 — one persisted Yjs collaboration room per document.
+    { "tag": "v5", "new_sqlite_classes": ["DocumentCollaborationRoom"] },
+    // v6 — review-object cue rooms (Phase 5). New tag; v1–v5 immutable once deployed.
+    { "tag": "v6", "new_sqlite_classes": ["DocumentReviewRoom"] },
   ],
   // Worker Loader — required for Agent Skills script execution (agents/skills runner)
   // and for "code mode" (src/backend/mcp/code-mode.ts) sandbox execution.
@@ -89,7 +100,9 @@
   // Self service-binding to the GsuiteService RPC entrypoint. Code mode passes
   // this stub into the sandbox so model-authored code can call tools via RPC
   // (GsuiteService.callTool) without ever holding this Worker's secrets.
-  "services": [{ "binding": "SELF_RPC", "service": "google-workspace-mcp", "entrypoint": "GsuiteService" }],
+  "services": [
+    { "binding": "SELF_RPC", "service": "google-workspace-mcp", "entrypoint": "GsuiteService" },
+  ],
   "vars": {
     // Optional verified destination for message.forward() in the email handler.
     // Empty string = forwarding disabled (the message is stored in D1 only).
@@ -186,9 +199,17 @@
   // wired up for real in Phase 4. Do NOT `migrate:remote` / provision yet.
   // ---------------------------------------------------------------------------
   "vectorize": [
-    { "binding": "VECTORIZE_EMAILS", "index_name": "google-workspace-mcp-rag-emails", "remote": true },
+    {
+      "binding": "VECTORIZE_EMAILS",
+      "index_name": "google-workspace-mcp-rag-emails",
+      "remote": true,
+    },
     { "binding": "VECTORIZE_DOCS", "index_name": "google-workspace-mcp-rag-docs", "remote": true },
-    { "binding": "VECTORIZE_GENERAL", "index_name": "google-workspace-mcp-rag-general", "remote": true },
+    {
+      "binding": "VECTORIZE_GENERAL",
+      "index_name": "google-workspace-mcp-rag-general",
+      "remote": true,
+    },
   ],
   "secrets_store_secrets": [
     {

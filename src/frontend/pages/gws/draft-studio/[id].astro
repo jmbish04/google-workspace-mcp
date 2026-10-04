@@ -2,8 +2,8 @@
 /**
  * `/gws/draft-studio/[id]` — one email under revision.
  *
- * The island mounts `client:only="react"`: it embeds PlateJS, which is
- * browser-only and throws during Astro SSR (`useMemo` on a null dispatcher).
+ * The island mounts `client:only="react"`: it embeds Tiptap/ProseMirror, which
+ * is browser-only and throws during Astro SSR.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { DraftStudio } from "@/components/draft-studio";

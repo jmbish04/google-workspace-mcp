@@ -4,11 +4,11 @@
  * An email revised here instead of in Gmail. The agent pushes numbered
  * revisions over MCP and this page updates live; the human reads the exact
  * HTML that would be sent, diffs it against any earlier revision, edits it in
- * PlateJS, or highlights a passage and leaves a comment for the agent. Only
- * "Send" or "Put in Gmail" involves Gmail at all.
+ * the Tiptap editor, or highlights a passage and leaves a comment for the
+ * agent. Only "Send" or "Put in Gmail" involves Gmail at all.
  *
- * MUST mount `client:only="react"` — PlateJS/Slate are browser-only and throw
- * during Astro SSR.
+ * MUST mount `client:only="react"` — Tiptap/ProseMirror are browser-only and
+ * throw during Astro SSR.
  *
  * Wire contract:
  *   GET   /api/email-drafts/:id                  -> DraftWithHistory
@@ -23,12 +23,19 @@
 
 "use client";
 
+import { useEditor } from "@tiptap/react";
 import { Check, Loader2, MessageSquarePlus, Save, Send, Trash2 } from "lucide-react";
-import { Plate, PlateContent, usePlateEditor } from "platejs/react";
 import * as React from "react";
 
-import { notesPlugins } from "@/components/notes/plate-plugins";
-import { PlateToolbar } from "@/components/notes/PlateToolbar";
+// The ReUI rich-text-editor-1 "kit": the shipped formatting toolbar, link
+// bubble, editing surface and extension preset — composed here into the
+// email-body assembly (no page-level document header/footer, which carry demo
+// collaborators and a fake title that do not belong on an email).
+import { FormattingToolbar } from "@/components/blocks/rich-text-editor-1/components/formatting-toolbar";
+import { RichTextContent } from "@/components/blocks/rich-text-editor-1/components/rich-text-content";
+import { createRichTextExtensions } from "@/components/blocks/rich-text-editor-1/components/rich-text-extensions";
+import { RichTextLinkBubble } from "@/components/blocks/rich-text-editor-1/components/rich-text-link";
+import { useRichTextSelector } from "@/components/blocks/rich-text-editor-1/components/rich-text-state";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,10 +52,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { apiGet, apiSend } from "@/lib/api";
 import { logError } from "@/lib/error-log";
 import { relativeTime } from "@/lib/format";
-import { htmlToPlate, type PlateValue } from "@/shared/plate-html";
+import { stripHiddenMarkers, type TiptapDoc } from "@/shared/tiptap-email";
 import { diffSummary, diffWords } from "@/shared/text-diff";
 
 import { STATUS_LABEL, type DraftWithHistory } from "./types";
@@ -159,8 +167,8 @@ export function DraftStudio({ draftId }: DraftStudioProps) {
                 key={`${shown.id}`}
                 html={shown.html}
                 saving={busy === "revision"}
-                onSave={(plate, note) =>
-                  act("revision", () => apiSend("POST", `email-drafts/${draftId}/revisions`, { plate, note }), "Could not save the revision")
+                onSave={(doc, note) =>
+                  act("revision", () => apiSend("POST", `email-drafts/${draftId}/revisions`, { doc, note }), "Could not save the revision")
                 }
               />
             ) : null}
@@ -374,7 +382,18 @@ function EmailPaper({ html, onComment }: { html: string; onComment: (c: { quote:
   );
 }
 
-/** PlateJS over the current body. Saving produces a new human revision. */
+// Module scope: useEditor compares the extension array by identity each render.
+const BODY_EXTENSIONS = createRichTextExtensions({ placeholder: "Write the email…" });
+const BODY_EDITOR_PROPS = { attributes: { "aria-label": "Email body", "aria-multiline": "true" } };
+
+/**
+ * The Tiptap body editor, built from the ReUI rich-text-editor-1 kit (formatting
+ * toolbar + link bubble + editing surface, all as shipped). The editor holds the
+ * working copy; "Save as new revision" reads `editor.getJSON()` and appends a
+ * numbered revision. The Tiptap doc goes to the Worker, where `tiptapToHtml`
+ * reduces it to clean semantic HTML and `gmail/compose.ts` owns the wire format —
+ * no editor class or style ever reaches the email body.
+ */
 function BodyEditor({
   html,
   saving,
@@ -382,36 +401,56 @@ function BodyEditor({
 }: {
   html: string;
   saving: boolean;
-  onSave: (plate: PlateValue, note: string) => void;
+  onSave: (doc: TiptapDoc, note: string) => void;
 }) {
-  const initial = React.useMemo(() => htmlToPlate(html), [html]);
+  // Read once, when the editor is created (the parent re-keys per revision).
+  // The stored HTML is handed to Tiptap as its initial content and parsed in the
+  // browser; the hidden ref/authorship markers are dropped first so they never
+  // become editable text.
+  const initial = React.useMemo(() => stripHiddenMarkers(html), [html]);
   const [note, setNote] = React.useState("");
-  const editor = usePlateEditor({ plugins: notesPlugins, value: initial });
-  const [value, setValue] = React.useState<PlateValue>(initial);
+  const [linkOpen, setLinkOpen] = React.useState(false);
+
+  const editor = useEditor({
+    extensions: BODY_EXTENSIONS,
+    content: initial,
+    editorProps: BODY_EDITOR_PROPS,
+    immediatelyRender: false,
+  });
+
+  const editable = useRichTextSelector(editor, (current) => current?.isEditable ?? true);
+
+  // Mod-K follows the toolbar: no link where marks are refused (code blocks).
+  function openLinkFromKeyboard() {
+    setLinkOpen(editable && Boolean(editor?.can().toggleBold()));
+  }
+
+  function save() {
+    if (!editor) return;
+    onSave(editor.getJSON() as TiptapDoc, note.trim() || "Edited on the page");
+  }
 
   return (
-    <div className="space-y-3">
-      <div className="overflow-hidden rounded-md bg-input/30 ring-1 ring-border/40 focus-within:ring-2 focus-within:ring-ring/50">
-        <Plate editor={editor} onChange={({ value: next }) => setValue(next as PlateValue)}>
-          <PlateToolbar />
-          <PlateContent
-            placeholder="Write the email…"
-            aria-label="Email body"
-            spellCheck
-            className="max-h-[32rem] min-h-64 overflow-y-auto px-3 py-2.5 text-sm leading-7 text-foreground outline-none"
-          />
-        </Plate>
-      </div>
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="min-w-56 flex-1 space-y-1.5">
-          <Label htmlFor="ds-note" className="text-xs">What changed (optional)</Label>
-          <Input id="ds-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Tightened the second paragraph" />
+    <TooltipProvider delay={300}>
+      <div className="space-y-3">
+        <div className="overflow-hidden rounded-md bg-input/30 ring-1 ring-border/40 focus-within:ring-2 focus-within:ring-ring/50">
+          <FormattingToolbar editor={editor} linkOpen={linkOpen} onLinkOpenChange={setLinkOpen} />
+          <div className="relative max-h-[32rem] min-h-64 overflow-y-auto">
+            <RichTextContent editor={editor} onLinkShortcut={openLinkFromKeyboard} className="px-3 py-2.5" />
+            {editor ? <RichTextLinkBubble editor={editor} onEdit={() => setLinkOpen(true)} /> : null}
+          </div>
         </div>
-        <Button size="sm" disabled={saving} onClick={() => onSave(value, note.trim() || "Edited on the page")}>
-          {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save as new revision
-        </Button>
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-56 flex-1 space-y-1.5">
+            <Label htmlFor="ds-note" className="text-xs">What changed (optional)</Label>
+            <Input id="ds-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Tightened the second paragraph" />
+          </div>
+          <Button size="sm" disabled={saving} onClick={save}>
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save as new revision
+          </Button>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
 

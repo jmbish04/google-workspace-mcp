@@ -26,9 +26,22 @@ function draft(over: Partial<DraftWithHistory> = {}): DraftWithHistory {
 }
 
 describe("renderStudioBody", () => {
-  it("renders a PlateJS edit into the exact Gmail HTML that would be sent", () => {
+  it("renders a Tiptap edit into the exact Gmail HTML that would be sent", () => {
     const out = renderStudioBody(
-      { plate: [{ type: "p", children: [{ text: "Hello ", bold: false }, { text: "Bob", bold: true }] }] },
+      {
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "Hello " },
+                { type: "text", text: "Bob", marks: [{ type: "bold" }] },
+              ],
+            },
+          ],
+        },
+      },
       UUID,
     );
     expect(out.html).toContain('<div dir="ltr"');
@@ -37,8 +50,11 @@ describe("renderStudioBody", () => {
     expect(out.text).toBe("Hello Bob");
   });
 
-  it("prefers the Plate value over a stale html field", () => {
-    const out = renderStudioBody({ plate: [{ type: "p", children: [{ text: "new" }] }], html: "<p>old</p>" }, UUID);
+  it("prefers the Tiptap doc over a stale html field", () => {
+    const out = renderStudioBody(
+      { doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "new" }] }] }, html: "<p>old</p>" },
+      UUID,
+    );
     expect(out.text).toBe("new");
   });
 

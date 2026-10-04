@@ -31,4 +31,12 @@ export function Kbd({ className, children, ...props }: React.ComponentProps<"kbd
   );
 }
 
+export function KbdGroup({ className, children, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div className={cn("inline-flex items-center gap-1", className)} {...props}>
+      {children}
+    </div>
+  );
+}
+
 export default Kbd;
