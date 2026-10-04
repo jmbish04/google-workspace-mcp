@@ -12,7 +12,7 @@
  * Guardian; feature modules (e.g. vision-critique) import `guardianRun` and stay
  * free of transport/auth details.
  */
-import { getWorkerApiKey } from "@/backend/utils/secrets";
+import { getSecret, getWorkerApiKey } from "@/backend/utils/secrets";
 
 const DEFAULT_BASE_URL = "https://core-guardian.hacolby.workers.dev";
 const DEFAULT_PROJECT = "google-workspace-mcp";
@@ -25,7 +25,13 @@ export interface GuardianRunInput {
   /** Provider payload — OpenAI-compatible, e.g. `{ messages: [...] }`. */
   input: unknown;
   importance?: Importance;
-  mode?: "gateway" | "gateway-custom" | "provider-sdk-gateway" | "openai-compat" | "native" | "gemini-native";
+  mode?:
+    | "gateway"
+    | "gateway-custom"
+    | "provider-sdk-gateway"
+    | "openai-compat"
+    | "native"
+    | "gemini-native";
 }
 
 /** core-guardian `/api/ai-router/run` result. `body` is the raw provider response. */
@@ -57,9 +63,15 @@ function guardianConfig(env: Env): GuardianConfig {
  * Route one AI call through core-guardian. Returns the parsed result, or null if
  * Guardian is unreachable / unauthenticated / the call fails. Never throws.
  */
-export async function guardianRun(env: Env, run: GuardianRunInput): Promise<GuardianRunResult | null> {
+export async function guardianRun(
+  env: Env,
+  run: GuardianRunInput,
+): Promise<GuardianRunResult | null> {
   try {
-    const token = await getWorkerApiKey(env);
+    const token =
+      (await getSecret(env, "AI_GATEWAY_TOKEN")) ??
+      (await getSecret(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ??
+      (await getWorkerApiKey(env));
     if (!token) return null;
     const cfg = guardianConfig(env);
     const baseUrl = (cfg.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");

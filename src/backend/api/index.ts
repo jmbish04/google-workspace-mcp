@@ -35,6 +35,7 @@ import { adminRouter, configRouter } from "./routes/config";
 import { copilotRouter } from "./routes/copilot";
 import { dashboardRouter } from "./routes/dashboard";
 import { docsRouter } from "./routes/docs";
+import { documentAssistantRouter } from "./routes/document-assistant";
 import { driveRouter } from "./routes/drive";
 import { driveWebhookRouter } from "./routes/drive-webhook";
 import { emailDraftsRouter } from "./routes/email-drafts";
@@ -216,6 +217,7 @@ app.route("/api/seed", seedRouter);
 app.route("/api/pdf", pdfRouter);
 app.route("/api/documents", documentsRouter);
 app.route("/api/collaboration", collaborationRouter);
+app.route("/api/document-assistant", documentAssistantRouter);
 
 // Ported chat/tasks-scheduler surfaces (core-gsuite-tools Phase 3). Open —
 // same "feature APIs" convention as above — except the OAuth consent routes,

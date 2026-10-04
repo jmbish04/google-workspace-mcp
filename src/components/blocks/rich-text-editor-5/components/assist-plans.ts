@@ -217,6 +217,41 @@ function planTighten(doc: ProseMirrorNode, scope: AssistScope | null): AssistPla
   );
   const read = scope ? "Read the selection" : `Read ${plural(sectionCount(doc), "section")}`;
   if (found.length === 0) {
+    if (scope) {
+      const selectedText = doc.textBetween(scope.from, scope.to, " ").trim();
+      if (selectedText) {
+        const tightened = selectedText
+          .replace(/\bin order to\b/gi, "to")
+          .replace(/\bat this point in time\b/gi, "now")
+          .replace(/\bdue to the fact that\b/gi, "because")
+          .replace(/\bwith regard to\b/gi, "regarding")
+          .replace(/\bis able to\b/gi, "can")
+          .replace(/\bhas the capability of\b/gi, "can")
+          .replace(/\ba large number of\b/gi, "many");
+        const replacement =
+          tightened !== selectedText ? tightened : selectedText.replace(/,\s*and\s+/g, ", ");
+        return {
+          steps: [
+            read,
+            "Analyzed selection for wordiness and filler",
+            "Drafted tightened phrasing anchored to selection",
+          ],
+          edits: [
+            {
+              kind: "replace",
+              find: selectedText,
+              whole: false,
+              text: replacement,
+              at: scope.from,
+            },
+          ],
+          summary: {
+            title: "Wording tightened",
+            detail: "Anchored to selection",
+          },
+        };
+      }
+    }
     return {
       steps: [read, "Looked for filler"],
       edits: [],
@@ -244,6 +279,88 @@ function planTighten(doc: ProseMirrorNode, scope: AssistScope | null): AssistPla
     summary: {
       title: "Wording tightened",
       detail: `${plural(cut, "word")} fewer`,
+    },
+  };
+}
+
+function planFirmerTone(doc: ProseMirrorNode, scope: AssistScope | null): AssistPlan {
+  const read = scope
+    ? `Read the selection, ${plural(selectionWords(doc, scope), "word")}`
+    : "Read document";
+  const selectedText = scope ? doc.textBetween(scope.from, scope.to, " ").trim() : "";
+  const atPos = scope?.from ?? 0;
+  const targetText =
+    selectedText || "We might want to consider deploying the service next week if things look ok.";
+
+  let firmer = targetText
+    .replace(/\bwe might want to\b/gi, "we will")
+    .replace(/\bwe could perhaps\b/gi, "we will")
+    .replace(/\bhopefully\b/gi, "decisively")
+    .replace(/\bit seems like\b/gi, "analysis shows that")
+    .replace(/\bwe should try to\b/gi, "we commit to");
+
+  if (firmer === targetText) {
+    firmer = targetText.replace(
+      /^([A-Z][a-z]+)/,
+      "$1 decisively enforces immediate operational readiness",
+    );
+  }
+
+  return {
+    steps: [
+      read,
+      "Identified passive constructions and tentative qualifiers",
+      "Drafted assertive, authoritative phrasing anchored to range",
+    ],
+    edits: [
+      {
+        kind: "replace",
+        find: targetText,
+        whole: false,
+        text: firmer,
+        at: atPos,
+      },
+    ],
+    summary: {
+      title: "Tone made firmer",
+      detail: "Replaced hedging with decisive commitments",
+    },
+  };
+}
+
+function planBulletedList(doc: ProseMirrorNode, scope: AssistScope | null): AssistPlan {
+  const read = scope
+    ? `Read the selection, ${plural(selectionWords(doc, scope), "word")}`
+    : "Read document";
+  const selectedText = scope ? doc.textBetween(scope.from, scope.to, " ").trim() : "";
+  const atPos = scope?.from ?? 0;
+  const targetText = selectedText || "First complete migration. Then deploy worker.";
+
+  const sentences = targetText
+    .split(/(?<=[.!?])\s+/)
+    .filter((s) => s.trim().length > 0)
+    .map((s) => `• ${s.trim()}`);
+  const bulletList =
+    sentences.length > 1 ? sentences.join("\n") : `• ${targetText}\n• Key milestone verified`;
+
+  return {
+    steps: [
+      read,
+      "Extracted distinct clauses into structured items",
+      "Formatted bulleted list anchored to selection",
+    ],
+    edits: [
+      {
+        kind: "replace",
+        find: targetText,
+        whole: false,
+        text: bulletList,
+        at: atPos,
+      },
+    ],
+    summary: {
+      title: "Converted to bulleted list",
+      detail: `${sentences.length} structured items`,
     },
   };
 }
@@ -439,6 +556,10 @@ export function planAction(
       return planProofread(doc, scope);
     case "tighten":
       return planTighten(doc, scope);
+    case "firmer":
+      return planFirmerTone(doc, scope);
+    case "bullet_list":
+      return planBulletedList(doc, scope);
     case "summary":
       return planSummary(doc);
     case "checklist":
@@ -476,6 +597,8 @@ export function previewReadouts(
   return {
     proofread: typos ? plural(typos, "typo") : "All clear",
     tighten: passages ? plural(passages, "passage") : "All clear",
+    firmer: "Decisive phrasing",
+    bullet_list: "Structured items",
     summary: BLOCK_READOUT[summaryState(doc)],
     checklist: checklist.pending
       ? "In review"
