@@ -3,7 +3,7 @@
  * Team notes — shared notes from `GET /api/team-notes` with search, pinned and
  * project filters, create/edit/delete dialogs, and pin toggling. Mounts the
  * TeamNotes island with `client:only="react"` because the note body now uses a
- * PlateJS rich-text editor + read-only renderer, both of which depend on
+ * Tiptap rich-text editor + read-only renderer, both of which depend on
  * browser-only DOM APIs and must never run during Astro SSR.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";

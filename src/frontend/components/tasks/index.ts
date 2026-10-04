@@ -20,7 +20,7 @@ export { TaskBreadcrumbs } from "./TaskBreadcrumbs";
 export { TaskSubtasks } from "./TaskSubtasks";
 export { TaskRichEditor, type TaskRichEditorProps } from "./TaskRichEditor";
 export { TaskRichHtml, type TaskRichHtmlProps } from "./TaskRichHtml";
-export { htmlToPlainText, normalizeStoredToHtml, plateValueToHtml } from "./task-html";
+export { htmlToPlainText, normalizeStoredToHtml, plateEnvelopeToPlainText } from "./task-html";
 export { sanitizeHtml } from "./sanitize-html";
 export { SubtaskLinker } from "./SubtaskLinker";
 export { ProjectPreviewDialog } from "./ProjectPreviewDialog";

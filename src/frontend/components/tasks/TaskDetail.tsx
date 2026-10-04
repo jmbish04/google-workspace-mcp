@@ -9,9 +9,9 @@
  *                  ABOVE the main column via `order` classes.
  *   Breadcrumbs  → an ancestor trail at the very top ({@link TaskBreadcrumbs},
  *                  from `GET /api/tasks/{id}/ancestors`).
- *   Left column  → (1) Description card — a PlateJS rich-text editor/renderer
- *                  (shared with team notes), PATCHing the serialized Plate
- *                  envelope into `task.description`. (2) Subtasks (child tasks
+ *   Left column  → (1) Description card — a Tiptap rich-text editor/renderer
+ *                  (shared with team notes), PATCHing the sanitized HTML into
+ *                  `task.description`. (2) Subtasks (child tasks
  *                  backed by /api/tasks/{id}/children, completion + radial gauge
  *                  derived from their statuses) + (3) Comments (thread +
  *                  composer) + (4) Attachments (R2-backed upload/stream) — all
@@ -76,10 +76,10 @@ export function TaskDetail({ id }: TaskDetailProps) {
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState("");
 
-  // PlateJS (description editor + renderer) is browser-only. This page mounts as
-  // a `client:load` island, so guard Plate behind a mounted flag: during SSR /
-  // first hydration paint we render a lightweight placeholder, then swap in the
-  // real editor/renderer after mount. Prevents React #418/#425 hydration errors.
+  // Tiptap (description editor) is browser-only. This page mounts as
+  // a `client:load` island, so guard the editor behind a mounted flag: during
+  // SSR / first hydration paint we render a lightweight placeholder, then swap
+  // in the real editor after mount. Prevents React #418/#425 hydration errors.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 

@@ -1,12 +1,13 @@
 /**
  * @fileoverview NoteDialog — create/edit a team note. POSTs `/api/team-notes`
  * or PATCHes `/api/team-notes/{id}`. Supports an optional project association,
- * a pinned toggle, author, title, and a PlateJS rich-text body.
+ * a pinned toggle, author, title, and a Tiptap rich-text body.
  *
- * The body is edited with the `PlateEditor` island and persisted as a string in
- * the existing `body` column: a JSON-encoded Plate envelope (see
- * `components/notes/plate-value`). Legacy plain-text bodies are loaded
- * transparently. We re-mount the editor per open via a `key` so each edit
+ * The body is edited with the `NotesEditor` island and persisted as a string in
+ * the existing `body` column: a JSON-encoded Tiptap envelope (see
+ * `components/notes/notes-value`). Legacy plain-text and Plate-envelope bodies
+ * load transparently (the latter through the plain-text fallback). We re-mount
+ * the editor per open via a `key` so each edit
  * session seeds from the correct note. Surfaced via a `trigger` element.
  */
 
@@ -33,7 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { apiSend, ApiError } from "@/lib/api";
-import { PlateEditor, bodyToSnippet } from "@/components/notes";
+import { NotesEditor, bodyToSnippet } from "@/components/notes";
 
 import { ErrorState } from "./Shared";
 import { useProjects } from "./useProjects";
@@ -73,7 +74,7 @@ export function NoteDialog({ trigger, note, onSaved }: NoteDialogProps) {
       setError("Title is required.");
       return;
     }
-    // `body` holds the serialized Plate envelope; validate against its
+    // `body` holds the serialized Tiptap envelope; validate against its
     // extracted plain text so an empty rich-text document is still rejected.
     if (!bodyToSnippet(body).trim()) {
       setError("Body is required.");
@@ -128,11 +129,11 @@ export function NoteDialog({ trigger, note, onSaved }: NoteDialogProps) {
             <Label htmlFor="note-body">Body</Label>
             {/*
              * Re-mount the editor whenever the dialog opens or the target note
-             * changes (`key`) so `PlateEditor` re-seeds from the correct body.
-             * PlateJS is browser-only; the whole TeamNotes island is mounted
+             * changes (`key`) so `NotesEditor` re-seeds from the correct body.
+             * Tiptap is browser-only; the whole TeamNotes island is mounted
              * `client:only="react"`, so this never runs during SSR.
              */}
-            <PlateEditor
+            <NotesEditor
               key={`${note?.id ?? "new"}:${open}`}
               id="note-body"
               value={body}

@@ -9,7 +9,7 @@
  * appends the new comment, then reconciles with the server row (or rolls back on
  * error). No data is fabricated — an empty thread shows an honest empty state.
  *
- * The Plate composer is browser-only, so it is gated behind a `mounted` flag
+ * The Tiptap composer is browser-only, so it is gated behind a `mounted` flag
  * (rendering a placeholder shell during SSR / first hydration paint) and mounted
  * inside the existing `client:load` task island.
  */
@@ -43,11 +43,11 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  // Bumped after each successful post to remount (and clear) the Plate composer,
+  // Bumped after each successful post to remount (and clear) the Tiptap composer,
   // since the editor seeds its value once on mount.
   const [composerKey, setComposerKey] = useState(0);
 
-  // The Plate composer is browser-only; gate it behind a mounted flag so it never
+  // The Tiptap composer is browser-only; gate it behind a mounted flag so it never
   // renders during SSR / first hydration paint on this `client:load` island.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -150,7 +150,7 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
           </ul>
         )}
 
-        {/* Composer — Plate rich-text editor + submit / ⌘↵ footer. Gated behind
+        {/* Composer — Tiptap rich-text editor + submit / ⌘↵ footer. Gated behind
             `mounted` so the browser-only editor never renders during SSR. */}
         {mounted ? (
           <div

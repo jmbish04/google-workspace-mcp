@@ -1,23 +1,21 @@
 /**
- * @fileoverview Barrel for the PlateJS notes editor feature.
+ * @fileoverview Barrel for the Tiptap notes editor feature.
  *
- * - `PlateEditor`  — editable island (mount `client:only="react"`).
- * - `PlateRenderer`— read-only render for list/preview cards.
- * - serialization helpers bridge the Plate value and the team-notes `body`
- *   string column (legacy plain text handled transparently).
+ * - `NotesEditor` — editable island (mount `client:only="react"`).
+ * - `NotesBody`   — read-only render for list/preview cards.
+ * - serialization helpers bridge the Tiptap document and the team-notes `body`
+ *   string column (legacy Plate envelopes + plain text handled transparently
+ *   via the plain-text fallback).
  */
 
-export { PlateEditor, type PlateEditorProps } from "./PlateEditor";
-export { PlateRenderer, type PlateRendererProps } from "./PlateRenderer";
+export { NotesEditor, type NotesEditorProps } from "./NotesEditor";
+export { NotesBody, type NotesBodyProps } from "./NotesBody";
 export {
-  bodyToPlateValue,
   bodyToSnippet,
-  emptyPlateValue,
-  extractPlainText,
-  plainTextToPlateValue,
-  plateValueToBody,
-  type PlateElement,
-  type PlateNode,
-  type PlateText,
-  type PlateValue,
-} from "./plate-value";
+  bodyToTiptapDoc,
+  emptyTiptapDoc,
+  plainTextToTiptapDoc,
+  plateValueToPlainText,
+  tiptapDocToBody,
+  tiptapDocToPlainText,
+} from "./notes-value";
