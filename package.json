@@ -22,6 +22,7 @@
     "lint": "oxlint",
     "check": "oxlint && oxfmt",
     "db:generate": "drizzle-kit generate",
+    "db:generate:postgres": "drizzle-kit generate --config drizzle.postgres.config.ts",
     "migrate:local": "pnpm run db:generate && npx wrangler d1 migrations apply DB --local",
     "migrate:remote": "pnpm run db:generate && npx wrangler d1 migrations apply DB --remote",
     "deploy": "pnpm run build && cp .assetsignore dist/.assetsignore && pnpm run migrate:remote && npx wrangler deploy",
