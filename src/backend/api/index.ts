@@ -20,48 +20,50 @@ import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
+import { collaborationRouter } from "@/backend/api/routes/collaboration";
+import { documentsRouter } from "@/backend/api/routes/documents";
+
 import { agentAuthMiddleware } from "./middleware/agent-auth";
 import { authMiddleware } from "./middleware/auth";
 import { errorHandler } from "./middleware/error";
+import { activityRouter } from "./routes/activity";
+import { appscriptRouter } from "./routes/appscript";
 import { authRouter } from "./routes/auth";
+import { circuitRouter } from "./routes/circuit";
 import { clientErrorRouter } from "./routes/client-error";
 import { adminRouter, configRouter } from "./routes/config";
-import { docsRouter } from "./routes/docs";
-import { gmailRouter } from "./routes/gmail";
-import { toolsRouter } from "./routes/tools";
-import { driveRouter } from "./routes/drive";
-import { schemaRouter } from "./routes/schema";
-import { appscriptRouter } from "./routes/appscript";
-import { renderRouter } from "./routes/render";
-import { previewRouter } from "./routes/preview";
 import { copilotRouter } from "./routes/copilot";
-import { healthRouter } from "./routes/health";
-import { activityRouter } from "./routes/activity";
-import { circuitRouter } from "./routes/circuit";
 import { dashboardRouter } from "./routes/dashboard";
+import { docsRouter } from "./routes/docs";
+import { driveRouter } from "./routes/drive";
+import { driveWebhookRouter } from "./routes/drive-webhook";
+import { emailDraftsRouter } from "./routes/email-drafts";
+import { gmailRouter } from "./routes/gmail";
+import { accountsRouter } from "./routes/gsuite/accounts";
+import { agentSessionRouter } from "./routes/gsuite/agent-session";
+import { agentTasksRouter } from "./routes/gsuite/agent-tasks";
+import { authGoogleOauthRouter } from "./routes/gsuite/auth-google-oauth";
+import { catalogRouter } from "./routes/gsuite/catalog";
+import { gsuiteHealthRouter } from "./routes/gsuite/gsuite-health";
+import { threadsRouter } from "./routes/gsuite/threads";
 import { gwsRouter } from "./routes/gws";
+import { gwsHealthCheckRouter } from "./routes/gws-health-check";
 import { gwsNotificationsRouter } from "./routes/gws-notifications";
 import { gwsTemplatesRouter } from "./routes/gws-templates";
-import { emailDraftsRouter } from "./routes/email-drafts";
-import { driveWebhookRouter } from "./routes/drive-webhook";
-import { workspaceWebhookRouter } from "./routes/workspace-webhook";
-import { gwsHealthCheckRouter } from "./routes/gws-health-check";
+import { healthRouter } from "./routes/health";
+import { pdfRouter } from "./routes/pdf";
+import { previewRouter } from "./routes/preview";
 import { projectsRouter } from "./routes/projects";
+import { renderRouter } from "./routes/render";
+import { schemaRouter } from "./routes/schema";
 import { seedRouter } from "./routes/seed";
 import { settingsRouter } from "./routes/settings";
 import { taskDetailRouter } from "./routes/task-detail";
 import { taskHierarchyRouter } from "./routes/task-hierarchy";
 import { tasksRouter } from "./routes/tasks";
 import { teamNotesRouter } from "./routes/team-notes";
-import { threadsRouter } from "./routes/gsuite/threads";
-import { catalogRouter } from "./routes/gsuite/catalog";
-import { agentTasksRouter } from "./routes/gsuite/agent-tasks";
-import { accountsRouter } from "./routes/gsuite/accounts";
-import { authGoogleOauthRouter } from "./routes/gsuite/auth-google-oauth";
-import { agentSessionRouter } from "./routes/gsuite/agent-session";
-import { gsuiteHealthRouter } from "./routes/gsuite/gsuite-health";
-import { pdfRouter } from "./routes/pdf";
-
+import { toolsRouter } from "./routes/tools";
+import { workspaceWebhookRouter } from "./routes/workspace-webhook";
 
 // ---------------------------------------------------------------------------
 // App type — shared by all routers
@@ -154,7 +156,15 @@ app.use("/api/admin/*", authMiddleware);
 // folders) drive real Google Workspace actions, so they carry the same
 // credential as the agent surfaces — the `gsuite_session` cookie OR
 // `Authorization: Bearer <WORKER_API_KEY>`.
-for (const base of ["/api/threads", "/api/catalog", "/api/agent-tasks", "/api/accounts", "/api/gsuite-health", "/api/tools", "/api/drive"]) {
+for (const base of [
+  "/api/threads",
+  "/api/catalog",
+  "/api/agent-tasks",
+  "/api/accounts",
+  "/api/gsuite-health",
+  "/api/tools",
+  "/api/drive",
+]) {
   app.use(base, agentAuthMiddleware);
   app.use(`${base}/*`, agentAuthMiddleware);
 }
@@ -204,7 +214,8 @@ app.route("/api/webhooks/workspace", workspaceWebhookRouter);
 app.route("/api/gws-health-check", gwsHealthCheckRouter);
 app.route("/api/seed", seedRouter);
 app.route("/api/pdf", pdfRouter);
-
+app.route("/api/documents", documentsRouter);
+app.route("/api/collaboration", collaborationRouter);
 
 // Ported chat/tasks-scheduler surfaces (core-gsuite-tools Phase 3). Open —
 // same "feature APIs" convention as above — except the OAuth consent routes,
