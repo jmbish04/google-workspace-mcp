@@ -8,9 +8,10 @@
  * a `parentId` is supplied the created task is POSTed pre-linked as a child of
  * that parent (used by the Subtasks "Create new subtask" flow).
  *
- * The Description field is a {@link TaskRichEditor} (PlateJS): `task.description`
+ * The Description field is a {@link TaskRichEditor} (Tiptap): `task.description`
  * now stores **sanitized HTML**, and legacy Plate-envelope / markdown /
- * plain-text descriptions are upgraded on load. PlateJS is browser-only; the
+ * plain-text descriptions are upgraded on load (Plate envelopes degrade to
+ * plain text). Tiptap is browser-only; the
  * editor is only ever rendered inside the opened Dialog and behind a `mounted`
  * guard, so it never runs during Astro SSR / first hydration paint (avoiding
  * React #418/#425).
@@ -92,7 +93,7 @@ export function TaskDialog({
   const editing = Boolean(task);
   const { options: projectOptions } = useProjects();
 
-  // PlateJS is browser-only; gate the editor behind a mounted flag so it never
+  // Tiptap is browser-only; gate the editor behind a mounted flag so it never
   // renders during SSR / first hydration paint on this `client:load` page.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);

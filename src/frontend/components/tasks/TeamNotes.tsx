@@ -31,7 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiGet, apiSend, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
-import { PlateRenderer } from "@/components/notes";
+import { NotesBody } from "@/components/notes";
 
 import { EmptyState, ErrorState } from "./Shared";
 import { FilterSelect } from "./FilterSelect";
@@ -255,7 +255,7 @@ export function TeamNotes() {
                   </div>
                 </div>
 
-                <PlateRenderer body={note.body} lineClamp={4} />
+                <NotesBody body={note.body} lineClamp={4} />
 
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span className="truncate">

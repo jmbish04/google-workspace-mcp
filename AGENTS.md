@@ -127,8 +127,10 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   revised on the worker instead of in Gmail, for when it will take several rounds.
   MCP `email_draft_studio_create|update|get|list|send`; each update is an append-only
   numbered revision, so the page can diff any two (`shared/text-diff.ts`). The human
-  edits in PlateJS (`shared/plate-html.ts` converts Plate↔HTML isomorphically — Plate's
-  own serializers need a DOM and emit editor classNames) or highlights a passage and
+  edits in Tiptap (ReUI rich-text-editor-1 kit as shipped; `shared/tiptap-email.ts`
+  serializes Tiptap→clean HTML on the Worker, `tiptapToHtml` — hand-written because
+  `@tiptap/html`'s generateHTML needs a DOM/vm workerd has no support for) or
+  highlights a passage and
   leaves a comment the agent reads back. Live updates come from the `EmailDraftRoom`
   DO (`draft-room.ts`, hibernatable WebSockets) — it holds NO state, every event is
   just a cue to re-read D1, so the feature degrades to "press refresh". Notifiers live
@@ -198,7 +200,7 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   Postgres migration target is `pnpm db:generate:postgres` →
   `drizzle-postgres/` (never mix these tables into the D1 migration target).
 - **New frontend pages** (nav in `frontend/lib/config.ts`): `/gws/draft-studio`
-  (+ `/gws/draft-studio/[id]`, `client:only="react"` — PlateJS), `/gws/scheduled-sends`
+  (+ `/gws/draft-studio/[id]`, `client:only="react"` — Tiptap), `/gws/scheduled-sends`
   (cancel via shadcn AlertDialog), `/gws/email-templates` (marketplace + add),
   `/gws/email-preview/[id]` (sandboxed iframe), `/gws/events-health` (Workspace
   Events E2E: trigger from UI or MCP `run_workspace_e2e_test` /
@@ -235,9 +237,11 @@ no mock data.
   - `/projects`, `/tasks/board` (kanban), `/tasks` (table with **faceted
     multi-select chip filters** — `components/tasks/FacetFilter.tsx`), `/tasks/[id]`.
     Task/kanban/project cards open preview modals. Components under `components/tasks/`.
-  - `/notes` — **PlateJS** rich-text editor (`components/notes/`); bodies persist as
-    a versioned `{v,format:"plate",value}` JSON envelope in the team-notes `body`
-    column, with legacy plain-text fallback.
+  - `/notes` — **Tiptap** rich-text editor (`components/notes/`, ReUI
+    rich-text-editor-1 kit as shipped); bodies persist as a versioned
+    `{v:2,format:"tiptap",value}` JSON envelope in the team-notes `body`
+    column, with legacy plain-text AND old `{v:1,format:"plate"}` envelopes
+    read through a plain-text fallback (`notes-value.ts`) until re-saved.
   - `/inbox` — two-pane inbox backed by Cloudflare **Email Routing**: the Worker
     `email()` handler (`backend/email/inbound.ts`) stores inbound mail in the
     `email_messages` D1 table; UI under `components/inbox/`, API at `/api/inbox`.

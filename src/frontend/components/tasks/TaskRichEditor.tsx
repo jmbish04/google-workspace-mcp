@@ -1,48 +1,48 @@
 /**
- * @fileoverview TaskRichEditor — the editable PlateJS rich-text island shared by
+ * @fileoverview TaskRichEditor — the editable Tiptap rich-text island shared by
  * the task DESCRIPTION (intake dialog + viewport) and task COMMENTS.
  *
- * Unlike the notes editor (which persists a Plate ENVELOPE JSON), this editor
- * bridges to a stored HTML string: it DESERIALIZES the incoming value into a
- * Plate value on load, and on every change SERIALIZES the Plate value back to
- * **sanitized HTML** via `onChangeHtml`, so `tasks.description` /
- * `task_comments.body` hold render-ready HTML with no schema change.
+ * Built from the ReUI rich-text-editor-1 kit AS SHIPPED (same composition as
+ * the draft studio's BodyEditor): `FormattingToolbar` + `RichTextContent` +
+ * `RichTextLinkBubble` over `createRichTextExtensions`. No hand-rolled toolbar.
+ *
+ * The stored value stays an HTML string, so this editor bridges to it exactly
+ * as the PlateJS editor did: it DESERIALIZES the incoming HTML fragment into a
+ * Tiptap document on load (the live browser editor parses the HTML itself),
+ * and on every change SERIALIZES the document back to **sanitized HTML**
+ * (`tiptapToHtml` → `sanitizeHtml`) via `onChangeHtml`, so `tasks.description`
+ * / `task_comments.body` hold render-ready HTML with no schema change.
  *
  * On load it handles the three legacy storage forms transparently:
- *   (a) an HTML fragment (Round 3+)        → `deserializeHtml` into Plate.
- *   (b) a Plate envelope `{v,format,value}` → use the envelope's value directly.
- *   (c) plain text / markdown (Round 1)     → paragraph(s).
+ *   (a) an HTML fragment (Round 3+)        → parsed by the browser editor.
+ *   (b) a Plate envelope `{v,format,value}` → PLAIN-TEXT FALLBACK: the Slate
+ *       nodes are flattened to text and lifted into paragraphs (see
+ *       `task-html.ts#plateEnvelopeToPlainText`). Never crashes.
+ *   (c) plain text / markdown (Round 1)     → handed to the editor's own
+ *       parser, which lifts it into paragraph(s).
  *
- * The plugin stack + toolbar are REUSED from the notes feature so the mark /
- * heading / list / link capability surface is identical everywhere.
- *
- * SSR: PlateJS + `deserializeHtml` touch browser-only DOM APIs. The host mounts
- * this inside a `client:load` island, and callers additionally gate it behind a
+ * SSR: Tiptap/ProseMirror touch browser-only DOM APIs. The host mounts this
+ * inside a `client:load` island and callers additionally gate it behind a
  * `mounted` flag (rendering a placeholder until then) so it never runs during
  * Astro SSR / first hydration paint (avoiding React #418/#425).
  */
 
 "use client";
 
-import { useCallback, useMemo } from "react";
-import { createSlateEditor, deserializeHtml } from "platejs";
-import { Plate, PlateContent, usePlateEditor } from "platejs/react";
+import { useCallback, useMemo, useState } from "react";
+import { useEditor, type Editor } from "@tiptap/react";
 
-// Pull the plugin stack + toolbar directly from the notes files (neither is
-// re-exported from the notes barrel) so both rich-text surfaces share the exact
-// same mark / heading / list / link capability set.
-import { notesPlugins } from "@/components/notes/plate-plugins";
-import { PlateToolbar as TaskRichToolbar } from "@/components/notes/PlateToolbar";
+import { FormattingToolbar } from "@/components/blocks/rich-text-editor-1/components/formatting-toolbar";
+import { RichTextContent } from "@/components/blocks/rich-text-editor-1/components/rich-text-content";
+import { createRichTextExtensions } from "@/components/blocks/rich-text-editor-1/components/rich-text-extensions";
+import { RichTextLinkBubble } from "@/components/blocks/rich-text-editor-1/components/rich-text-link";
+import { useRichTextSelector } from "@/components/blocks/rich-text-editor-1/components/rich-text-state";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { tiptapToHtml, type TiptapDoc } from "@/shared/tiptap-email";
 
+import { plateEnvelopeToPlainText } from "./task-html";
 import { sanitizeHtml } from "./sanitize-html";
-import {
-  emptyPlateValue,
-  plateValueToHtml,
-  type PlateElement,
-  type PlateNode,
-  type PlateValue,
-} from "./task-html";
 
 export interface TaskRichEditorProps {
   /** The currently stored content string (HTML, Plate envelope, or plain text). */
@@ -59,69 +59,46 @@ export interface TaskRichEditorProps {
   contentClassName?: string;
 }
 
-/** Round-2 envelope shape (only what we read). */
-interface EnvelopeLike {
-  v?: number;
-  format?: string;
-  value?: PlateValue;
+/** Escape the five HTML-significant characters in text content. */
+function escapeForHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
- * Deserialize a stored content string into a Plate value for editing.
+ * Resolve a stored content string into initial editor content.
  *
- * For the HTML case it uses a HEADLESS Slate editor (built from the same plugin
- * stack) to run `deserializeHtml`, so headings/lists/links/marks round-trip
- * through the exact registry that serialized them — without depending on the
- * live React editor instance. Envelope + plain-text cases are decoded without a
- * DOM.
+ * Tiptap's editor accepts an HTML string as content and parses it in the
+ * browser, so the HTML fragment case needs no headless parse here. The only
+ * transformation required is the legacy Round-2 Plate envelope, which
+ * degrades to plain text (blank lines split paragraphs) through
+ * `plateEnvelopeToPlainText`.
  */
-function storedToPlateValue(stored: string): PlateValue {
+function storedToInitialContent(stored: string): string {
   const raw = stored ?? "";
-  if (!raw.trim()) return emptyPlateValue();
+  if (!raw.trim()) return "<p></p>";
 
-  // (b) Round-2 Plate envelope → use its value directly.
-  if (raw.trimStart().startsWith("{")) {
-    try {
-      const parsed = JSON.parse(raw) as EnvelopeLike;
-      if (parsed.format === "plate" && parsed.v === 1 && Array.isArray(parsed.value) && parsed.value.length > 0) {
-        return parsed.value;
-      }
-    } catch {
-      /* not an envelope — fall through */
-    }
+  // (b) Round-2 Plate envelope → plain-text fallback.
+  const plateText = plateEnvelopeToPlainText(raw);
+  if (plateText != null) {
+    return plateText
+      .split(/\n{2,}/)
+      .map((para) => `<p>${escapeForHtml(para.replace(/\n+/g, " "))}</p>`)
+      .join("");
   }
 
-  // (a) HTML fragment → deserialize through the plugin rules.
-  const isHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
-  if (isHtml) {
-    try {
-      const headless = createSlateEditor({ plugins: notesPlugins });
-      const fragment = deserializeHtml(headless, { element: raw }) as unknown as PlateNode[];
-      if (Array.isArray(fragment) && fragment.length > 0) {
-        // deserializeHtml can return bare text leaves at the top level; wrap any
-        // stragglers so every top-level node is a block element.
-        const blocks = fragment.map((node) =>
-          node && typeof node === "object" && "children" in node
-            ? (node as PlateElement)
-            : ({ type: "p", children: [{ text: String((node as { text?: string })?.text ?? "") }] } as PlateElement),
-        );
-        if (blocks.length > 0) return blocks;
-      }
-    } catch {
-      /* fall through to plain-text handling */
-    }
-  }
-
-  // (c) plain text / markdown → paragraphs (blank lines split blocks).
-  const paragraphs = raw.split(/\n{2,}/);
-  return paragraphs.map((para) => ({
-    type: "p",
-    children: [{ text: para.replace(/\n+/g, " ") }],
-  })) as PlateValue;
+  // (a) HTML fragment / (c) plain text — hand both to the browser editor's own
+  // parser. Plain text with no tags parses into paragraph nodes; stray `<`
+  // in plain text is treated as text by ProseMirror's parser.
+  return raw;
 }
 
 /**
- * Editable Plate surface that reads/writes a stored content string as HTML.
+ * Editable Tiptap surface that reads/writes a stored content string as HTML.
  * The editor is seeded once from `valueHtml`; hosts remount it (e.g. by keying
  * the dialog) when they need to re-seed for a different task/comment.
  */
@@ -133,28 +110,50 @@ export function TaskRichEditor({
   className,
   contentClassName,
 }: TaskRichEditorProps) {
-  // Compute the initial Plate value once from the incoming stored string
-  // (handles the HTML / envelope / plain-text forms). `usePlateEditor` memoizes
-  // the editor, so this seeds it exactly once; hosts remount to re-seed.
-  const initialValue = useMemo<PlateValue>(
-    () => storedToPlateValue(valueHtml),
+  // Compute the initial content once from the incoming stored string (handles
+  // the HTML / envelope / plain-text forms). `useEditor` memoizes the editor,
+  // so this seeds it exactly once; hosts remount to re-seed.
+  const initialContent = useMemo(
+    () => storedToInitialContent(valueHtml),
     // Seed once on mount; hosts key the component to force a re-seed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once; hosts re-key to re-seed.
     [],
   );
 
-  const editor = usePlateEditor({
-    plugins: notesPlugins,
-    value: initialValue,
-  });
+  // Per-instance extension preset: useEditor compares the array by identity
+  // every render, so it must be memoized on the (stable) placeholder.
+  const extensions = useMemo(
+    () => createRichTextExtensions({ placeholder }),
+    [placeholder],
+  );
+
+  const [linkOpen, setLinkOpen] = useState(false);
 
   const handleChange = useCallback(
-    ({ value }: { value: unknown }) => {
-      const html = plateValueToHtml(value as PlateValue);
+    ({ editor, transaction }: { editor: Editor; transaction: { docChanged: boolean } }) => {
+      if (!transaction.docChanged) return;
+      const html = tiptapToHtml(editor.getJSON() as TiptapDoc);
       onChangeHtml(sanitizeHtml(html));
     },
     [onChangeHtml],
   );
+
+  const editor = useEditor({
+    extensions,
+    content: initialContent,
+    editorProps: {
+      attributes: { "aria-label": placeholder, "aria-multiline": "true", ...(id ? { id } : {}) },
+    },
+    immediatelyRender: false,
+    onUpdate: handleChange,
+  });
+
+  const editable = useRichTextSelector(editor, (current) => current?.isEditable ?? true);
+
+  // Mod-K follows the toolbar: no link where marks are refused (code blocks).
+  function openLinkFromKeyboard() {
+    setLinkOpen(editable && Boolean(editor?.can().toggleBold()));
+  }
 
   return (
     <div
@@ -163,21 +162,13 @@ export function TaskRichEditor({
         className,
       )}
     >
-      <Plate editor={editor} onChange={handleChange}>
-        {/* Reuse the notes toolbar so the capability surface is identical. */}
-        <TaskRichToolbar />
-        <PlateContent
-          id={id}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          spellCheck
-          className={cn(
-            "max-h-[22rem] min-h-32 overflow-y-auto px-3 py-2.5 text-sm leading-7 text-foreground outline-none",
-            "[&_[data-slate-placeholder]]:text-muted-foreground [&_[data-slate-placeholder]]:opacity-100",
-            contentClassName,
-          )}
-        />
-      </Plate>
+      <TooltipProvider delay={300}>
+        <FormattingToolbar editor={editor} linkOpen={linkOpen} onLinkOpenChange={setLinkOpen} />
+        <div className={cn("relative max-h-[22rem] min-h-32 overflow-y-auto", contentClassName)}>
+          <RichTextContent editor={editor} onLinkShortcut={openLinkFromKeyboard} className="px-3 py-2.5" />
+          {editor ? <RichTextLinkBubble editor={editor} onEdit={() => setLinkOpen(true)} /> : null}
+        </div>
+      </TooltipProvider>
     </div>
   );
 }

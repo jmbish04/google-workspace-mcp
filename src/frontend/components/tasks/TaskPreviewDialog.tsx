@@ -67,7 +67,7 @@ export function TaskPreviewDialog({
             <div className="flex flex-col gap-4">
               {/* `description` may hold HTML, a legacy Plate envelope, or plain
                   text; render the flattened plain-text snippet so the quick-look
-                  never leaks raw HTML/JSON (and never mounts the Plate editor in
+                  never leaks raw HTML/JSON (and never mounts the rich editor in
                   a list context). */}
               {task.description && htmlToPlainText(task.description).trim() ? (
                 <p className="line-clamp-6 text-sm whitespace-pre-wrap text-muted-foreground">

@@ -3,8 +3,8 @@
  * (descriptions + comment bodies). Companion to {@link TaskRichEditor}.
  *
  * It takes any stored content string, NORMALIZES it to HTML (upgrading the three
- * legacy forms — HTML fragment, Round-2 Plate envelope, or plain text/markdown —
- * via `normalizeStoredToHtml`), SANITIZES it, and injects it through
+ * legacy forms — HTML fragment, Round-2 Plate envelope (plain-text fallback),
+ * or plain text/markdown — via `normalizeStoredToHtml`), SANITIZES it, and injects it through
  * `dangerouslySetInnerHTML` inside a dark-Monolith prose wrapper.
  *
  * SSR safety: `normalizeStoredToHtml` is a pure string→HTML transform, so this
@@ -35,7 +35,7 @@ export interface TaskRichHtmlProps {
 
 /**
  * Shared dark-prose typography for injected task HTML. Mirrors the notes
- * PlateNodes styling (headings, lists, quote accent, code block) using utility
+ * editor styling (headings, lists, quote accent, code block) using utility
  * selectors so the stored HTML renders on-brand — no 1px borders.
  */
 const PROSE_CLASSES = cn(
