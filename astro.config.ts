@@ -65,7 +65,10 @@ export default defineConfig({
         "CircuitBreaker",
         // Draft-studio live rooms (see src/backend/gmail/draft-room.ts).
         "EmailDraftRoom",
+        // Yjs collaboration rooms (see src/backend/documents/collaboration-room.ts).
         "DocumentCollaborationRoom",
+        // Review-object cue rooms (see src/backend/documents/review-room.ts).
+        "DocumentReviewRoom",
       ],
     },
   }),

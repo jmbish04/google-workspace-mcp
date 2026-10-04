@@ -22,6 +22,29 @@ import {
 } from "@/backend/db/schemas/documents";
 import { DocumentStore } from "@/backend/documents/store";
 import { recordDocumentOperation } from "@/backend/documents/telemetry";
+import { verifySessionCookie } from "@/backend/lib/cookies";
+import { constantTimeEqual } from "@/backend/lib/crypto";
+import { getWorkerApiKey } from "@/backend/utils/secrets";
+
+/**
+ * Authorize a live-document socket. Accepts either door the rest of this worker
+ * trusts: the browser `cr_session` cookie an editor holds, OR
+ * `Authorization: Bearer <WORKER_API_KEY>` — the same service credential the
+ * `/mcp` surface accepts (see `mcp/server.ts#resolveSub`), so an agent or
+ * automation can observe a room too. A live channel is a stronger grant than an
+ * open read, so an unauthenticated upgrade is refused.
+ * @param env - Worker bindings.
+ * @param req - The incoming upgrade request.
+ * @returns True when the caller is authorized.
+ */
+async function authorizeDocumentSocket(env: Env, req: Request): Promise<boolean> {
+  const auth = req.headers.get("authorization");
+  if (auth?.startsWith("Bearer ")) {
+    const workerKey = await getWorkerApiKey(env).catch(() => undefined);
+    if (workerKey && constantTimeEqual(auth.slice(7), workerKey)) return true;
+  }
+  return Boolean(await verifySessionCookie(env, req.headers.get("cookie")));
+}
 
 const idParam = z.object({ id: z.string().uuid() });
 const docIdParam = z.object({ docId: z.string().uuid() });
@@ -455,6 +478,34 @@ export function createDocumentsRouter(makeStore: StoreFactory = (env) => new Doc
         ? c.json({ ok: true as const }, 200)
         : c.json({ error: "Comment not found." }, 404),
   );
+
+  /**
+   * GET /{id}/ws — live REVIEW-OBJECT cues for an open editor (suggestions and
+   * comments). Mirrors the draft-studio socket exactly: the DO holds no state,
+   * the socket only carries a "something changed" cue, and the editor always
+   * re-reads over REST. This is the dock's channel; the document BODY syncs
+   * separately over the Yjs provider (`/api/collaboration`), which cannot carry
+   * these JSON cues — so this is a complementary path, not a second body-sync.
+   *
+   * Auth-gated like the draft-studio socket (a collaborative document is private
+   * content), via {@link authorizeDocumentSocket} — session cookie or the
+   * service Bearer token.
+   */
+  router.get("/:id/ws", async (c) => {
+    if (!(await authorizeDocumentSocket(c.env, c.req.raw))) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    if (c.req.header("Upgrade") !== "websocket") {
+      return c.json({ error: "Expected WebSocket" }, 400);
+    }
+    const id = c.req.param("id");
+    if (!(await makeStore(c.env).getDocument(id))) return c.json({ error: "Not found" }, 404);
+    const ns = (c.env as unknown as { DOCUMENT_REVIEW?: DurableObjectNamespace })
+      .DOCUMENT_REVIEW;
+    if (!ns) return c.json({ error: "Live updates unavailable." }, 503);
+    return ns.get(ns.idFromName(id)).fetch(c.req.raw);
+  });
+
   return router;
 }
 
