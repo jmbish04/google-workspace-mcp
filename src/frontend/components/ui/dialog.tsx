@@ -44,8 +44,10 @@ function DialogContent({
   className,
   children,
   showClose = true,
+  showCloseButton,
   ...props
-}: DialogPrimitive.Popup.Props & { showClose?: boolean }) {
+}: DialogPrimitive.Popup.Props & { showClose?: boolean; showCloseButton?: boolean }) {
+  const isCloseShown = showCloseButton !== undefined ? showCloseButton : showClose;
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -58,7 +60,7 @@ function DialogContent({
         {...props}
       >
         {children}
-        {showClose && (
+        {isCloseShown && (
           <DialogPrimitive.Close
             data-slot="dialog-close-x"
             className="absolute top-4 right-4 rounded-md p-1 text-muted-foreground opacity-70 ring-offset-background transition hover:opacity-100 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
