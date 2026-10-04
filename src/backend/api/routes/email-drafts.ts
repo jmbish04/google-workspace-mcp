@@ -39,7 +39,13 @@ const bodySchema = z.object({
   markdown: z.string().optional(),
   html: z.string().optional(),
   text: z.string().optional(),
-  plate: z.array(z.record(z.string(), z.unknown())).optional(),
+  // A Tiptap document (ProseMirror JSON) from the draft-studio editor.
+  doc: z
+    .object({
+      type: z.literal("doc"),
+      content: z.array(z.record(z.string(), z.unknown())).optional(),
+    })
+    .optional(),
 });
 
 const envelopeSchema = z.object({
@@ -103,7 +109,7 @@ emailDraftsRouter.patch("/:id", async (c) => {
   return c.json(await getStudioDraft(c.env, c.req.param("id")));
 });
 
-/** POST /:id/revisions — the human's edit from the PlateJS editor. */
+/** POST /:id/revisions — the human's edit from the Tiptap editor. */
 emailDraftsRouter.post("/:id/revisions", async (c) => {
   if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const parsed = bodySchema.extend({ note: z.string().optional() }).safeParse(await c.req.json());
