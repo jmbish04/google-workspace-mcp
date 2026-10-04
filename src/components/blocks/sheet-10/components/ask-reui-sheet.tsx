@@ -1,3 +1,6 @@
+import type { Editor } from "@tiptap/react";
+
+import { isTextSelection } from "@tiptap/react";
 import { cn } from "cn";
 import {
   BotIcon,
@@ -15,8 +18,11 @@ import {
   MicIcon,
   ArrowUpIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
+import type { AssistSummary } from "@/components/blocks/rich-text-editor-5/components/assist-plans";
+
+import { streamEdits } from "@/components/blocks/rich-text-editor-5/components/assist-stream";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -51,6 +57,7 @@ interface ChatMessageRecord {
   role: "assistant" | "user";
   content: string;
   timestamp: string;
+  trace?: string[];
 }
 
 interface PromptSuggestionRecord {
@@ -193,8 +200,21 @@ function MessageBubble({ message }: { message: ChatMessageRecord }) {
               <span>{message.timestamp}</span>
             </div>
 
-            <div className="mt-1.5">
+            <div className="mt-1.5 space-y-2">
               <p className="text-foreground text-sm leading-5">{message.content}</p>
+              {message.trace && message.trace.length > 0 && (
+                <div className="rounded-lg border border-border/50 bg-muted/40 p-2 text-xs font-mono text-muted-foreground">
+                  <div className="flex items-center gap-1.5 font-semibold text-foreground text-[11px] mb-1">
+                    <SparklesIcon className="size-3 text-primary" aria-hidden="true" />
+                    <span>Step trace</span>
+                  </div>
+                  <ul className="space-y-0.5 pl-3 list-disc text-[11px]">
+                    {message.trace.map((step, idx) => (
+                      <li key={idx}>{step}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -203,11 +223,103 @@ function MessageBubble({ message }: { message: ChatMessageRecord }) {
   );
 }
 
-export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export interface AskReUISheetProps {
+  defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  editor?: Editor | null;
+  onSuggestionApplied?: (summary: AssistSummary) => void;
+  trigger?: React.ReactElement | null;
+}
+
+export function AskReUISheet({
+  defaultOpen = true,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+  editor = null,
+  onSuggestionApplied,
+  trigger,
+}: AskReUISheetProps = {}) {
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const isOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
+  const setIsOpen = controlledOnOpenChange ?? setInternalOpen;
+
   const [promptValue, setPromptValue] = useState("");
   const [messages, setMessages] = useState<ChatMessageRecord[]>(INITIAL_MESSAGES);
+  const [isWorking, setIsWorking] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const shouldScrollToLatestRef = useRef(false);
+
+  // Document-aware selection state from editor
+  const selectionInfo = useMemo(() => {
+    if (!editor || editor.isDestroyed) {
+      return { hasSelection: false, selectedText: "", scope: null };
+    }
+    const { selection, doc } = editor.state;
+    const hasSelection = !selection.empty && isTextSelection(selection);
+    const selectedText = hasSelection
+      ? doc.textBetween(selection.from, selection.to, " ").trim()
+      : "";
+    return {
+      hasSelection: Boolean(hasSelection && selectedText),
+      selectedText,
+      scope: hasSelection ? { from: selection.from, to: selection.to } : null,
+    };
+  }, [editor]);
+
+  const activePromptSuggestions: PromptSuggestionRecord[] = useMemo(() => {
+    if (!editor) {
+      return PROMPT_SUGGESTIONS;
+    }
+    if (selectionInfo.hasSelection) {
+      return [
+        {
+          id: "tighten-selection",
+          label: "Tighten this paragraph",
+          prompt:
+            "Tighten this paragraph: remove wordiness and filler while preserving key points.",
+        },
+        {
+          id: "firmer-tone",
+          label: "Make the tone firmer",
+          prompt: "Make the tone firmer: replace passive hedging with clear, decisive language.",
+        },
+        {
+          id: "bulleted-list",
+          label: "Turn this into a bulleted list",
+          prompt: "Turn this selection into a concise bulleted list highlighting key commitments.",
+        },
+        {
+          id: "fix-grammar",
+          label: "Proofread selection",
+          prompt: "Proofread this selection and correct any spelling, typos, or awkward grammar.",
+        },
+      ];
+    }
+    return [
+      {
+        id: "draft-summary",
+        label: "Draft executive summary",
+        prompt:
+          "Draft a concise executive summary for this document highlighting key deliverables.",
+      },
+      {
+        id: "tighten-doc",
+        label: "Tighten wordy sections",
+        prompt: "Scan the entire document and propose tightened phrasing for wordy passages.",
+      },
+      {
+        id: "extract-checklist",
+        label: "Extract launch checklist",
+        prompt: "Extract an actionable launch checklist of tasks and prerequisites from the plan.",
+      },
+      {
+        id: "structure-audit",
+        label: "Audit document structure",
+        prompt: "Analyze the document's structure, headings, and readability.",
+      },
+    ];
+  }, [editor, selectionInfo.hasSelection]);
 
   useEffect(() => {
     if (!shouldScrollToLatestRef.current) {
@@ -218,7 +330,7 @@ export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } =
     chatEndRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
 
-  function sendPrompt(prompt: string) {
+  async function sendPrompt(prompt: string) {
     const nextPrompt = prompt.trim();
 
     if (!nextPrompt) {
@@ -226,26 +338,106 @@ export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } =
     }
 
     shouldScrollToLatestRef.current = true;
-    setMessages((currentMessages) => {
-      const nextIndex = currentMessages.length + 1;
+    const userIndex = messages.length + 1;
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: `user-${userIndex}`,
+        role: "user",
+        timestamp: "Now",
+        content: nextPrompt,
+      },
+    ]);
+    setPromptValue("");
 
-      return [
+    if (!editor || editor.isDestroyed) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        createAssistantReply(nextPrompt, currentMessages.length + 1),
+      ]);
+      return;
+    }
+
+    setIsWorking(true);
+    try {
+      let replyContent = "";
+      let traceSteps: string[] = [];
+      let summaryData: AssistSummary = {
+        title: "Assistant edit staged",
+        detail: selectionInfo.hasSelection ? "Anchored to selection" : "Document level",
+      };
+
+      try {
+        const res = await fetch("/api/document-assistant/act", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            prompt: nextPrompt,
+            documentText: editor.getText(),
+            selectedText: selectionInfo.selectedText || undefined,
+            scope: selectionInfo.scope || undefined,
+          }),
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          replyContent = data.reply;
+          traceSteps = data.trace || [];
+          if (data.summary) summaryData = data.summary;
+
+          if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+            for (const edit of data.suggestions) {
+              if (edit.kind === "replace") {
+                await streamEdits(
+                  editor,
+                  [
+                    {
+                      kind: "replace",
+                      find: edit.find,
+                      whole: false,
+                      text: edit.text,
+                      at: edit.at,
+                    },
+                  ],
+                  {
+                    signal: new AbortController().signal,
+                    instant:
+                      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false,
+                    onProgress: () => {},
+                  },
+                );
+              }
+            }
+            onSuggestionApplied?.(summaryData);
+          }
+        }
+      } catch (e) {
+        console.warn("Document assistant API call failed, using local fallback:", e);
+      }
+
+      if (!replyContent) {
+        const fallback = createAssistantReply(nextPrompt, messages.length + 2);
+        replyContent = fallback.content;
+      }
+
+      setMessages((currentMessages) => [
         ...currentMessages,
         {
-          id: `user-${nextIndex}`,
-          role: "user",
+          id: `assistant-${currentMessages.length + 1}`,
+          role: "assistant",
           timestamp: "Now",
-          content: nextPrompt,
+          content: replyContent,
+          trace: traceSteps,
         },
-        createAssistantReply(nextPrompt, nextIndex + 1),
-      ];
-    });
-    setPromptValue("");
+      ]);
+    } finally {
+      setIsWorking(false);
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    sendPrompt(promptValue);
+    void sendPrompt(promptValue);
   }
 
   function handleNewChat() {
@@ -273,15 +465,19 @@ export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } =
 
   return (
     <TooltipProvider delay={180}>
-      <Sheet defaultOpen={defaultOpen}>
-        <SheetTrigger
-          render={
-            <Button type="button" variant="outline" size="lg">
-              <SparklesIcon data-icon="inline-start" aria-hidden="true" />
-              Open Ask ReUI
-            </Button>
-          }
-        />
+      <Sheet open={isOpen} onOpenChange={setIsOpen}>
+        {trigger !== null && (
+          <SheetTrigger
+            render={
+              trigger ?? (
+                <Button type="button" variant="outline" size="lg">
+                  <SparklesIcon data-icon="inline-start" aria-hidden="true" />
+                  Open Ask ReUI
+                </Button>
+              )
+            }
+          />
+        )}
 
         <SheetContent
           side="right"
@@ -410,12 +606,15 @@ export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } =
                   </h2>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {PROMPT_SUGGESTIONS.map((suggestion) => (
+                    {activePromptSuggestions.map((suggestion) => (
                       <Button
                         key={suggestion.id}
                         type="button"
                         variant="outline"
-                        onClick={() => setPromptValue(suggestion.prompt)}
+                        onClick={() => {
+                          setPromptValue(suggestion.prompt);
+                          void sendPrompt(suggestion.prompt);
+                        }}
                       >
                         {suggestion.label}
                       </Button>
@@ -446,9 +645,10 @@ export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } =
                     id="ask-reui-prompt"
                     value={promptValue}
                     onChange={(event) => setPromptValue(event.target.value)}
-                    placeholder="Ask ReUI..."
+                    placeholder={isWorking ? "Assist is writing suggestions..." : "Ask ReUI..."}
                     rows={2}
                     autoFocus
+                    disabled={isWorking}
                     aria-label="Ask ReUI prompt"
                     className="min-h-16"
                     onKeyDown={(event) => {
@@ -482,6 +682,7 @@ export function AskReUISheet({ defaultOpen = true }: { defaultOpen?: boolean } =
                         type="submit"
                         variant="default"
                         size="icon-sm"
+                        disabled={isWorking}
                         aria-label="Send Ask ReUI prompt"
                       >
                         <ArrowUpIcon aria-hidden="true" />
