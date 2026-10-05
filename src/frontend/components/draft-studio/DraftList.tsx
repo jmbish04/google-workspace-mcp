@@ -35,6 +35,7 @@ export function DraftList() {
   const [drafts, setDrafts] = React.useState<EmailDraftRow[] | null>(null);
   const [showAll, setShowAll] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -43,8 +44,10 @@ export function DraftList() {
         showAll ? undefined : { status: "drafting,in_gmail" },
       );
       setDrafts(out.drafts);
+      setError(null);
     } catch (err) {
       logError({ title: "Could not load drafts", message: (err as Error).message, detail: err, source: "DraftList.load" });
+      setError(`Could not load drafts: ${(err as Error).message}`);
       setDrafts([]);
     }
   }, [showAll]);
@@ -55,11 +58,13 @@ export function DraftList() {
 
   async function create() {
     setCreating(true);
+    setError(null);
     try {
       const draft = await apiSend<DraftWithHistory>("POST", "email-drafts", { subject: "", note: "Started on the page" });
       window.location.href = `/gws/draft-studio/${draft.id}`;
     } catch (err) {
       logError({ title: "Could not start a draft", message: (err as Error).message, detail: err, source: "DraftList.create" });
+      setError(`Could not start a draft: ${(err as Error).message}`);
       setCreating(false);
     }
   }
@@ -77,6 +82,12 @@ export function DraftList() {
           {showAll ? "Show active only" : "Show sent and discarded"}
         </Button>
       </div>
+
+      {error && (
+        <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
 
       {drafts === null ? (
         <p className="flex items-center gap-2 text-sm text-muted-foreground">

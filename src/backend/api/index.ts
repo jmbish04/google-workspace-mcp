@@ -165,6 +165,10 @@ for (const base of [
   "/api/gsuite-health",
   "/api/tools",
   "/api/drive",
+  // Draft studio: private mail. Same credential as the agent surfaces
+  // (`gsuite_session` cookie OR Bearer) — the whole frontend authenticates
+  // with that, NOT the `cr_session` admin cookie.
+  "/api/email-drafts",
 ]) {
   app.use(base, agentAuthMiddleware);
   app.use(`${base}/*`, agentAuthMiddleware);

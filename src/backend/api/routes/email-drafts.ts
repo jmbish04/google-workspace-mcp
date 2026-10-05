@@ -8,15 +8,17 @@
  * the draft's Durable Object room so an agent-pushed revision appears without
  * a refresh.
  *
- * Auth: writes and the socket require the signed session cookie (the same gate
- * the rest of the admin surface uses). Reads are session-gated too — a draft
- * body is private mail, not public template content.
+ * Auth: the whole router is gated in `api/index.ts` by `agentAuthMiddleware`
+ * (the `gsuite_session` cookie OR `Authorization: Bearer`), the same credential
+ * the frontend and every other feature surface uses — a draft body is private
+ * mail, not public template content. (It previously gated on the unrelated
+ * `cr_session` admin cookie, which no browser session ever carried, so every
+ * call 401'd and the "New draft" button did nothing.)
  */
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
-import { verifySessionCookie } from "@/backend/lib/cookies";
 import {
   addComment,
   addRevision,
@@ -58,14 +60,8 @@ const envelopeSchema = z.object({
   threadId: z.string().optional(),
 });
 
-/** Every route here is session-gated — a draft body is private mail. */
-async function requireSession(c: { env: Env; req: { header: (name: string) => string | undefined } }) {
-  return verifySessionCookie(c.env, c.req.header("Cookie"));
-}
-
 /** GET / — drafts, newest-updated first. `?status=drafting,in_gmail` filters. */
 emailDraftsRouter.get("/", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const raw = c.req.query("status");
   const status = raw
     ? raw.split(",").filter((s): s is (typeof EMAIL_DRAFT_STATUSES)[number] =>
@@ -78,24 +74,20 @@ emailDraftsRouter.get("/", async (c) => {
 
 /** POST / — start a draft (an initial body is optional). */
 emailDraftsRouter.post("/", async (c) => {
-  const session = await requireSession(c);
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
   const parsed = envelopeSchema.merge(bodySchema).extend({ note: z.string().optional() }).safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Invalid body", issues: parsed.error.issues }, 400);
-  const draft = await createStudioDraft(c.env, { ...parsed.data, createdBySub: session.sub } as never);
+  const draft = await createStudioDraft(c.env, parsed.data as never);
   return c.json(draft, 201);
 });
 
 /** GET /:id — the draft with its revisions and comments. */
 emailDraftsRouter.get("/:id", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const draft = await getStudioDraft(c.env, c.req.param("id"));
   return draft ? c.json(draft) : c.json({ error: "Not found" }, 404);
 });
 
 /** PATCH /:id — recipients / subject, without creating a revision. */
 emailDraftsRouter.patch("/:id", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const parsed = envelopeSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Invalid body", issues: parsed.error.issues }, 400);
   const d = parsed.data;
@@ -111,7 +103,6 @@ emailDraftsRouter.patch("/:id", async (c) => {
 
 /** POST /:id/revisions — the human's edit from the Tiptap editor. */
 emailDraftsRouter.post("/:id/revisions", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const parsed = bodySchema.extend({ note: z.string().optional() }).safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Invalid body", issues: parsed.error.issues }, 400);
   try {
@@ -127,7 +118,6 @@ emailDraftsRouter.post("/:id/revisions", async (c) => {
 
 /** POST /:id/comments — a note for the agent, optionally on a highlight. */
 emailDraftsRouter.post("/:id/comments", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const parsed = z
     .object({ body: z.string().min(1), quote: z.string().nullish(), revision: z.number().int().optional() })
     .safeParse(await c.req.json());
@@ -141,7 +131,6 @@ emailDraftsRouter.post("/:id/comments", async (c) => {
 
 /** POST /:id/comments/resolve — mark comments handled (all, or the given ids). */
 emailDraftsRouter.post("/:id/comments/resolve", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   const body = await c.req.json().catch(() => ({}));
   const ids = Array.isArray((body as { commentIds?: unknown }).commentIds)
     ? ((body as { commentIds: string[] }).commentIds)
@@ -151,7 +140,6 @@ emailDraftsRouter.post("/:id/comments/resolve", async (c) => {
 
 /** POST /:id/gmail-draft — hand the current revision to Gmail as a real draft. */
 emailDraftsRouter.post("/:id/gmail-draft", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   try {
     return c.json(await promoteStudioDraft(c.env, c.req.param("id")));
   } catch (err) {
@@ -161,7 +149,6 @@ emailDraftsRouter.post("/:id/gmail-draft", async (c) => {
 
 /** POST /:id/send — send the current revision. */
 emailDraftsRouter.post("/:id/send", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   try {
     return c.json(await sendStudioDraft(c.env, c.req.param("id")));
   } catch (err) {
@@ -171,7 +158,6 @@ emailDraftsRouter.post("/:id/send", async (c) => {
 
 /** POST /:id/discard — take the draft out of the active list. */
 emailDraftsRouter.post("/:id/discard", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   await setDraftStatus(c.env, c.req.param("id"), "discarded");
   return c.json({ ok: true });
 });
@@ -181,7 +167,6 @@ emailDraftsRouter.post("/:id/discard", async (c) => {
  * "something changed" hints; the page always re-reads the draft over REST.
  */
 emailDraftsRouter.get("/:id/ws", async (c) => {
-  if (!(await requireSession(c))) return c.json({ error: "Unauthorized" }, 401);
   if (c.req.header("Upgrade") !== "websocket") return c.json({ error: "Expected WebSocket" }, 400);
   const id = c.req.param("id");
   if (!(await getStudioDraft(c.env, id))) return c.json({ error: "Not found" }, 404);
