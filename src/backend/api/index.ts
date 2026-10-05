@@ -24,6 +24,7 @@ import { collaborationRouter } from "@/backend/api/routes/collaboration";
 import { documentsRouter } from "@/backend/api/routes/documents";
 
 import { agentAuthMiddleware } from "./middleware/agent-auth";
+import { noStoreApiResponses } from "./middleware/no-store";
 import { authMiddleware } from "./middleware/auth";
 import { errorHandler } from "./middleware/error";
 import { activityRouter } from "./routes/activity";
@@ -95,6 +96,8 @@ export const app = new OpenAPIHono<AppBindings>();
 app.use("*", cors());
 /** Log every request method + path + status + duration. */
 app.use("*", logger());
+/** Default dynamic `/api/*` responses to `no-store` (see `noStoreApiResponses`). */
+app.use("/api/*", noStoreApiResponses);
 /** Global error handler — returns structured JSON errors. */
 app.onError(errorHandler);
 
