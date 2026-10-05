@@ -6,6 +6,7 @@
  * is browser-only and throws during Astro SSR.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AuthGate } from "@/components/gsuite-agents/AuthGate";
 import { DraftStudio } from "@/components/draft-studio";
 
 const { id } = Astro.params;
@@ -16,6 +17,7 @@ if (!id) return Astro.redirect("/gws/draft-studio");
   title="Draft Studio"
   description="Read, diff, edit and comment on an email draft, then send it or hand it to Gmail."
 >
+  <AuthGate authed={false} client:load />
   <div class="container mx-auto max-w-6xl px-4 py-12">
     <a href="/gws/draft-studio" class="text-sm text-muted-foreground hover:text-foreground">← All drafts</a>
     <h1 class="mb-6 mt-2 text-balance text-3xl font-bold tracking-tight">Draft Studio</h1>
