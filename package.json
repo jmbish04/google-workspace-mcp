@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
-    "preview": "wrangler dev",
+    "preview": "pnpm run build && cp .assetsignore dist/.assetsignore && npx wrangler preview",
     "start": "astro dev",
     "test": "vitest run",
     "typecheck": "node --stack-size=8000 node_modules/typescript/lib/tsc.js --noEmit",
