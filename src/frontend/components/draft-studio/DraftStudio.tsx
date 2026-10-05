@@ -24,7 +24,7 @@
 "use client";
 
 import { useEditor } from "@tiptap/react";
-import { Check, Loader2, MessageSquarePlus, Save, Send, Trash2 } from "lucide-react";
+import { Check, Loader2, MessageSquarePlus, Save, Send, Sparkles, Trash2, X } from "lucide-react";
 import * as React from "react";
 
 // The ReUI rich-text-editor-1 "kit": the shipped formatting toolbar, link
@@ -59,7 +59,7 @@ import { relativeTime } from "@/lib/format";
 import { stripHiddenMarkers, type TiptapDoc } from "@/shared/tiptap-email";
 import { diffSummary, diffWords } from "@/shared/text-diff";
 
-import { STATUS_LABEL, type DraftWithHistory } from "./types";
+import { REVISE_PRESETS, STATUS_LABEL, type DraftSuggestion, type DraftWithHistory } from "./types";
 import { useDraftSocket } from "./useDraftSocket";
 
 const STATUS_TONE: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -81,6 +81,10 @@ export function DraftStudio({ draftId }: DraftStudioProps) {
   /** Revision shown in Preview/Diff; null means "the latest". */
   const [viewing, setViewing] = React.useState<number | null>(null);
   const [confirmSend, setConfirmSend] = React.useState(false);
+  /** A pending Core Guardian suggestion awaiting accept/reject; null when none. */
+  const [suggestion, setSuggestion] = React.useState<DraftSuggestion | null>(null);
+  const [suggesting, setSuggesting] = React.useState(false);
+  const [suggestErr, setSuggestErr] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -116,6 +120,29 @@ export function DraftStudio({ draftId }: DraftStudioProps) {
     }
   }
 
+  /** Ask the agent (Core Guardian) for a revision. Shows it as a suggestion; writes nothing. */
+  async function requestSuggestion(instruction: string) {
+    setSuggesting(true);
+    setSuggestErr(null);
+    try {
+      setSuggestion(await apiSend<DraftSuggestion>("POST", `email-drafts/${draftId}/suggest`, { instruction }));
+    } catch (err) {
+      setSuggestErr((err as Error).message);
+      logError({ title: "Could not get a suggestion", message: (err as Error).message, detail: err, source: "DraftStudio.suggest" });
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  /** Accept the pending suggestion: commit it as a new revision via the normal path. */
+  async function acceptSuggestion() {
+    if (!suggestion) return;
+    const s = suggestion;
+    setSuggestion(null);
+    await act("revision", () => apiSend("POST", `email-drafts/${draftId}/revisions`, { markdown: s.suggestedMarkdown, note: `Agent revision: ${s.instruction.slice(0, 80)}` }), "Could not apply the suggestion");
+    setTab("preview");
+  }
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -133,6 +160,15 @@ export function DraftStudio({ draftId }: DraftStudioProps) {
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
       <div className="min-w-0 space-y-4">
         <Envelope draft={draft} readOnly={readOnly} onSave={(fields) => act("envelope", () => apiSend("PATCH", `email-drafts/${draftId}`, fields), "Could not update the draft")} />
+
+        {suggestion ? (
+          <SuggestionReview
+            suggestion={suggestion}
+            applying={busy === "revision"}
+            onAccept={acceptSuggestion}
+            onReject={() => setSuggestion(null)}
+          />
+        ) : null}
 
         <Tabs value={tab} onValueChange={setTab}>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -214,6 +250,15 @@ export function DraftStudio({ draftId }: DraftStudioProps) {
             </div>
           ) : null}
         </section>
+
+        {!readOnly ? (
+          <RevisePanel
+            busy={suggesting}
+            error={suggestErr}
+            hasSuggestion={suggestion !== null}
+            onSuggest={requestSuggestion}
+          />
+        ) : null}
 
         <RevisionList
           draft={draft}
@@ -554,6 +599,115 @@ function CommentList({ draft, busy, onResolve }: { draft: DraftWithHistory; busy
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/**
+ * The "ask the agent to revise" panel. A free-text instruction plus one-click
+ * colby email-strategy presets; the result comes back as a suggestion the human
+ * accepts or rejects (never a silent overwrite). The model call runs through
+ * Core Guardian on the Worker.
+ */
+function RevisePanel({
+  busy,
+  error,
+  hasSuggestion,
+  onSuggest,
+}: {
+  busy: boolean;
+  error: string | null;
+  hasSuggestion: boolean;
+  onSuggest: (instruction: string) => void;
+}) {
+  const [instruction, setInstruction] = React.useState("");
+  return (
+    <section className="space-y-2">
+      <h2 className="text-sm font-semibold">Ask the agent</h2>
+      <Textarea
+        rows={2}
+        value={instruction}
+        placeholder="e.g. tighten this and strike a firmer tone"
+        onChange={(e) => setInstruction(e.target.value)}
+        disabled={busy}
+      />
+      <div className="flex flex-wrap gap-1.5">
+        {REVISE_PRESETS.map((p) => (
+          <Button
+            key={p.key}
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              setInstruction(p.instruction);
+              onSuggest(p.instruction);
+            }}
+            title={p.instruction}
+          >
+            {p.label}
+          </Button>
+        ))}
+      </div>
+      <Button size="sm" disabled={busy || !instruction.trim()} onClick={() => onSuggest(instruction.trim())}>
+        {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Suggest a revision
+      </Button>
+      {hasSuggestion && !busy ? (
+        <p className="text-xs text-muted-foreground">Review the suggestion above, then accept or discard it.</p>
+      ) : null}
+      {error ? (
+        <p className="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive" role="alert">{error}</p>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The accept/reject card for a pending agent suggestion: a word-level diff of
+ * what would change and the rendered preview, with Accept (commit as a new
+ * revision) or Discard. The agent never writes the body itself.
+ */
+function SuggestionReview({
+  suggestion,
+  applying,
+  onAccept,
+  onReject,
+}: {
+  suggestion: DraftSuggestion;
+  applying: boolean;
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <section className="space-y-3 rounded-lg bg-primary/5 p-4 ring-1 ring-primary/30">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+          <Sparkles className="size-4 text-primary" /> Suggested revision
+        </h2>
+        <span className="text-xs text-muted-foreground">{suggestion.model}</span>
+      </div>
+      <p className="text-xs italic text-muted-foreground">“{suggestion.instruction}”</p>
+
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium text-muted-foreground">What changes</p>
+        <DiffView before={suggestion.originalText} after={suggestion.suggestedText} />
+      </div>
+
+      <details className="rounded-md ring-1 ring-border/40">
+        <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">Preview the full email</summary>
+        <div
+          className="overflow-x-auto rounded-b-md bg-white p-6 text-black [&_a]:underline"
+          dangerouslySetInnerHTML={{ __html: suggestion.suggestedHtml }}
+        />
+      </details>
+
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" disabled={applying} onClick={onAccept}>
+          {applying ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Accept as revision
+        </Button>
+        <Button size="sm" variant="ghost" disabled={applying} onClick={onReject}>
+          <X className="size-4" /> Discard
+        </Button>
+      </div>
     </section>
   );
 }
