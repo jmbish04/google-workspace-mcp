@@ -41,9 +41,16 @@ export function AuthGate({ authed }: { authed: boolean }) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/agent-session/session", {
+        // Cache-bust with a unique query param: the Workers cache (wrangler
+        // `cache.enabled`) otherwise serves a stale `authed:false` for this
+        // cookie-gated GET, so a just-logged-in browser gets re-prompted in a
+        // loop. A unique key forces a fresh edge MISS. `cache:"no-store"` alone
+        // is not enough — Cloudflare does not honour a client no-cache for its
+        // edge cache. The server also sends `no-store` (see noStoreApiResponses).
+        const res = await fetch(`/api/agent-session/session?t=${Date.now()}`, {
           method: "GET",
           credentials: "include",
+          cache: "no-store",
           headers: { accept: "application/json" },
         });
         if (cancelled) return;
