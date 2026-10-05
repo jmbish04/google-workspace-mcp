@@ -31,6 +31,7 @@ import {
   setDraftStatus,
   updateDraftFields,
 } from "@/backend/gmail/draft-studio";
+import { suggestDraftRevision } from "@/backend/gmail/draft-suggest";
 import { EMAIL_DRAFT_STATUSES } from "@db/schemas";
 
 import type { AppBindings } from "../index";
@@ -113,6 +114,21 @@ emailDraftsRouter.post("/:id/revisions", async (c) => {
     return c.json(out, 201);
   } catch (err) {
     return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+/**
+ * POST /:id/suggest — ask Core Guardian for a revised body and return it as a
+ * SUGGESTION (nothing is written). The page shows an accept/reject diff; accept
+ * posts the markdown back through POST /:id/revisions.
+ */
+emailDraftsRouter.post("/:id/suggest", async (c) => {
+  const parsed = z.object({ instruction: z.string().min(1) }).safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Invalid body", issues: parsed.error.issues }, 400);
+  try {
+    return c.json(await suggestDraftRevision(c.env, c.req.param("id"), parsed.data.instruction));
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 502);
   }
 });
 
