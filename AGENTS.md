@@ -82,6 +82,18 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   (margins fail without it) and names only the set fields (never `"*"`).
   `asUser`/`acct` live in `mcp/tool-common.ts` so spread-in tool modules avoid a
   circular value import of `tools.ts`.
+  Positions: `docs_outline` (elements with range/style/bullet/table+cell/preview,
+  per-tab endIndex, `format:"lines"`) and `docs_find` (all matches, bold true|false|
+  "mixed", `inSuggestion`, never across a non-text element or cell). All pure index
+  code lives in ONE module, `docs/index-core.ts` (`positions.ts`/`outline.ts`/`find.ts`
+  and `locate.ts#flattenTabs|foldCase` re-export it): `code_mode_run` gets it as the
+  frozen `docs` object by SOURCE TEXT (`mcp/sandbox-docs-helpers.ts`), so every function
+  there must be a top-level `function` using only its params + same-file functions + inline
+  anonymous callbacks (a cross-module call compiles to `__vite_ssr_import_0__.x`, which
+  the sandbox lacks; a guard test enforces this). Table formulas were measured live:
+  table at `i` starts `i+1`, empty cell (r,c) para `i+4+r(2C+1)+2c`, next insertAt
+  `i+3+R(2C+1)`. `docs/__fixtures__/reference-resume.structure.json` is the real
+  2026-10-08 reference resume structure (final positions) used by tests.
 - **Dev Worker**: `pnpm run deploy:dev` → `google-workspace-mcp-dev` (`env.dev` in
   `wrangler.jsonc`, dev-only D1/KV/R2, no crons, no Hyperdrive/Vectorize, SELF_RPC →
   dev). Check with `pnpm run deploy:dev:dry-run` first. Never deploy prod from an agent.

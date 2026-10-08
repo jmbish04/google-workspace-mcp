@@ -4,26 +4,9 @@
  * so the factories can fill/style cells after inserting a table. Testable with
  * synthetic doc JSON.
  */
+import { flattenTabs, foldCase } from "@/backend/docs/index-core";
 
-/**
- * Lower-case a string one UTF-16 code unit at a time, preserving length exactly.
- * `String.prototype.toLowerCase()` on the whole string can change length (e.g.
- * "İ" → "i̇", 1 code unit → 2), which would desync every index computed against
- * the original string. Folding per unit and leaving a unit unchanged whenever
- * its own lower-case form is a different length keeps every index exact; the
- * only cost is that those rare characters match case-sensitively.
- *
- * @param s - text to fold
- * @returns `s` with each length-preserving code unit lower-cased
- */
-function foldCase(s: string): string {
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    const lower = s[i].toLowerCase();
-    out += lower.length === 1 ? lower : s[i];
-  }
-  return out;
-}
+export { flattenTabs, foldCase };
 
 export interface TableCell {
   rowIndex: number;
@@ -37,27 +20,6 @@ export interface LocatedTable {
   rows: number;
   cols: number;
   cells: TableCell[];
-}
-
-/**
- * Every tab of a raw document, each parent before its `childTabs`, depth-first.
- * `docs_list_tabs` flattens `childTabs` the same way, so a tab id it handed the
- * agent must resolve here too — scanning only the top-level `tabs` rejects a
- * valid child-tab id with "Tab not found".
- *
- * @param rawDoc - `documents.get` JSON (the `includeTabsContent` shape)
- * @returns the flattened tab list; empty for a legacy `body`-only document
- */
-export function flattenTabs(rawDoc: any): any[] {
-  const out: any[] = [];
-  const walk = (tabs: any[]): void => {
-    for (const tab of tabs ?? []) {
-      out.push(tab);
-      walk(tab?.childTabs ?? []);
-    }
-  };
-  walk(Array.isArray(rawDoc?.tabs) ? rawDoc.tabs : []);
-  return out;
 }
 
 /** Body content for a tab (with includeTabsContent, child tabs included) or the legacy root body. */
