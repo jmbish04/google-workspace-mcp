@@ -94,6 +94,18 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   table at `i` starts `i+1`, empty cell (r,c) para `i+4+r(2C+1)+2c`, next insertAt
   `i+3+R(2C+1)`. `docs/__fixtures__/reference-resume.structure.json` is the real
   2026-10-08 reference resume structure (final positions) used by tests.
+  Layout spec → batch: `docs_build_from_spec` (`mcp/docs-spec-tools.ts`) validates
+  `docs/spec/schema.ts` (theme tokens + `styles` presets, checked with Zod paths), compiles
+  with `docs/spec/compile.ts` (forward structure inserts → cell fills LAST to FIRST →
+  bullets → styles at FINAL positions, identical ranges merged), sends ONE batch pinned to
+  the read revision, re-reads and (insert mode) checks the text before/after is unchanged.
+  Text before a table omits its last newline (the table's own newline ends it); only a table
+  first/after a table/after a page break gets an empty gap paragraph. Every text/paragraph
+  style names ALL managed fields, so inserts never inherit heading/bullet/link style.
+  Google refuses `pageBreakBefore` on table-cell paragraphs — `requests.ts` leaves it out
+  there. The golden resume spec (`docs/spec/golden/resume.ts`) compiles to 181 requests
+  whose layout equals the reference exactly. `table_factory` = `docs/table-spec.ts` spec +
+  same compiler, appended at the tab end in 1 batch (old `table-format.ts` kept for tests).
 - **Dev Worker**: `pnpm run deploy:dev` → `google-workspace-mcp-dev` (`env.dev` in
   `wrangler.jsonc`, dev-only D1/KV/R2, no crons, no Hyperdrive/Vectorize, SELF_RPC →
   dev). Check with `pnpm run deploy:dev:dry-run` first. Never deploy prod from an agent.
