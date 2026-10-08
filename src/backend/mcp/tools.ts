@@ -55,7 +55,6 @@ import { putPreview } from "@/backend/docs/preview-store";
 import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
 import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
 import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/schema";
-import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
 import { buildFolderTree } from "@/backend/drive/folder-tree";
 import {
   walkFolder,
@@ -4219,54 +4218,6 @@ export const TOOLS: ToolDef[] = [
   },
   // ---- Docs batchUpdate engine (docs-engine-tools.ts) -------------------
   ...docsEngineTools,
-  {
-    name: "table_factory",
-    description:
-      "Insert a themed table into a Google Doc from a 2D array (first row = header). Header row gets a dark-blue fill with white bold centered text; every cell gets a 1pt border. Handles the index math (fills bottom-up, styles after re-fetch). Defaults to the signed-in account.",
-    inputSchema: z.object({
-      documentId: z.string(),
-      data: z.array(z.array(z.string())),
-      theme: z.string().optional(),
-      tabId: z.string().optional(),
-      ...asUser,
-    }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const docs = new DocsService(env, account);
-      const rows = a.data.length;
-      const cols = Math.max(0, ...a.data.map((r: string[]) => r.length));
-      if (!rows || !cols) throw new Error("data must be a non-empty 2D array");
-
-      await docs.batchUpdate(a.documentId, [
-        {
-          insertTable: {
-            rows,
-            columns: cols,
-            endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {},
-          },
-        },
-      ]);
-      let table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
-      if (!table) throw new Error("Could not locate the inserted table.");
-      await docs.batchUpdate(a.documentId, buildFillRequests(table, a.data, a.tabId));
-      table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
-      if (!table) throw new Error("Table not found after fill.");
-      await docs.batchUpdate(
-        a.documentId,
-        buildTableStyleRequests(table, a.data, a.theme ?? "default", a.tabId),
-      );
-
-      return {
-        result: { documentId: a.documentId, rows, cols },
-        asset: {
-          assetType: "doc",
-          googleId: a.documentId,
-          action: "modify",
-          detail: { table: `${rows}x${cols}` },
-        },
-      };
-    },
-  },
   {
     name: "code_block_factory",
     description:
