@@ -109,6 +109,11 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
 - **Dev Worker**: `pnpm run deploy:dev` → `google-workspace-mcp-dev` (`env.dev` in
   `wrangler.jsonc`, dev-only D1/KV/R2, no crons, no Hyperdrive/Vectorize, SELF_RPC →
   dev). Check with `pnpm run deploy:dev:dry-run` first. Never deploy prod from an agent.
+  Google OAuth for dev: `pnpm run oauth:dev-setup` (`scripts/setup-dev-oauth.mjs`) checks
+  both client files (gcloud project/APIs, live token + redirect probes), then
+  `wrangler secret bulk --env dev` sets GOOGLE_CLIENT_ID/SECRET + the per-account pair.
+  It refuses any non-`-dev` Worker. Normal web clients have no redirect-URI API: the
+  script opens the Console page and re-checks.
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →
