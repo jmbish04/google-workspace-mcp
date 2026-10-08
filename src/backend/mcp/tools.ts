@@ -125,10 +125,12 @@ import {
 } from "@/backend/workspace-events/subscription-manager";
 import { getDb } from "@/db";
 
-import { GoogleApiError } from "./googleClient";
+import { isRevisionConflict } from "@/backend/docs/batch-errors";
 import type { AssetAction } from "./logging";
 
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
+import { docsEngineTools } from "./docs-engine-tools";
+import { acct, asUser } from "./tool-common";
 import { documentAgentTools } from "./document-tools";
 import { AppsScriptService } from "./services/appsscript";
 import { CalendarService } from "./services/calendar";
@@ -171,17 +173,6 @@ const codeModeResultSchema = z.object({
   logs: z.array(z.string()),
 });
 
-/** Optional impersonation field mixed into every tool schema. */
-const asUser = {
-  as_user: z
-    .string()
-    .email()
-    .optional()
-    .describe(
-      "Optional email to act as. Uses a stored per-user OAuth refresh token for that account when one exists (works for consumer/standalone mailboxes), otherwise falls back to Workspace domain-wide delegation. Omit to use the signed-in account (default).",
-    ),
-};
-
 /**
  * One-or-more email recipients: a single/comma-separated string OR an array of
  * addresses. Normalize with {@link addrList} before handing to the Gmail service
@@ -194,24 +185,6 @@ function addrList(v: string | string[] | undefined): string | undefined {
   if (v == null) return undefined;
   const s = Array.isArray(v) ? v.filter(Boolean).join(", ") : v;
   return s.trim() ? s : undefined;
-}
-
-/**
- * Whether a batchUpdate failure was Google rejecting a pinned
- * `writeControl.requiredRevisionId` (the document moved between the read and
- * the write) rather than some other 400 (e.g. a genuinely malformed request).
- *
- * @param err - the value caught from `DocsService.batchUpdate`
- * @returns true only for a `GoogleApiError` whose body carries `error.status === "FAILED_PRECONDITION"`
- */
-function isRevisionConflict(err: unknown): boolean {
-  if (!(err instanceof GoogleApiError) || err.status !== 400) return false;
-  try {
-    const parsed = JSON.parse(err.body) as { error?: { status?: string } };
-    return parsed.error?.status === "FAILED_PRECONDITION";
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -284,10 +257,6 @@ const richBody = {
     ),
 };
 
-/** Resolve the account ref for a call: the as_user email, else the signed-in sub (OAuth-only). */
-export function acct(sub: string, a: { as_user?: string }): string {
-  return a.as_user ? a.as_user.trim().toLowerCase() : sub;
-}
 
 /**
  * Read-only, account-scoped tools eligible for mandatory cross-account "shadow
@@ -4248,40 +4217,8 @@ export const TOOLS: ToolDef[] = [
       return { result: { folderId, filesIndexed: results.length, skipped, results } };
     },
   },
-  // ---- Docs batchUpdate engine (braille replay) -------------------------
-  {
-    name: "docs_get_json",
-    description:
-      "Return a Google Doc's raw structure JSON (the 'braille'), tab-aware (includeTabsContent=true). This is the exact shape docs_batch_update replays. Defaults to the service-account identity; as_user overrides.",
-    inputSchema: z.object({ documentId: z.string(), ...asUser }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      return { result: await new DocsService(env, account).getRaw(a.documentId) };
-    },
-  },
-  {
-    name: "docs_batch_update",
-    description:
-      "Apply an array of native Google Docs API requests to a document atomically — the full grammar: headings, tables, colors, spacing, page/section breaks, tabs (addDocumentTab), landscape (updateSectionStyle flipPageOrientation), styled tables. Each request carries its own tabId/location. This is how stored braille is replayed into docs. Defaults to the service-account identity; as_user overrides.",
-    inputSchema: z.object({
-      documentId: z.string(),
-      requests: z.array(z.record(z.string(), z.unknown())),
-      ...asUser,
-    }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const result = await new DocsService(env, account).batchUpdate(a.documentId, a.requests);
-      return {
-        result,
-        asset: {
-          assetType: "doc",
-          googleId: a.documentId,
-          action: "modify",
-          detail: { requests: a.requests.length },
-        },
-      };
-    },
-  },
+  // ---- Docs batchUpdate engine (docs-engine-tools.ts) -------------------
+  ...docsEngineTools,
   {
     name: "table_factory",
     description:

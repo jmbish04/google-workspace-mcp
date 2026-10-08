@@ -3,6 +3,24 @@ import { extractGoogleId } from "@/backend/google/core/ids";
 
 export type GoogleDoc = { documentId: string; title: string };
 
+/**
+ * `writeControl` of a batchUpdate. Google accepts at most one of
+ * `requiredRevisionId` / `targetRevisionId`. `writeMode: "SUGGEST"` applies the
+ * batch as suggestions (Google Developer Preview).
+ */
+export type DocsWriteControl = {
+  requiredRevisionId?: string;
+  targetRevisionId?: string;
+  writeMode?: "EDIT" | "SUGGEST";
+};
+
+/** The batchUpdate response fields the engine reads. */
+export type BatchUpdateResponse = {
+  documentId?: string;
+  replies?: unknown[];
+  writeControl?: { requiredRevisionId?: string; targetRevisionId?: string };
+};
+
 const BASE = "https://docs.googleapis.com/v1/documents";
 
 export class DocsService {
@@ -30,18 +48,22 @@ export class DocsService {
    * @param writeControl - optional optimistic-concurrency guard. Pass the
    *   `revisionId` read from {@link getRaw} as `requiredRevisionId` and the API
    *   rejects the batch if the document changed in between, instead of applying
-   *   indices computed against content that has since moved. Omit it and the
-   *   body stays a bare `{ requests }`, exactly as before.
+   *   indices computed against content that has since moved. `targetRevisionId`
+   *   and `writeMode` are passed through as given. Omit it (or pass an object
+   *   with no fields set) and the body stays a bare `{ requests }`.
    * @returns the batchUpdate response
    */
   async batchUpdate<T = unknown>(
     documentId: string,
     requests: unknown[],
-    writeControl?: { requiredRevisionId: string },
+    writeControl?: DocsWriteControl,
   ): Promise<T> {
+    const wc = writeControl
+      ? Object.fromEntries(Object.entries(writeControl).filter(([, v]) => v !== undefined && v !== ""))
+      : {};
     return googleJson<T>(this.env, this.sub, `${BASE}/${extractGoogleId(documentId)}:batchUpdate`, {
       method: "POST",
-      body: JSON.stringify(writeControl ? { requests, writeControl } : { requests }),
+      body: JSON.stringify(Object.keys(wc).length ? { requests, writeControl: wc } : { requests }),
     });
   }
 
