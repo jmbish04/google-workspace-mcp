@@ -12,6 +12,10 @@
  *   (revisionId, documentMode, flattened tabs).
  * - `docs_batch_update` — raw requests, with `writeControl` passed through.
  * - `docs_set_page_setup` — PAGES/PAGELESS, margins, page size on one tab.
+ * - `docs_outline` — one entry per element with its range, style, bullet,
+ *   table/cell and a text preview (`docs/outline.ts`).
+ * - `docs_find` — every match of a literal string with its range, bold flag
+ *   and suggestion flag (`docs/find.ts`).
  *
  * Registered in `TOOLS` (spread in from `tools.ts`); reachable in the code-mode
  * sandbox as `await tools.<name>(args)`.
@@ -28,6 +32,8 @@
 import { z } from "zod";
 
 import { runBatch } from "@/backend/docs/batch-runner";
+import { findAll } from "@/backend/docs/find";
+import { outlineDoc, outlineLines } from "@/backend/docs/outline";
 import { resolveTabId, summarizeDoc } from "@/backend/docs/doc-summary";
 import { buildPageSetupRequest, hasPageSetup, PAGE_SIZES, readPageSetup, type PageSetup } from "@/backend/docs/page-setup";
 import { flattenTabs } from "@/backend/docs/locate";
@@ -154,6 +160,42 @@ export const docsEngineTools: ToolDef[] = [
         },
         asset: { assetType: "doc", googleId: a.documentId, action: "modify", detail: { pageSetup: true } },
       };
+    },
+  },
+  {
+    name: "docs_outline",
+    description:
+      "Positions you can trust, without walking the raw JSON: one entry per structural element of a Google Doc — { tabId, kind (paragraph|table|sectionBreak|tableOfContents), start, end, style (namedStyleType), bullet, table (number in the tab), cell [row,col] for content inside a table cell, rows/columns for a table, text (60-char preview; pending suggestions shown as [+inserted]/[-deleted], flagged suggestions:true) } — and each tab's body endIndex (insert at endIndex-1 at the latest). Led by `summary` { revisionId, documentMode, tabs } so you can guard the next batch. format:'lines' returns compact text lines instead (P start-end STYLE [•] [t<n> r<r>c<c>] \"text\"; T start-end table n RxC; END tabId endIndex). Omit tabId for every tab. " +
+      IDENTITY,
+    inputSchema: z.object({
+      documentId: z.string(),
+      tabId: z.string().optional(),
+      format: z.enum(["items", "lines"]).optional().describe("items (default) or compact text lines."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const raw = await new DocsService(env, acct(sub, a)).getRaw<any>(a.documentId);
+      const outline = outlineDoc(raw, { tabId: a.tabId });
+      const summary = summarizeDoc(raw);
+      return { result: a.format === "lines" ? { summary, lines: outlineLines(outline) } : { summary, ...outline } };
+    },
+  },
+  {
+    name: "docs_find",
+    description:
+      "Every match of a literal string in a Google Doc with its exact UTF-16 range: { matches: [{ tabId, startIndex, endIndex, text, bold (true|false|'mixed'), inSuggestion (pending tracked change on the matched text — do not edit it, ask the user to resolve it), table?, cell? [row,col] }], count, summary }. A match never crosses a non-text element (footnote, image, chip) or a cell boundary. matchCase defaults to true. Omit tabId to search every tab (nested tabs included). Headers and footers are not searched. Use the ranges in a docs_batch_update guarded with summary.revisionId. " +
+      IDENTITY,
+    inputSchema: z.object({
+      documentId: z.string(),
+      text: z.string().min(1),
+      matchCase: z.boolean().optional(),
+      tabId: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const raw = await new DocsService(env, acct(sub, a)).getRaw<any>(a.documentId);
+      const matches = findAll(raw, a.text, { matchCase: a.matchCase ?? true, tabId: a.tabId });
+      return { result: { summary: summarizeDoc(raw), count: matches.length, matches } };
     },
   },
 ];
