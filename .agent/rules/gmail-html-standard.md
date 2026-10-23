@@ -55,3 +55,11 @@ Send `markdown` (easiest) or semantic `html`. **Do not hand-write inline CSS** â
 the worker applies the table above, and your inline style would override it and
 drift from the standard. Flex and grid are not on Gmail's supported-property
 list: layout stays divs and tables.
+
+## Proving it on the deployed worker
+
+A passing suite is not proof. After a deploy that touches `src/backend/gmail/`,
+run `POST /api/gmail-harness/run` (Bearer `WORKER_API_KEY`) and read `verdict`.
+It checks every rule above against a draft as Gmail actually stored it. To see
+that a check can fail, repeat with `{"plant":"visible_ref"}`, which must return
+`fail`.

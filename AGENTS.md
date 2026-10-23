@@ -122,6 +122,17 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`), cumulative
   encoded 25 MiB budget, per-item Drive-link overflow + per-attachment report.
   MIME in `mime.ts`; orchestration in `build-outgoing.ts`.
+- **Gmail verification harness** (`backend/gmail/harness/`, route
+  `POST /api/gmail-harness/run`, agent-auth): proves the DEPLOYED worker, not the
+  suite. Creates a real draft via `GmailService.createDraft` from a known markdown
+  body (+ inline `cid:` image + file), reads it back from Gmail, checks the stored
+  html/text/headers/parts against the standard (`checks.ts`), round-trips
+  `getDraft`→`updateDraft`, deletes it. Each check has a severity; failed
+  critical/major → `verdict:"fail"` + HTTP 503; any skipped → `incomplete`, never
+  `pass`. `{"plant":"<name>"}` (`plant.ts`) injects a known regression into the
+  checked COPY to prove a check can go red live. Run it after every deploy that
+  touches `gmail/`. Draft-edit/attachment/transport contract:
+  `docs/gmail-draft-attachment-transport-contract.md`.
 - **Draft studio** (`backend/gmail/draft-studio.ts`, tables `email_drafts` /
   `email_draft_revisions` / `email_draft_comments`, page `/gws/draft-studio`): an email
   revised on the worker instead of in Gmail, for when it will take several rounds.

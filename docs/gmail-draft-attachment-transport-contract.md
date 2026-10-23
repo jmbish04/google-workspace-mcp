@@ -77,13 +77,15 @@ interface GmailDraftView {
 
 ## 2. `gmail_update_draft`
 
+`GmailService.updateDraft(draftId, opts: Omit<UpdateDraftInput, "draftId" | "as_user">)`.
 Gmail has no partial update. `PUT users/me/drafts/{id}` replaces the whole
 message. So an update is **get, merge, rebuild, put**, in that order:
 
 ```ts
 interface UpdateDraftInput {
   draftId: string;
-  body?: { mode: "replace" | "append" | "prepend"; markdown?: string; html?: string; text?: string };
+  mode?: "replace" | "append" | "prepend";   // default "replace" when a body is given
+  markdown?: string; html?: string; text?: string;   // omitted = keep the stored body
   to?: string[] | string;     // REPLACES the list when present
   cc?: string[] | string;     // REPLACES
   bcc?: string[] | string;    // REPLACES
@@ -91,6 +93,7 @@ interface UpdateDraftInput {
   addBcc?: string[];
   subject?: string;
   attachments?: AttachmentSpec[];       // ADDED to the retained ones
+  retainAttachments?: boolean;         // default true
   removeAttachments?: string[];         // filename or contentId
   as_user?: string;
 }
