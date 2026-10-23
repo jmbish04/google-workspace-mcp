@@ -258,11 +258,27 @@ const richBody = {
           as: z.enum(["attach", "link", "inline"]).optional(),
           contentId: z.string().optional(),
         }),
-      ]),
+        z.object({
+          url: z.string().describe("https URL the Worker fetches (public hosts only; private/loopback/metadata are refused)"),
+          filename: z.string().optional(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+        z.object({
+          r2Key: z.string().describe("object key in the R2_FILES_BUCKET bucket"),
+          filename: z.string().optional(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+      ]).refine((a) => ["driveFileId", "blob", "url", "r2Key"].filter((k) => k in a).length === 1, {
+        message: "each attachment needs exactly one of driveFileId | blob | url | r2Key",
+      }),
     )
     .optional()
     .describe(
-      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
+      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { url, filename? } (Worker fetches an https URL; SSRF-guarded), { r2Key, filename? } (read from the R2 files bucket), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
     ),
   driveIds: z
     .array(z.string())
