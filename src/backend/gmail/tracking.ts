@@ -63,6 +63,46 @@ export async function recordEmail(env: Env, r: EmailRecordInput): Promise<void> 
   }
 }
 
+/**
+ * Upsert an outgoing-email log row keyed by `uuid`. A draft edit reuses the
+ * draft's existing `uuid`, and `email_records.uuid` carries a unique index
+ * (`email_records_uuid_unique`), so a second plain insert fails — and
+ * {@link recordEmail} swallows that error, silently keeping the pre-edit
+ * recipients. This updates the existing row instead (recipients, subject, body,
+ * messageId, threadId), so one row follows the draft through every update.
+ * Best-effort, like {@link recordEmail}: logging must never break the edit.
+ */
+export async function upsertEmailRecord(env: Env, r: EmailRecordInput): Promise<void> {
+  try {
+    await getDb(env)
+      .insert(emailRecords)
+      .values({
+        uuid: r.uuid,
+        account: r.account ?? null,
+        action: r.action,
+        subject: r.subject ?? null,
+        recipients: { to: r.to, cc: r.cc, bcc: r.bcc },
+        body: r.body ?? null,
+        threadId: r.threadId ?? null,
+        messageId: r.messageId ?? null,
+        createdBySub: r.sub ?? null,
+      })
+      .onConflictDoUpdate({
+        target: emailRecords.uuid,
+        set: {
+          action: r.action,
+          subject: r.subject ?? null,
+          recipients: { to: r.to, cc: r.cc, bcc: r.bcc },
+          body: r.body ?? null,
+          threadId: r.threadId ?? null,
+          messageId: r.messageId ?? null,
+        },
+      });
+  } catch {
+    /* logging must never break the edit */
+  }
+}
+
 /** Query the outgoing-email log for recall. */
 export async function findEmailRecords(
   env: Env,
