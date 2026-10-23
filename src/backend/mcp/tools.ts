@@ -3081,13 +3081,17 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_get_message",
     description:
-      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes).",
+      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes) unless includeAttachmentText:true, which uploads them to Drive and adds { driveId, doc_text, sha256_hash } per attachment exactly as gmail_get_thread does (PDF/image OCR, Office to Markdown, csv/txt/json decoded, forwarded .eml headers+body).",
     inputSchema: z.object({
       id: z.string(),
       bodyFormat: z
         .enum(["text", "html", "rfc"])
         .optional()
         .describe("Body representation to return. Default 'text' (most efficient)."),
+      includeAttachmentText: z
+        .boolean()
+        .optional()
+        .describe("Extract doc_text for each attachment (writes to Drive). Default false."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -3097,6 +3101,16 @@ export const TOOLS: ToolDef[] = [
       const rfc = format === "rfc" ? await gmail.getMessageRfc(a.id) : undefined;
       const parsed = parseRawMessage(raw);
       const { body, bodyFormat, urls } = extractBody((raw as any).payload, format, rfc);
+      // Same { count, attachments } shape either way; the flag enriches each
+      // entry with { driveId, doc_text, sha256_hash } via the thread pipeline.
+      const attachments = a.includeAttachmentText
+        ? await uploadMessageAttachments(env, acct(sub, a), a.as_user ?? sub, {
+            messageId: a.id,
+            payload: (raw as any).payload,
+            subject: parsed.subject || "(no subject)",
+            gmail,
+          }).then((up) => ({ count: up.attachments.length, attachments: up.attachments }))
+        : attachmentManifest((raw as any).payload);
       return {
         result: {
           id: parsed.id,
@@ -3109,7 +3123,7 @@ export const TOOLS: ToolDef[] = [
           body,
           bodyFormat,
           urls,
-          attachments: attachmentManifest((raw as any).payload),
+          attachments,
         },
       };
     },
