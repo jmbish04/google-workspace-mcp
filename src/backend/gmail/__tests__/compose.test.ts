@@ -115,6 +115,39 @@ describe("composeBody — HTML is the standard", () => {
     expect(composeBody({ text: "a <b>x</b>" }).html).toContain("a &lt;b&gt;x&lt;/b&gt;");
   });
 
+  it("turns consecutive dash-space lines in plain text into one real unordered list", () => {
+    const html = composeBody({ text: "- one\n- two\n- three" }).html;
+    expect(html.match(/<ul\b/g)).toHaveLength(1);
+    expect(html.match(/<li\b/g)).toHaveLength(3);
+    expect(html).toMatch(/<ul[^>]*style="[^"]*margin:\s*0 0 16px 0/);
+    expect(html).toMatch(/<ul[^>]*style="[^"]*padding-left:\s*24px/);
+    expect(html).toMatch(/<li[^>]*style="[^"]*margin-bottom:\s*6px/);
+    expect(html).not.toContain("- one");
+  });
+
+  it("recognizes asterisk and bullet-character plain-text list markers", () => {
+    const html = composeBody({ text: "* one\n* two\n\n• three\n• four" }).html;
+    expect(html.match(/<ul\b/g)).toHaveLength(2);
+    expect(html.match(/<li\b/g)).toHaveLength(4);
+  });
+
+  it("groups numbered plain-text lines into an ordered list", () => {
+    const html = composeBody({ text: "1. first\n2. second\n3. third" }).html;
+    expect(html.match(/<ol\b/g)).toHaveLength(1);
+    expect(html.match(/<li\b/g)).toHaveLength(3);
+    expect(html).toMatch(/<ol[^>]*style="[^"]*margin:\s*0 0 16px 0/);
+    expect(html).toMatch(/<ol[^>]*style="[^"]*padding-left:\s*24px/);
+  });
+
+  it("keeps surrounding plain-text paragraphs separate and escapes list items", () => {
+    const r = composeBody({ text: "Intro\n\n- <one>\n- two & three\n\nOutro" });
+    expect(r.html).toMatch(/<p[^>]*>Intro<\/p><ul/);
+    expect(r.html).toContain("&lt;one&gt;");
+    expect(r.html).toContain("two &amp; three");
+    expect(r.html).toMatch(/<\/ul><p[^>]*>Outro<\/p>/);
+    expect(r.text).toBe("Intro\n\n<one>\ntwo & three\nOutro");
+  });
+
   it("spaces paragraphs with a 16px margin, never with empty blocks or <br>", () => {
     // Faked spacing is what AI-written bodies do, and it collapses differently
     // in every client.
