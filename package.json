@@ -26,6 +26,8 @@
     "migrate:local": "pnpm run db:generate && npx wrangler d1 migrations apply DB --local",
     "migrate:remote": "pnpm run db:generate && npx wrangler d1 migrations apply DB --remote",
     "deploy": "pnpm run build && cp .assetsignore dist/.assetsignore && pnpm run migrate:remote && npx wrangler deploy",
+    "deploy:dev": "CLOUDFLARE_ENV=dev pnpm run build && cp .assetsignore dist/.assetsignore && npx wrangler d1 migrations apply DB --remote --env dev && npx wrangler deploy --env dev",
+    "deploy:dev:dry-run": "CLOUDFLARE_ENV=dev pnpm run build && cp .assetsignore dist/.assetsignore && npx wrangler deploy --env dev --dry-run",
     "deploy:preview": "pnpm run build && cp .assetsignore dist/.assetsignore && npx wrangler versions upload",
     "cf-typegen": "wrangler types",
     "deps:lockfile": "corepack pnpm install --no-frozen-lockfile && wrangler types",
