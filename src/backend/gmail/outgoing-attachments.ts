@@ -26,8 +26,8 @@ import { DriveService } from "@/backend/mcp/services/drive";
 import { assertPublicHttpsUrl, fetchPublicHttps, FetchTooLargeError, MAX_URL_FETCH_BYTES, type FetchPublicOptions } from "@/backend/gmail/ssrf-guard";
 import type { MimeAttachment } from "./mime";
 
-/** Gmail's message ceiling in ENCODED (base64) bytes. */
-export const GMAIL_MESSAGE_LIMIT = 25 * 1024 * 1024;
+/** Gmail's message ceiling in ENCODED (base64) bytes — 35 MiB, matching the /upload/gmail/v1 max the send/draft transport uploads through (see upload-transport.ts). */
+export const GMAIL_MESSAGE_LIMIT = 35 * 1024 * 1024;
 
 /**
  * One attachment request. `as:"inline"` embeds an image in the body via a

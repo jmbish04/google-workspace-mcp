@@ -6,8 +6,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const META: Record<string, { id: string; name: string; mimeType: string; size: number; webViewLink: string }> = {
   small: { id: "small", name: "small.pdf", mimeType: "application/pdf", size: 1000, webViewLink: "https://drive/small" },
   doc: { id: "doc", name: "Doc.pdf", mimeType: "application/pdf", size: 2000, webViewLink: "https://drive/doc" },
-  big1: { id: "big1", name: "big1.bin", mimeType: "application/octet-stream", size: 10 * 1024 * 1024, webViewLink: "https://drive/big1" },
-  big2: { id: "big2", name: "big2.bin", mimeType: "application/octet-stream", size: 10 * 1024 * 1024, webViewLink: "https://drive/big2" },
+  big1: { id: "big1", name: "big1.bin", mimeType: "application/octet-stream", size: 14 * 1024 * 1024, webViewLink: "https://drive/big1" },
+  big2: { id: "big2", name: "big2.bin", mimeType: "application/octet-stream", size: 14 * 1024 * 1024, webViewLink: "https://drive/big2" },
 };
 const shareCalls: { id: string; role: string; type: string }[] = [];
 const uploadCalls: string[] = [];
@@ -57,7 +57,7 @@ describe("resolveAttachments", () => {
   });
 
   it("pushes the over-budget overflow to links, keeping earlier files attached", async () => {
-    // big1 (10 MiB) fits (~13.3 MiB encoded); big1+big2 (~26.6 MiB) exceeds the 25 MiB cap.
+    // big1 (14 MiB) fits (~19.2 MiB encoded); big1+big2 (~38.3 MiB) exceeds the 35 MiB cap.
     const r = await resolveAttachments(env, "ref", [{ driveFileId: "big1" }, { driveFileId: "big2" }]);
     expect(r.attachments.map((a) => a.filename)).toEqual(["big1.bin"]);
     expect(r.report.find((x) => x.filename === "big1.bin")!.disposition).toBe("attached");
@@ -73,7 +73,7 @@ describe("resolveAttachments", () => {
     ]);
     // big1 attached; blob can't fit → uploaded then linked.
     expect(r.report.find((x) => x.filename === "big1.bin")!.disposition).toBe("attached");
-    // With big1 (~13.3 MiB) used, a 1 KB blob still fits — force the overflow path via as:'link' instead:
+    // With big1 (~19.2 MiB) used, a 1 KB blob still fits — force the overflow path via as:'link' instead:
     const r2 = await resolveAttachments(env, "ref", [{ blob: btoa("y"), filename: "forced.txt", as: "link" }]);
     expect(uploadCalls).toContain("forced.txt");
     expect(r2.report[0]).toMatchObject({ disposition: "linked-by-request", source: "blob" });

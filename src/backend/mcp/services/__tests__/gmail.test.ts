@@ -190,6 +190,46 @@ describe("GmailService", () => {
     expect(mime).not.toContain("alice@x.com");
   });
 
+  /** Find the POST whose URL contains `/upload/gmail/v1` (the media-upload path). */
+  function uploadPost(spy: ReturnType<typeof vi.spyOn>) {
+    const call = spy.mock.calls.find(
+      (c: any[]) => String(c[0]).includes("/upload/gmail/v1") && (c[1] as RequestInit)?.method === "POST",
+    );
+    return call ? { url: String(call[0]), init: call[1] as RequestInit } : undefined;
+  }
+
+  /** A large inline blob whose composed MIME clears the 5 MiB JSON→upload threshold. */
+  function bigBlob() {
+    return { filename: "big.bin", contentBase64: btoa("a".repeat(6 * 1024 * 1024)) };
+  }
+
+  it("send routes a large message through the /upload/gmail/v1 multipart endpoint", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    mockIdentity(spy, () => new Response(JSON.stringify({ id: "big-send" }), { status: 200 }));
+    const out = await new GmailService({} as any, "send-big").send("a@b.com", "Hi", "Body", { blobs: [bigBlob()] });
+    expect(out.id).toBe("big-send");
+    const posted = uploadPost(spy);
+    expect(posted).toBeDefined();
+    expect(posted!.url).toBe("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart");
+    expect(String((posted!.init.headers as Record<string, string>)["content-type"])).toMatch(/^multipart\/related;/);
+    expect(posted!.init.body).toBeInstanceOf(Uint8Array);
+    // The small-message JSON endpoint must NOT have been used for this send.
+    const jsonSend = spy.mock.calls.find((c: any[]) => String(c[0]) === "https://gmail.googleapis.com/gmail/v1/users/me/messages/send");
+    expect(jsonSend).toBeUndefined();
+  });
+
+  it("createDraft routes a large draft through the /upload/gmail/v1 multipart endpoint", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    mockIdentity(spy, () => new Response(JSON.stringify({ id: "big-draft", message: { id: "m" } }), { status: 200 }));
+    const out = await new GmailService({} as any, "draft-big").createDraft("a@b.com", "Hi", "Body", { blobs: [bigBlob()] });
+    expect(out.id).toBe("big-draft");
+    const posted = uploadPost(spy);
+    expect(posted).toBeDefined();
+    expect(posted!.url).toBe("https://gmail.googleapis.com/upload/gmail/v1/users/me/drafts?uploadType=multipart");
+    const text = new TextDecoder().decode(posted!.init.body as Uint8Array);
+    expect(text).toContain("Content-Type: message/rfc822");
+  });
+
   it("listLabels fetches users/me/labels", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ labels: [{ id: "l1", name: "Work" }] }), { status: 200 }));
     const out = await new GmailService({} as any, "s1").listLabels();

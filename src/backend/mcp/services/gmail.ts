@@ -4,6 +4,7 @@ import { googleJson } from "../googleClient";
 import { getDb } from "@/db";
 import { globalConfig } from "@db/schemas";
 import { buildOutgoingRaw } from "@/backend/gmail/build-outgoing";
+import { sendRawMessage, createRawDraft } from "@/backend/gmail/upload-transport";
 import { formatAddress } from "@/backend/gmail/mime";
 import { newEmailUuid, recordEmail } from "@/backend/gmail/tracking";
 import type { ComposeReport } from "@/backend/gmail/compose";
@@ -232,7 +233,7 @@ export class GmailService {
     }
 
     const uuid = opts?.uuid ?? newEmailUuid();
-    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, attachmentReport, bodyReport, bodyRawBytes } = await buildOutgoingRaw(this.env, this.sub, {
       to,
       from: await this.fromHeader(opts?.from),
       cc: opts?.cc,
@@ -248,12 +249,9 @@ export class GmailService {
       ...attachmentOpts(opts),
     });
 
-    const payload: { raw: string; threadId?: string } = { raw };
-    if (threadId) payload.threadId = threadId;
-    const sent = await googleJson<{ id: string; threadId?: string }>(this.env, this.sub, `${BASE}/messages/send`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    // Pre-flight size check + JSON-or-upload transport: large messages go to
+    // /upload/gmail/v1; an oversized message/body throws before any network call.
+    const sent = await sendRawMessage(this.env, this.sub, { raw, bodyRawBytes, threadId });
     await recordEmail(this.env, {
       uuid, account: this.sub, action: "send", subject: finalSubject, to, cc: opts?.cc, bcc: opts?.bcc,
       body: opts?.markdown ?? opts?.html ?? body, threadId: sent.threadId ?? threadId, messageId: sent.id, sub: this.sub,
@@ -268,7 +266,7 @@ export class GmailService {
     opts?: RichContent,
   ): Promise<{ id: string; message?: { id: string }; uuid: string; attachments: AttachmentReportItem[]; body: ComposeReport }> {
     const uuid = opts?.uuid ?? newEmailUuid();
-    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, attachmentReport, bodyReport, bodyRawBytes } = await buildOutgoingRaw(this.env, this.sub, {
       to,
       from: await this.fromHeader(),
       cc: opts?.cc,
@@ -281,10 +279,8 @@ export class GmailService {
       prebuilt: opts?.prebuilt,
       ...attachmentOpts(opts),
     });
-    const draft = await googleJson<{ id: string; message?: { id: string } }>(this.env, this.sub, `${BASE}/drafts`, {
-      method: "POST",
-      body: JSON.stringify({ message: { raw } }),
-    });
+    // Pre-flight size check + JSON-or-upload transport (see sendRawMessage).
+    const draft = await createRawDraft(this.env, this.sub, { raw, bodyRawBytes });
     await recordEmail(this.env, {
       uuid, account: this.sub, action: "draft", subject, to, cc: opts?.cc, bcc: opts?.bcc,
       body: opts?.markdown ?? opts?.html ?? body, messageId: draft.id, sub: this.sub,
@@ -351,7 +347,7 @@ export class GmailService {
     const references = [headers["references"], messageIdHeader].filter(Boolean).join(" ").trim();
 
     const uuid = opts?.uuid ?? newEmailUuid();
-    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
+    const { raw, attachmentReport, bodyReport, bodyRawBytes } = await buildOutgoingRaw(this.env, this.sub, {
       to: recipients.join(", "),
       from: await this.fromHeader(profile.emailAddress),
       cc: opts?.cc,
@@ -367,10 +363,8 @@ export class GmailService {
       ...attachmentOpts(opts),
     });
 
-    const draft = await googleJson<{ id: string; message?: { id: string; threadId?: string } }>(this.env, this.sub, `${BASE}/drafts`, {
-      method: "POST",
-      body: JSON.stringify({ message: { raw, threadId } }),
-    });
+    // Pre-flight size check + JSON-or-upload transport (see sendRawMessage).
+    const draft = await createRawDraft(this.env, this.sub, { raw, bodyRawBytes, threadId });
     await recordEmail(this.env, {
       uuid, account: this.sub, action: "reply_draft", subject, to: recipients.join(", "), cc: opts?.cc, bcc: opts?.bcc,
       body: opts?.markdown ?? opts?.html ?? body, threadId, messageId: draft.id, sub: this.sub,
