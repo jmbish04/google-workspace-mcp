@@ -85,6 +85,7 @@ import { isValidCron } from "@/backend/gmail/cron";
 import { seedBuiltinTemplates } from "@/backend/gmail/email-templates";
 import { parseRawMessage } from "@/backend/gmail/parse-message";
 import { searchGmail } from "@/backend/gmail/search-service";
+import { toAttachmentSpecs } from "@/backend/gmail/outgoing-attachments";
 import {
   syncLabels,
   syncLabelsForAllAccounts,
@@ -258,11 +259,27 @@ const richBody = {
           as: z.enum(["attach", "link", "inline"]).optional(),
           contentId: z.string().optional(),
         }),
-      ]),
+        z.object({
+          url: z.string().describe("https URL the Worker fetches (public hosts only; private/loopback/metadata are refused)"),
+          filename: z.string().optional(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+        z.object({
+          r2Key: z.string().describe("object key in the R2_FILES_BUCKET bucket"),
+          filename: z.string().optional(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+      ]).refine((a) => ["driveFileId", "blob", "url", "r2Key"].filter((k) => k in a).length === 1, {
+        message: "each attachment needs exactly one of driveFileId | blob | url | r2Key",
+      }),
     )
     .optional()
     .describe(
-      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
+      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { url, filename? } (Worker fetches an https URL; SSRF-guarded), { r2Key, filename? } (read from the R2 files bucket), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
     ),
   driveIds: z
     .array(z.string())
@@ -2522,6 +2539,73 @@ export const TOOLS: ToolDef[] = [
       };
     },
   },
+  {
+    name: "gmail_get_draft",
+    description:
+      "Read an existing Gmail DRAFT by id — the counterpart to gmail_update_draft, and the read half of editing a draft (e.g. adding a Cc). Returns draftId, messageId (changes on every edit; draftId does not), threadId, headers { from, to[], cc[], bcc[], subject, inReplyTo?, references? }, the hidden reference `uuid` plus `refCount` (should be 1), the stored `html` and `text` bodies, and an `attachments` manifest of { attachmentId, filename, mimeType, size, disposition ('attachment'|'inline'), contentId? }. Use it before gmail_update_draft to see the current recipients, subject, body and attachment set.",
+    inputSchema: z.object({
+      draftId: z.string().describe("Gmail draft id (from gmail_create_draft, gmail_draft_html, or a drafts listing)."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      return { result: await new GmailService(env, acct(sub, a)).getDraft(a.draftId) };
+    },
+  },
+  {
+    name: "gmail_update_draft",
+    description:
+      "Non-destructively edit an existing Gmail DRAFT in place — the fix for 'I can't add a Cc to a draft'. Gmail has no partial update, so this reads the draft, merges your changes, and rewrites it while PRESERVING its threadId, In-Reply-To and References (it stays in its thread) and its existing attachments (inline images keep rendering). The body ALWAYS rebuilds through the house Gmail HTML standard — send `markdown`/`html`/`text` and never hand-write inline CSS — and the draft keeps its single hidden reference id. To add a Cc without re-typing the whole list, pass `addCc` (de-duplicated). `mode` controls the body edit: replace (default), append, or prepend. Omit the body to change only headers. Returns { draftId, messageId, threadId, uuid, attachments, body report }.",
+    inputSchema: z.object({
+      draftId: z.string().describe("Gmail draft id to edit (from gmail_get_draft / gmail_create_draft)."),
+      mode: z
+        .enum(["replace", "append", "prepend"])
+        .optional()
+        .describe("How to apply the body content: replace (default), append, or prepend. Ignored when no body is supplied."),
+      text: z.string().optional().describe("Plain-text body. Escaped, never parsed as HTML."),
+      to: recipients.optional().describe("REPLACE the To header (array or comma-separated). Omit to keep the current To."),
+      subject: z.string().optional().describe("REPLACE the Subject. Omit to keep the current subject."),
+      addCc: z
+        .array(z.string())
+        .optional()
+        .describe("ADD these to Cc, de-duplicated case-insensitively against the current Cc. The one-call way to add a Cc — no need to re-send the whole list."),
+      addBcc: z.array(z.string()).optional().describe("ADD these to Bcc, de-duplicated case-insensitively."),
+      removeAttachments: z
+        .array(z.string())
+        .optional()
+        .describe("Drop a currently-attached file by its filename or (for an inline image) its contentId. Everything not listed is retained."),
+      ...richBody,
+      cc: recipients
+        .optional()
+        .describe("REPLACE the Cc header (array or comma-separated). To ADD one address without re-sending the list, use addCc instead. Omit to keep the current Cc."),
+      bcc: recipients.optional().describe("REPLACE the Bcc header. To ADD without re-sending the list, use addBcc. Omit to keep the current Bcc."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const hasBody = [a.markdown, a.html, a.text].some((b) => b != null && b !== "");
+      const addedSpecs = toAttachmentSpecs({ attachments: a.attachments, driveIds: a.driveIds, blobs: a.blobs });
+      const d = await new GmailService(env, acct(sub, a)).updateDraft(a.draftId, {
+        body: hasBody || a.mode ? { mode: a.mode, markdown: a.markdown, html: a.html, text: a.text } : undefined,
+        to: addrList(a.to),
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
+        addCc: a.addCc,
+        addBcc: a.addBcc,
+        subject: a.subject,
+        attachments: addedSpecs.length ? addedSpecs : undefined,
+        removeAttachments: a.removeAttachments,
+      });
+      return {
+        result: d,
+        asset: {
+          assetType: "gmail",
+          googleId: d.draftId,
+          title: a.subject,
+          action: "modify",
+          detail: { draft: true, threadId: d.threadId, uuid: d.uuid },
+        },
+      };
+    },
+  },
   // ---- Draft studio (revise on the worker page, not in Gmail) -----------
   {
     name: "email_draft_studio_create",
@@ -3081,13 +3165,17 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_get_message",
     description:
-      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes).",
+      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes) unless includeAttachmentText:true, which uploads them to Drive and adds { driveId, doc_text, sha256_hash } per attachment exactly as gmail_get_thread does (PDF/image OCR, Office to Markdown, csv/txt/json decoded, forwarded .eml headers+body).",
     inputSchema: z.object({
       id: z.string(),
       bodyFormat: z
         .enum(["text", "html", "rfc"])
         .optional()
         .describe("Body representation to return. Default 'text' (most efficient)."),
+      includeAttachmentText: z
+        .boolean()
+        .optional()
+        .describe("Extract doc_text for each attachment (writes to Drive). Default false."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
@@ -3097,6 +3185,16 @@ export const TOOLS: ToolDef[] = [
       const rfc = format === "rfc" ? await gmail.getMessageRfc(a.id) : undefined;
       const parsed = parseRawMessage(raw);
       const { body, bodyFormat, urls } = extractBody((raw as any).payload, format, rfc);
+      // Same { count, attachments } shape either way; the flag enriches each
+      // entry with { driveId, doc_text, sha256_hash } via the thread pipeline.
+      const attachments = a.includeAttachmentText
+        ? await uploadMessageAttachments(env, acct(sub, a), a.as_user ?? sub, {
+            messageId: a.id,
+            payload: (raw as any).payload,
+            subject: parsed.subject || "(no subject)",
+            gmail,
+          }).then((up) => ({ count: up.attachments.length, attachments: up.attachments }))
+        : attachmentManifest((raw as any).payload);
       return {
         result: {
           id: parsed.id,
@@ -3109,7 +3207,7 @@ export const TOOLS: ToolDef[] = [
           body,
           bodyFormat,
           urls,
-          attachments: attachmentManifest((raw as any).payload),
+          attachments,
         },
       };
     },
