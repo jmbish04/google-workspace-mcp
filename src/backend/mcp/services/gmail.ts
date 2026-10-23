@@ -6,7 +6,11 @@ import { globalConfig } from "@db/schemas";
 import { buildOutgoingRaw } from "@/backend/gmail/build-outgoing";
 import { sendRawMessage, createRawDraft } from "@/backend/gmail/upload-transport";
 import { formatAddress } from "@/backend/gmail/mime";
-import { newEmailUuid, recordEmail } from "@/backend/gmail/tracking";
+import { newEmailUuid, recordEmail, upsertEmailRecord } from "@/backend/gmail/tracking";
+import { extractBody } from "@/backend/gmail/body-extract";
+import { extractAttachmentParts } from "@/backend/gmail/attachments";
+import { mergeAddresses, mergeDraftBody, type DraftBodyMode } from "@/backend/gmail/draft-edit";
+import { splitAddresses } from "@/backend/gmail/parse-message";
 import type { ComposeReport } from "@/backend/gmail/compose";
 import type { BlobInput, AttachmentSpec, AttachmentReportItem } from "@/backend/gmail/outgoing-attachments";
 
@@ -48,6 +52,85 @@ function attachmentOpts(opts?: RichContent): Pick<RichContent, "attachments" | "
 }
 
 export type { AttachmentReportItem };
+
+/** One attachment on a draft, as {@link GmailService.getDraft} surfaces it. */
+export interface DraftAttachmentView {
+  /** For `users.messages.attachments.get` on the draft's `messageId`. */
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  /** A regular attachment, or an image embedded in the body via `cid:`. */
+  disposition: "attachment" | "inline";
+  /** Inline images only — the `Content-ID`, angle brackets stripped. */
+  contentId?: string;
+}
+
+/**
+ * A Gmail draft read back `format=full` and parsed into the fields an editor
+ * needs. `draftId` is stable for the life of the draft; `messageId` changes on
+ * every update. Matches the cross-cutting contract (docs/gmail-draft-attachment-
+ * transport-contract.md §1).
+ */
+export interface GmailDraftView {
+  draftId: string;
+  messageId: string;
+  threadId: string;
+  headers: {
+    /** Verbatim `From`, display name included. */
+    from: string;
+    to: string[];
+    cc: string[];
+    bcc: string[];
+    subject: string;
+    /** Verbatim `In-Reply-To` Message-ID, angle brackets kept. */
+    inReplyTo?: string;
+    /** Verbatim `References`. */
+    references?: string;
+  };
+  /** The one `ref:<uuid>` in the HTML part, or null if the draft carries none. */
+  uuid: string | null;
+  /** Ref markers found in the HTML part; anything but 1 is a defect worth showing. */
+  refCount: number;
+  /** The stored `text/html` part, as Gmail holds it. */
+  html: string;
+  /** The stored `text/plain` part. */
+  text: string;
+  attachments: DraftAttachmentView[];
+}
+
+/**
+ * The edit applied by {@link GmailService.updateDraft}. Every field is optional;
+ * an omitted field keeps the draft's current value. `to`/`cc`/`bcc` REPLACE the
+ * header; `addCc`/`addBcc` append (de-duplicated). Existing attachments are
+ * retained unless named in `removeAttachments`; `attachments` are added on top.
+ */
+export interface DraftUpdateInput {
+  /** Body edit — `mode` defaults to `replace`. Omit entirely to keep the body. */
+  body?: { mode?: DraftBodyMode } & { markdown?: string; html?: string; text?: string };
+  /** REPLACE the `To` header (comma-separated). */
+  to?: string;
+  /** REPLACE the `Cc` header (comma-separated). */
+  cc?: string;
+  /** REPLACE the `Bcc` header (comma-separated). */
+  bcc?: string;
+  /** Append to `Cc`, de-duplicated case-insensitively — the one-call CC-add. */
+  addCc?: string[];
+  /** Append to `Bcc`, de-duplicated case-insensitively. */
+  addBcc?: string[];
+  subject?: string;
+  /** Extra attachments ADDED to the retained ones. */
+  attachments?: AttachmentSpec[];
+  /** Drop a retained attachment by `filename` or `contentId` (case-insensitive). */
+  removeAttachments?: string[];
+}
+
+/** Lowercased-name → value map of a Gmail payload's headers. */
+function headerMap(headers: { name?: string; value?: string }[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of headers) if (h?.name) out[h.name.toLowerCase()] = h.value ?? "";
+  return out;
+}
 
 const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -286,6 +369,167 @@ export class GmailService {
       body: opts?.markdown ?? opts?.html ?? body, messageId: draft.id, sub: this.sub,
     });
     return { ...draft, uuid, attachments: attachmentReport, body: bodyReport };
+  }
+
+  /**
+   * Read a draft back `format=full` and parse it into {@link GmailDraftView}.
+   * Native Gmail draft tooling is create-only; this is the read half of the
+   * edit-an-existing-draft path. The `uuid` is parsed from the HTML part's
+   * hidden `ref:<uuid>` marker with the same regex `compose.ts` uses — never
+   * minted here.
+   */
+  async getDraft(draftId: string): Promise<GmailDraftView> {
+    const draft = await googleJson<{ id?: string; message?: Record<string, unknown> }>(
+      this.env,
+      this.sub,
+      `${BASE}/drafts/${draftId}?format=full`,
+    );
+    const message = (draft.message ?? {}) as {
+      id?: string;
+      threadId?: string;
+      payload?: { headers?: { name?: string; value?: string }[] };
+    };
+    const payload = message.payload ?? {};
+    const headers = headerMap(payload.headers ?? []);
+    const { body: html } = extractBody(payload, "html");
+    const { body: text } = extractBody(payload, "text");
+
+    // `uuid` is the message's own hidden ref marker; `refCount` flags duplication.
+    const refs = [...html.matchAll(/ref:([0-9a-f-]{36})/gi)].map((m) => m[1].toLowerCase());
+
+    const attachments: DraftAttachmentView[] = extractAttachmentParts(payload).map((p) => ({
+      attachmentId: p.attachmentId,
+      filename: p.filename,
+      mimeType: p.mimeType,
+      size: p.size,
+      disposition: p.inline ? "inline" : "attachment",
+      ...(p.contentId ? { contentId: p.contentId } : {}),
+    }));
+
+    return {
+      draftId: String(draft.id ?? ""),
+      messageId: String(message.id ?? ""),
+      threadId: String(message.threadId ?? ""),
+      headers: {
+        from: headers["from"] ?? "",
+        to: splitAddresses(headers["to"] ?? ""),
+        cc: splitAddresses(headers["cc"] ?? ""),
+        bcc: splitAddresses(headers["bcc"] ?? ""),
+        subject: headers["subject"] ?? "",
+        ...(headers["in-reply-to"] ? { inReplyTo: headers["in-reply-to"] } : {}),
+        ...(headers["references"] ? { references: headers["references"] } : {}),
+      },
+      uuid: refs[0] ?? null,
+      refCount: refs.length,
+      html,
+      text,
+      attachments,
+    };
+  }
+
+  /**
+   * Non-destructively edit an existing draft. Gmail has no partial update —
+   * `PUT users/me/drafts/{id}` replaces the whole message — so this is
+   * get → merge → rebuild → put:
+   *
+   *   - `threadId`, `In-Reply-To` and `References` are COPIED from the draft,
+   *     never recomputed, so the draft stays in its thread.
+   *   - The body ALWAYS round-trips through `composeBody` (via
+   *     {@link buildOutgoingRaw}); the draft's existing `uuid` is reused so the
+   *     message keeps exactly one hidden ref marker. Never a raw string replace.
+   *   - Existing attachments are retained by default — bytes re-fetched and
+   *     re-attached, inline images re-embedded under the SAME `cid:` — unless
+   *     named in `removeAttachments`.
+   *   - `cc`/`bcc`/`subject` replace; `addCc`/`addBcc` append (the CC-add bug).
+   *
+   * Consumer (`@gmail.com`) accounts are OAuth-only and never DWD; that is the
+   * `sub`/`as_user` seam the caller already resolved, so no special-casing here.
+   */
+  async updateDraft(
+    draftId: string,
+    edits: DraftUpdateInput,
+  ): Promise<{ draftId: string; messageId: string; threadId: string; uuid: string; attachments: AttachmentReportItem[]; body: ComposeReport }> {
+    const view = await this.getDraft(draftId);
+
+    // Headers: replace when supplied, else keep the draft's; then append adds.
+    const to = edits.to !== undefined ? edits.to : view.headers.to.join(", ");
+    let cc = edits.cc !== undefined ? edits.cc : view.headers.cc.join(", ");
+    let bcc = edits.bcc !== undefined ? edits.bcc : view.headers.bcc.join(", ");
+    if (edits.addCc?.length) cc = mergeAddresses(cc, edits.addCc);
+    if (edits.addBcc?.length) bcc = mergeAddresses(bcc, edits.addBcc);
+    const subject = edits.subject !== undefined ? edits.subject : view.headers.subject;
+
+    // One id for the life of the draft: reuse its marker, mint only if it has none.
+    const uuid = view.uuid ?? newEmailUuid();
+
+    const bodyInput = mergeDraftBody(view.html, edits.body?.mode ?? "replace", {
+      markdown: edits.body?.markdown,
+      html: edits.body?.html,
+      text: edits.body?.text,
+    });
+
+    // Retain the draft's attachments (bytes re-fetched), minus any removed, then
+    // add the caller's new ones. Inline images keep their Content-ID so the
+    // body's `cid:` references still resolve.
+    const removals = new Set((edits.removeAttachments ?? []).map((s) => s.toLowerCase()));
+    const retained: AttachmentSpec[] = [];
+    for (const att of view.attachments) {
+      if (!att.attachmentId) continue;
+      if (removals.has(att.filename.toLowerCase())) continue;
+      if (att.contentId && removals.has(att.contentId.toLowerCase())) continue;
+      const { data } = await this.getAttachment(view.messageId, att.attachmentId);
+      const filename = att.filename || "attachment";
+      if (att.disposition === "inline" && att.contentId) {
+        retained.push({ blob: data, filename, mimeType: att.mimeType, as: "inline", contentId: att.contentId });
+      } else {
+        retained.push({ blob: data, filename, mimeType: att.mimeType });
+      }
+    }
+    const attachments = [...retained, ...(edits.attachments ?? [])];
+
+    const { raw, attachmentReport, bodyReport } = await buildOutgoingRaw(this.env, this.sub, {
+      to,
+      from: view.headers.from || (await this.fromHeader()),
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      subject,
+      inReplyTo: view.headers.inReplyTo,
+      references: view.headers.references,
+      text: bodyInput.text,
+      html: bodyInput.html,
+      markdown: bodyInput.markdown,
+      uuid,
+      attachments,
+    });
+
+    const message: { raw: string; threadId?: string } = { raw };
+    if (view.threadId) message.threadId = view.threadId;
+    const updated = await googleJson<{ id?: string; message?: { id?: string; threadId?: string } }>(
+      this.env,
+      this.sub,
+      `${BASE}/drafts/${draftId}`,
+      { method: "PUT", body: JSON.stringify({ message }) },
+    );
+
+    const messageId = updated.message?.id ?? view.messageId;
+    const threadId = updated.message?.threadId ?? view.threadId;
+    // Upsert, not insert: email_records.uuid is unique and recordEmail swallows
+    // the conflict, which would keep the pre-edit recipients. See tracking.ts.
+    await upsertEmailRecord(this.env, {
+      uuid,
+      account: this.sub,
+      action: "draft",
+      subject,
+      to,
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      body: bodyInput.markdown ?? bodyInput.html ?? bodyInput.text,
+      threadId,
+      messageId,
+      sub: this.sub,
+    });
+
+    return { draftId: String(updated.id ?? draftId), messageId, threadId, uuid, attachments: attachmentReport, body: bodyReport };
   }
 
   /** Send an existing draft by id (used by the scheduled-send sweep). */

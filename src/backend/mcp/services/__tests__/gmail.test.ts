@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { GmailService } from "../gmail";
+import { composeBody } from "@/backend/gmail/compose";
 vi.mock("../../tokenProvider", () => ({ getAccessToken: vi.fn(async () => "at") }));
 
 describe("GmailService", () => {
@@ -270,5 +271,143 @@ describe("GmailService", () => {
     const init = spy.mock.calls[0][1] as RequestInit;
     expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/me/messages/m1/trash");
     expect(init.method).toBe("POST");
+  });
+
+  // ---- getDraft / updateDraft (the CC bug: edit an existing draft) --------
+
+  const DRAFT_UUID = "11111111-2222-4333-8444-555555555555";
+  const b64url = (s: string) => Buffer.from(s, "utf8").toString("base64url");
+
+  /** A draft as Gmail returns it `format=full`: threaded, one Cc, one pdf, one hidden ref marker. */
+  function draftMessage() {
+    const built = composeBody({ markdown: "Original body." }, { uuid: DRAFT_UUID });
+    return {
+      id: "msg1",
+      threadId: "thread1",
+      payload: {
+        mimeType: "multipart/mixed",
+        headers: [
+          { name: "From", value: '"Me" <me@self.com>' },
+          { name: "To", value: "a@b.com" },
+          { name: "Cc", value: "c1@x.com" },
+          { name: "Subject", value: "Hi" },
+          { name: "In-Reply-To", value: "<irt@mail.gmail.com>" },
+          { name: "References", value: "<prev@mail.gmail.com>" },
+        ],
+        parts: [
+          {
+            mimeType: "multipart/alternative",
+            parts: [
+              { mimeType: "text/plain", body: { data: b64url(built.text) } },
+              { mimeType: "text/html", body: { data: b64url(built.html) } },
+            ],
+          },
+          {
+            mimeType: "application/pdf",
+            filename: "report.pdf",
+            headers: [{ name: "Content-Disposition", value: 'attachment; filename="report.pdf"' }],
+            body: { attachmentId: "att1", size: 2048 },
+          },
+        ],
+      },
+    };
+  }
+
+  /** Mock the drafts.get / attachments.get / drafts.update round trip; capture the PUT body. */
+  function mockDraftRoundTrip(spy: ReturnType<typeof vi.spyOn>, capture: { put?: any }) {
+    spy.mockImplementation(async (url: any, init?: any) => {
+      const u = String(url);
+      const method = (init as RequestInit)?.method ?? "GET";
+      if (u.includes("/profile")) return new Response(JSON.stringify({ emailAddress: "me@self.com" }), { status: 200 });
+      if (u.includes("/settings/sendAs"))
+        return new Response(JSON.stringify({ sendAs: [{ sendAsEmail: "me@self.com", displayName: "Me", isPrimary: true }] }), { status: 200 });
+      if (u.includes("/attachments/")) return new Response(JSON.stringify({ data: b64url("PDFBYTES"), size: 8 }), { status: 200 });
+      if (u.includes("/drafts/") && method === "PUT") {
+        capture.put = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify({ id: "draft1", message: { id: "msgNew", threadId: "thread1" } }), { status: 200 });
+      }
+      if (u.includes("/drafts/")) return new Response(JSON.stringify({ id: "draft1", message: draftMessage() }), { status: 200 });
+      return new Response("{}", { status: 200 });
+    });
+  }
+
+  it("getDraft parses headers, threadId, the ref uuid and the attachment manifest", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    mockDraftRoundTrip(spy, {});
+    const d = await new GmailService({} as any, "get-draft").getDraft("draft1");
+    expect(spy.mock.calls[0][0]).toBe("https://gmail.googleapis.com/gmail/v1/users/me/drafts/draft1?format=full");
+    expect(d.draftId).toBe("draft1");
+    expect(d.messageId).toBe("msg1");
+    expect(d.threadId).toBe("thread1");
+    expect(d.headers.cc).toEqual(["c1@x.com"]);
+    expect(d.headers.references).toBe("<prev@mail.gmail.com>");
+    expect(d.uuid).toBe(DRAFT_UUID);
+    expect(d.refCount).toBe(1);
+    expect(d.attachments).toEqual([
+      { attachmentId: "att1", filename: "report.pdf", mimeType: "application/pdf", size: 2048, disposition: "attachment" },
+    ]);
+  });
+
+  it("updateDraft addCc adds a Cc while preserving threadId, References and the one ref marker, and keeps the attachment", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const cap: { put?: any } = {};
+    mockDraftRoundTrip(spy, cap);
+
+    const out = await new GmailService({} as any, "upd-draft").updateDraft("draft1", { addCc: ["c2@y.com"] });
+
+    // Threading is COPIED, never recomputed — the regression this guards against.
+    expect(cap.put.message.threadId).toBe("thread1");
+    const mime = decodeMime(cap.put.message.raw);
+    expect(mime).toContain("Cc: c1@x.com, c2@y.com");
+    expect(mime).toContain("References: <prev@mail.gmail.com>");
+    expect(mime).toContain("In-Reply-To: <irt@mail.gmail.com>");
+    // Exactly one hidden ref marker survives (would be 0 or >1 without the id-preserving compose path).
+    expect((mime.match(/ref:[0-9a-f-]{36}/g) ?? []).length).toBe(1);
+    // Prior attachment retained, and the body rebuilt through the house standard (not string-spliced).
+    expect(mime).toContain('filename="report.pdf"');
+    expect(mime).toContain('dir="ltr"');
+    expect(out.uuid).toBe(DRAFT_UUID);
+    expect(out.threadId).toBe("thread1");
+    expect(out.messageId).toBe("msgNew");
+  });
+
+  it("updateDraft append keeps the old body and adds the new text after it, still one marker", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const cap: { put?: any } = {};
+    mockDraftRoundTrip(spy, cap);
+
+    await new GmailService({} as any, "upd-append").updateDraft("draft1", {
+      body: { mode: "append", markdown: "P.S. ping me soon." },
+    });
+    const mime = decodeMime(cap.put.message.raw);
+    expect(mime).toContain("Original body.");
+    expect(mime).toContain("ping me soon.");
+    expect(mime.indexOf("Original body.")).toBeLessThan(mime.indexOf("ping me soon."));
+    expect((mime.match(/ref:[0-9a-f-]{36}/g) ?? []).length).toBe(1);
+  });
+
+  it("updateDraft replace swaps the body but still preserves the thread", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const cap: { put?: any } = {};
+    mockDraftRoundTrip(spy, cap);
+
+    await new GmailService({} as any, "upd-replace").updateDraft("draft1", {
+      body: { mode: "replace", markdown: "Totally new body." },
+    });
+    const mime = decodeMime(cap.put.message.raw);
+    expect(mime).toContain("Totally new body.");
+    expect(mime).not.toContain("Original body.");
+    expect(cap.put.message.threadId).toBe("thread1");
+    expect((mime.match(/ref:[0-9a-f-]{36}/g) ?? []).length).toBe(1);
+  });
+
+  it("updateDraft removeAttachments drops a named attachment", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const cap: { put?: any } = {};
+    mockDraftRoundTrip(spy, cap);
+
+    await new GmailService({} as any, "upd-rm").updateDraft("draft1", { removeAttachments: ["report.pdf"] });
+    const mime = decodeMime(cap.put.message.raw);
+    expect(mime).not.toContain('filename="report.pdf"');
   });
 });

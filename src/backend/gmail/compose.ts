@@ -219,6 +219,15 @@ export function stripForeignStamps(root: HTMLElement, keepUuid?: string): { refs
   return { refs, tags };
 }
 
+/** Remove this message's own leaf `ref:<uuid>` marker(s) so it can be re-stamped hidden. */
+function dropOwnRefMarker(root: HTMLElement, uuid: string): void {
+  for (const el of root.querySelectorAll("*")) {
+    if (el.childNodes.some(isElement)) continue;
+    const m = REF_TEXT_RE.exec(el.textContent.trim());
+    if (m && m[1].toLowerCase() === uuid.toLowerCase()) el.remove();
+  }
+}
+
 /* ------------------------------------------------------------ structure --- */
 
 /**
@@ -476,6 +485,10 @@ export function composeBody(
   const stripped = stripForeignStamps(root, opts.uuid);
   report.removedRefs = stripped.refs;
   report.removedAuthorTags = stripped.tags;
+  // Our OWN marker is dropped too and re-stamped once below. Carried through,
+  // toEmailBlocks retags its hidden <div> as an ordinary <p> and the recipient
+  // reads "ref:<uuid>" as body text — the draft-edit path (measured 2026-10-23).
+  if (opts.uuid) dropOwnRefMarker(root, opts.uuid);
 
   let inner = inlineGmailStyles(toEmailBlocks(root.toString()));
   if (opts.uuid && !inner.includes(`ref:${opts.uuid}`)) inner += refMarkerHtml(opts.uuid);
