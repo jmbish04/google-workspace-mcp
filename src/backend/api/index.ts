@@ -50,6 +50,7 @@ import { gsuiteHealthRouter } from "./routes/gsuite/gsuite-health";
 import { threadsRouter } from "./routes/gsuite/threads";
 import { gwsRouter } from "./routes/gws";
 import { gwsHealthCheckRouter } from "./routes/gws-health-check";
+import { gmailHarnessRouter } from "@/backend/api/routes/gmail-harness";
 import { gwsNotificationsRouter } from "./routes/gws-notifications";
 import { gwsTemplatesRouter } from "./routes/gws-templates";
 import { healthRouter } from "./routes/health";
@@ -220,6 +221,8 @@ app.route("/api/email-drafts", emailDraftsRouter);
 app.route("/api/gws/drive-webhook", driveWebhookRouter);
 app.route("/api/webhooks/workspace", workspaceWebhookRouter);
 app.route("/api/gws-health-check", gwsHealthCheckRouter);
+// `/health` public; `/run` applies agentAuthMiddleware inside the router (it writes a real draft).
+app.route("/api/gmail-harness", gmailHarnessRouter);
 app.route("/api/seed", seedRouter);
 app.route("/api/pdf", pdfRouter);
 app.route("/api/documents", documentsRouter);
