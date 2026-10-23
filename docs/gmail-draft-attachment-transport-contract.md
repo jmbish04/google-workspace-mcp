@@ -122,7 +122,7 @@ Omitted means **keep**. The rules are not optional:
    `{ blob, filename, mimeType }`. For an inline image, re-feed
    `{ blob, filename, mimeType, as: "inline", contentId }` with the **same**
    `contentId`. The html still says `cid:<contentId>`, so a new id breaks the
-   image. Retained items count against the same 25 MiB budget. One can now
+   image. Retained items count against the same attach budget (§4). One can now
    overflow to a Drive link; the report says so.
 6. **Respect `isConsumerGoogleAccount`.** `@gmail.com` is OAuth-only and never
    DWD. A missing token is the existing actionable "log in" error.
@@ -179,14 +179,26 @@ type Disposition = "attach" | "link" | "inline";
 - New `gmail/transport.ts#submitMessage(env, sub, built, target)` takes a
   `target` of `{ kind: "send", threadId? }`, `{ kind: "draft.create", threadId? }`
   or `{ kind: "draft.update", draftId, threadId? }`. It owns the one decision:
-  - At or below 5 MiB encoded, use the JSON `raw` endpoints as today.
+  - At or below 5 MiB of MIME text, use the JSON `raw` endpoints as today.
   - Above that, use `POST|PUT /upload/gmail/v1/users/me/{messages/send|drafts[/id]}?uploadType=multipart`.
-    The body is `multipart/related`: a JSON metadata part (`{threadId}`, plus
+    Use `uploadType=multipart`, not resumable. The body is `multipart/related`: a JSON metadata part (`{threadId}`, plus
     `{id}` for a draft update), then a `message/rfc822` part.
-- **Pre-flight before any network call.** If the message exceeds
-  `GMAIL_MESSAGE_LIMIT`, throw `GmailSizeError` with the measured and allowed
-  sizes. If the composed BODY alone exceeds the limit less 64 KiB of slack,
-  throw `GmailBodyTooLargeError`. A body cannot fall back to a Drive link. A raw
+- **What is measured:** the byte length of the full RFC 822 MIME text, the exact
+  bytes uploaded as `message/rfc822`. Attachments are already base64 inside it.
+  This is not raw content size.
+- **Hard ceiling:** `36,700,160` bytes (35 MiB). That is the documented maximum
+  for the `/upload/gmail/v1` send and draft endpoints. The old 25 MiB figure is
+  Gmail's UI attach limit, not an API limit. With 25 MiB on encoded size, the
+  task's own criterion (about 22 MiB raw, which is about 29 MiB of MIME) could
+  never pass.
+- **Attach budget:** `GMAIL_MESSAGE_LIMIT` in `outgoing-attachments.ts` rises to
+  the same 35 MiB. The transport task owns that one line and nothing else in that
+  file, which `50e6d8b532e9` is editing. Whether Gmail and the recipient actually
+  accept a 29 MiB message is exactly what the live check must confirm.
+- **Pre-flight before any network call.** If the MIME text exceeds the ceiling,
+  throw `GmailSizeError` with the measured and allowed byte counts. If the
+  composed BODY alone exceeds the ceiling less 64 KiB of slack, throw
+  `GmailBodyTooLargeError`. A body cannot fall back to a Drive link. A raw
   Google 400 reaching the caller is a defect.
 - All four call sites route through `submitMessage`: `send`, `createDraft`,
   `createReplyDraft` and `updateDraft`. That is why this task merges last.
