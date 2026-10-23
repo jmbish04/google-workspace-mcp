@@ -56,7 +56,9 @@ function fakeGmail(opts: { edit?: boolean; update?: UpdateBug; failCreate?: bool
       const d = drafts.get(id)!;
       const bug = opts.update ?? "none";
       const inner = d.html.replace(/^<div dir="ltr"[^>]*>/, "").replace(/<\/div>$/, "");
-      const fragment = marked.parse(String(u.markdown), { async: false, gfm: true, breaks: true }) as string;
+      const body = u.body as { mode: string; markdown: string };
+      expect(body.mode).toBe("append");
+      const fragment = marked.parse(body.markdown, { async: false, gfm: true, breaks: true }) as string;
       const uuid = bug === "new_uuid" ? crypto.randomUUID() : d.uuid;
       const source = bug === "string_append" ? d.html + fragment : inner + fragment;
       const { html, text } = composeBody({ html: source }, { uuid });
@@ -65,7 +67,7 @@ function fakeGmail(opts: { edit?: boolean; update?: UpdateBug; failCreate?: bool
         html,
         text,
         uuid,
-        headers: bug === "ignore_cc" ? d.headers : { ...d.headers, cc: (u.cc as string[]).join(", ") },
+        headers: bug === "ignore_cc" ? d.headers : { ...d.headers, cc: (u.addCc as string[]).join(", ") },
         parts: bug === "drop_attachments" ? [] : d.parts,
       });
       return { draftId: id, uuid };

@@ -259,7 +259,8 @@ async function exercise(gmail: HarnessGmail, opts: HarnessOptions, runId: string
 
   let after: DraftSnapshot;
   try {
-    await gmail.updateDraft(draftId, { mode: "append", markdown: FIXTURE_APPEND_MARKDOWN, cc: [FIXTURE_CC] });
+    // addCc is the user-reported bug path: add a cc to an existing draft in one call.
+    await gmail.updateDraft(draftId, { body: { mode: "append", markdown: FIXTURE_APPEND_MARKDOWN }, addCc: [FIXTURE_CC] });
     after = plant(await gmail.fetchDraft(draftId));
   } catch (e) {
     for (const name of ["draft_update_cc_and_threading", "draft_update_attachments_retained", "draft_update_single_ref"]) {

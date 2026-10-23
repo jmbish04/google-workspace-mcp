@@ -77,29 +77,28 @@ interface GmailDraftView {
 
 ## 2. `gmail_update_draft`
 
-`GmailService.updateDraft(draftId, opts: Omit<UpdateDraftInput, "draftId" | "as_user">)`.
 Gmail has no partial update. `PUT users/me/drafts/{id}` replaces the whole
 message. So an update is **get, merge, rebuild, put**, in that order:
 
 ```ts
-interface UpdateDraftInput {
-  draftId: string;
-  mode?: "replace" | "append" | "prepend";   // default "replace" when a body is given
-  markdown?: string; html?: string; text?: string;   // omitted = keep the stored body
-  to?: string[] | string;     // REPLACES the list when present
-  cc?: string[] | string;     // REPLACES
-  bcc?: string[] | string;    // REPLACES
+// GmailService.updateDraft(draftId, edits) — as built in PR #64.
+interface DraftUpdateInput {
+  body?: { mode?: "replace" | "append" | "prepend"; markdown?: string; html?: string; text?: string };
+  to?: string;                // REPLACES the header (comma-separated)
+  cc?: string;                // REPLACES
+  bcc?: string;               // REPLACES
   addCc?: string[];           // appended, de-duplicated case-insensitively (the CC bug)
   addBcc?: string[];
   subject?: string;
   attachments?: AttachmentSpec[];       // ADDED to the retained ones
-  retainAttachments?: boolean;         // default true
   removeAttachments?: string[];         // filename or contentId
-  as_user?: string;
 }
 ```
 
-Omitted means **keep**. The rules are not optional:
+The `gmail_update_draft` TOOL may flatten `body` and accept arrays for
+`to`/`cc`/`bcc`. The service signature above is what the harness calls.
+
+Omitted means **keep**. `body` omitted keeps the stored body; `mode` defaults to `replace`. The rules are not optional:
 
 1. **One id for the life of the draft.** Pass the draft's existing `uuid` (from
    §1) to `buildOutgoingRaw` → `composeBody`. Never `newEmailUuid()` on update. If
