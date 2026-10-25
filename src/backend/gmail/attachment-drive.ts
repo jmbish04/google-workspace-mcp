@@ -15,6 +15,7 @@ import { OFFICE_TO_GOOGLE, exportGoogleAsMarkdown } from "@/backend/drive/office
 
 import { keepableAttachments } from "./attachments";
 import { decodeAttachment, hashBytes } from "./attachment-store";
+import { extractDirectText } from "./attachment-text";
 import { ocrAttachment } from "./ocr-service";
 import { resolveThreadFolder } from "./threads-folder";
 
@@ -105,14 +106,17 @@ export async function uploadMessageAttachments(
         googleMimeType = converted.mimeType;
         docText = await exportGoogleAsMarkdown(drive, converted.id, office.kind);
       } else {
-        // ocrAttachment dedups by MD5 against previously OCR'd bytes.
+        // csv/txt/json decoded as UTF-8 and forwarded .eml re-parsed in-worker;
+        // everything else goes to OCR, which dedups by MD5 against prior bytes.
         docText =
+          extractDirectText(bytes, part.mimeType, part.filename) ??
           (await ocrAttachment(env, {
             bytes,
             mimeType: part.mimeType,
             hash: hashBytes(bytes),
             filename: part.filename || undefined,
-          })) ?? "";
+          })) ??
+          "";
       }
     } catch (err) {
       console.error(`[attachment-drive] text extract ${part.filename}:`, err instanceof Error ? err.message : err);
