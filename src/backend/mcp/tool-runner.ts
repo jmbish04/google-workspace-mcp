@@ -14,7 +14,8 @@
  * Shadow search must never break or slow the primary result into failure: every
  * shadow branch is wrapped so its errors become informational, not fatal.
  */
-import { acct, SHADOW_TOOLS, type ToolCtx, type ToolDef, type ToolAsset } from "./tools";
+import { acct } from "./tool-common";
+import { SHADOW_TOOLS, type ToolCtx, type ToolDef, type ToolAsset } from "./tools";
 import { sanitizeArgs } from "./text-sanitize";
 import { listCaptureAccounts, accountEmailFor } from "@/backend/gmail/sync-service";
 
