@@ -282,4 +282,104 @@
       "remote": true,
     },
   ],
+  // ---------------------------------------------------------------------------
+  // DEV ENVIRONMENT — `pnpm run deploy:dev` (wrangler deploy --env dev).
+  // Wrangler does NOT inherit bindings into an env, so every binding the Worker
+  // needs is redeclared below against DEV resources only. Inheritable keys
+  // (main, compatibility_*, observability, placement, migrations) come from the
+  // top level. Hyperdrive (Postgres) and Vectorize are deliberately omitted:
+  // the Docs work does not need them and both are read lazily (a call that
+  // needs them fails with "not bound" instead of failing startup).
+  // NEVER point a dev binding at a production id.
+  // ---------------------------------------------------------------------------
+  "env": {
+    "dev": {
+      "name": "google-workspace-mcp-dev",
+      // No crons in dev: the */5 sweep sends scheduled email.
+      "triggers": { "crons": [] },
+      "assets": {
+        "binding": "ASSETS",
+        "directory": "./dist",
+        "run_worker_first": true,
+        "not_found_handling": "404-page",
+      },
+      "ai": { "binding": "AI" },
+      "durable_objects": {
+        "bindings": [
+          { "name": "ORCHESTRATOR_AGENT", "class_name": "OrchestratorAgent" },
+          { "name": "GMAIL_AGENT", "class_name": "GmailAgent" },
+          { "name": "DOCS_AGENT", "class_name": "DocsAgent" },
+          { "name": "SHEETS_AGENT", "class_name": "SheetsAgent" },
+          { "name": "SLIDES_AGENT", "class_name": "SlidesAgent" },
+          { "name": "APPSSCRIPT_AGENT", "class_name": "AppsScriptAgent" },
+          { "name": "DRIVE_AGENT", "class_name": "DriveAgent" },
+          { "name": "CALENDAR_AGENT", "class_name": "CalendarAgent" },
+          { "name": "CIRCUIT_BREAKER", "class_name": "CircuitBreaker" },
+          { "name": "EMAIL_DRAFT_ROOM", "class_name": "EmailDraftRoom" },
+          { "name": "DOCUMENT_COLLABORATION", "class_name": "DocumentCollaborationRoom" },
+          { "name": "DOCUMENT_REVIEW", "class_name": "DocumentReviewRoom" },
+        ],
+      },
+      "worker_loaders": [{ "binding": "WORKER_LOADERS" }],
+      // Explicitly empty: no Postgres and no RAG indexes in dev (see above).
+      "hyperdrive": [],
+      "vectorize": [],
+      // Code mode's self binding MUST target the dev Worker, never production.
+      "services": [
+        { "binding": "SELF_RPC", "service": "google-workspace-mcp-dev", "entrypoint": "GsuiteService" },
+      ],
+      "vars": {
+        "INBOX_FORWARD_TO": "",
+        "AGENT_CALL_SIGN": "@colby-app",
+        "WORKSPACE_EVENTS_ACCOUNT": "jmbish04@gmail.com",
+        "COMMENT_SWEEP_WINDOW_MIN": "30",
+        "PUBLIC_BASE_URL": "https://google-workspace-mcp-dev.hacolby.workers.dev",
+        "GOOGLE_OAUTH_REDIRECT_URI": "https://google-workspace-mcp-dev.hacolby.workers.dev/api/auth/google/oauth/callback",
+        "DOCLING_URL": "",
+        "GOOGLE_USER_TO_IMPERSONATE": "",
+        "GOOGLE_WORKSPACE_ACCOUNT_EMAIL": "jmbish04@gmail.com",
+        "GOOGLE_PERSONAL_ACCOUNT_EMAIL": "",
+        "AI_GATEWAY_ID": "default-gateway",
+        "MODEL_CHAT": "@cf/openai/gpt-oss-120b",
+        "MODEL_EXTRACT": "@cf/openai/gpt-oss-120b",
+        "MODEL_DRAFT": "@cf/openai/gpt-oss-120b",
+        "DEFAULT_MODEL_EMBEDDING": "@cf/baai/bge-large-en-v1.5",
+        "CIRCUIT_MAX_REQ_PER_MIN": "3000",
+        "CIRCUIT_MAX_AGENT_PER_MIN": "300",
+        "CIRCUIT_MAX_AI_PER_MIN": "500",
+        "CIRCUIT_MAX_TOOL_PER_MIN": "1000",
+      },
+      "kv_namespaces": [
+        { "binding": "SESSIONS", "id": "5a706f7127c34a769fa56eb8648ae9fd", "remote": true },
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "google-workspace-mcp-dev",
+          "database_id": "aefa4a34-25d5-4c0f-bc9a-791987437d41",
+          "migrations_dir": "drizzle",
+        },
+      ],
+      "r2_buckets": [
+        { "bucket_name": "google-workspace-mcp-dev", "binding": "R2_FILES_BUCKET", "remote": true },
+        {
+          "bucket_name": "google-workspace-mcp-dev-previews",
+          "binding": "R2_PREVIEWS_BUCKET",
+          "remote": true,
+        },
+      ],
+      // Account-level Secrets Store entries, read-only — same as the top level.
+      "secrets_store_secrets": [
+        { "binding": "GITHUB_TOKEN", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "GH_TOKEN" },
+        { "binding": "CLOUDFLARE_ACCOUNT_ID", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "CLOUDFLARE_ACCOUNT_ID" },
+        { "binding": "CLOUDFLARE_WRANGLER_API_TOKEN", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "CLOUDFLARE_WRANGLER_API_TOKEN" },
+        { "binding": "WORKER_API_KEY", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "WORKER_API_KEY" },
+        { "binding": "AI_GATEWAY_TOKEN", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "CLOUDFLARE_AI_GATEWAY_TOKEN" },
+        { "binding": "GOOGLE_CREDS_SA_PRIVATE_KEY_PT_1", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "GOOGLE_CREDS_SA_PRIVATE_KEY_PT_1" },
+        { "binding": "GOOGLE_CREDS_SA_PRIVATE_KEY_PT_2", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "GOOGLE_CREDS_SA_PRIVATE_KEY_PT_2" },
+        { "binding": "GOOGLE_CREDS_SA_CLIENT_EMAIL", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "GOOGLE_CREDS_SA_CLIENT_EMAIL" },
+        { "binding": "GOOGLE_CREDS_SA_EMAIL", "store_id": "8c42fa70938644e0a8a109744467375f", "secret_name": "GOOGLE_CREDS_SA_EMAIL" },
+      ],
+    },
+  },
 }

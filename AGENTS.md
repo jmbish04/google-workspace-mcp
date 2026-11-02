@@ -71,6 +71,20 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   a year of full Workspace access. Google sign-in stays open to any host: it binds the
   signer's own identity. Failed passcodes are `console.warn`ed (host + client_id only).
   Live check: `scripts/auth-check.mjs`.
+- **Batch-first Docs engine** (Maestro plan `5c89f396506d`; tools in
+  `mcp/docs-engine-tools.ts`, pure helpers in `docs/`): every engine write goes through
+  `docs/batch-runner.ts#runBatch` → `writeControl` passed through, new `revisionId`
+  returned, Google failures typed by `docs/batch-errors.ts` (`REVISION_CONFLICT`,
+  `INVALID_REQUEST`+`requestIndex`, `UNKNOWN_REQUEST_TYPE`, `WRITE_MODE_REFUSED`,
+  `GOOGLE_ERROR`; Google's text kept in `googleMessage`) — never a raw 400.
+  `docs_get_json` leads with `summary` (`docs/doc-summary.ts`: revisionId, documentMode,
+  flattened tabs). `docs_set_page_setup` (`docs/page-setup.ts`) always sets `tabId`
+  (margins fail without it) and names only the set fields (never `"*"`).
+  `asUser`/`acct` live in `mcp/tool-common.ts` so spread-in tool modules avoid a
+  circular value import of `tools.ts`.
+- **Dev Worker**: `pnpm run deploy:dev` → `google-workspace-mcp-dev` (`env.dev` in
+  `wrangler.jsonc`, dev-only D1/KV/R2, no crons, no Hyperdrive/Vectorize, SELF_RPC →
+  dev). Check with `pnpm run deploy:dev:dry-run` first. Never deploy prod from an agent.
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →
