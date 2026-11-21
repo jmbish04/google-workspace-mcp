@@ -18,7 +18,9 @@ const GUARDIAN = "https://core-guardian.hacolby.workers.dev";
 export async function embedQuery(env: Env, text: string): Promise<number[]> {
   const token = await getSecret(env, "AI_GATEWAY_TOKEN");
   if (!token) throw new Error("AI_GATEWAY_TOKEN is not bound: cannot embed through Core Guardian");
-  const res = await fetch(`${GUARDIAN}/v1/embeddings`, {
+  // Service binding when present (a workers.dev fetch to a sibling Worker answers 1042).
+  const bound = (env as unknown as { GUARDIAN_HTTP?: { fetch: typeof fetch } }).GUARDIAN_HTTP;
+  const res = await (bound ? bound.fetch.bind(bound) : fetch)(`${GUARDIAN}/v1/embeddings`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "x-guardian-project": "google-workspace-mcp", "content-type": "application/json" },
     body: JSON.stringify({ model: EMBED_MODEL, input: [text], dimensions: EMBED_DIMS }),
