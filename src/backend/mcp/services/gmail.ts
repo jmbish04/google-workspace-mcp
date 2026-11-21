@@ -16,6 +16,9 @@ import type { BlobInput, AttachmentSpec, AttachmentReportItem } from "@/backend/
 
 export type GmailMessage = { id: string; snippet: string; payload?: unknown };
 
+/** One message in a `format=minimal` thread response. */
+export type ThreadMetaMessage = { id: string; threadId?: string; labelIds?: string[]; snippet?: string; internalDate?: string };
+
 /** Rich body + attachments accepted by send / draft helpers. */
 export interface RichContent {
   /** Cc recipients (comma-separated). Honored on drafts and sends alike. */
@@ -650,6 +653,15 @@ export class GmailService {
 
   async getThread(threadId: string): Promise<{ id: string; messages: GmailMessage[] }> {
     return googleJson(this.env, this.sub, `${BASE}/threads/${threadId}?format=full`);
+  }
+
+  /**
+   * Thread skeleton (`format=minimal`): every message's id, labels, snippet and
+   * internalDate, but no bodies. One cheap call tells us how many messages Gmail
+   * holds and which ones we have not stored yet.
+   */
+  async getThreadMeta(threadId: string): Promise<{ id: string; historyId?: string; messages: ThreadMetaMessage[] }> {
+    return googleJson(this.env, this.sub, `${BASE}/threads/${threadId}?format=minimal`);
   }
 
   async trashMessage(id: string): Promise<GmailMessage> {
