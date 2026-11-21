@@ -80,6 +80,8 @@ import {
   type DraftWithHistory,
 } from "@/backend/gmail/draft-studio";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
+import { addNote, deleteNote, listNotes, updateNote } from "@/backend/gmail/gmail-notes";
+import { getMessageIndexed, getThreadIndexed, syncThread } from "@/backend/gmail/thread-index";
 import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
 import { isValidCron } from "@/backend/gmail/cron";
 import { seedBuiltinTemplates } from "@/backend/gmail/email-templates";
@@ -3165,7 +3167,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_get_message",
     description:
-      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes) unless includeAttachmentText:true, which uploads them to Drive and adds { driveId, doc_text, sha256_hash } per attachment exactly as gmail_get_thread does (PDF/image OCR, Office to Markdown, csv/txt/json decoded, forwarded .eml headers+body).",
+      "Read one Gmail message by id, returning its headers, body, and links. Served from the worker's Postgres cache once stored (`cached:true`; a message never changes after it is sent), fetched from Gmail and stored the first time. Carries any `notes` written on the message or its attachments. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes) unless includeAttachmentText:true, which uploads them to Drive and adds { driveId, doc_text, sha256_hash } per attachment exactly as gmail_get_thread does (PDF/image OCR, Office to Markdown, csv/txt/json decoded, forwarded .eml headers+body).",
     inputSchema: z.object({
       id: z.string(),
       bodyFormat: z
@@ -3179,88 +3181,110 @@ export const TOOLS: ToolDef[] = [
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const gmail = new GmailService(env, acct(sub, a));
-      const raw = await gmail.getRawMessage(a.id);
-      const format = (a.bodyFormat ?? "text") as BodyFormat;
-      const rfc = format === "rfc" ? await gmail.getMessageRfc(a.id) : undefined;
-      const parsed = parseRawMessage(raw);
-      const { body, bodyFormat, urls } = extractBody((raw as any).payload, format, rfc);
-      // Same { count, attachments } shape either way; the flag enriches each
-      // entry with { driveId, doc_text, sha256_hash } via the thread pipeline.
-      const attachments = a.includeAttachmentText
-        ? await uploadMessageAttachments(env, acct(sub, a), a.as_user ?? sub, {
-            messageId: a.id,
-            payload: (raw as any).payload,
-            subject: parsed.subject || "(no subject)",
-            gmail,
-          }).then((up) => ({ count: up.attachments.length, attachments: up.attachments }))
-        : attachmentManifest((raw as any).payload);
-      return {
-        result: {
-          id: parsed.id,
-          threadId: parsed.threadId,
-          subject: parsed.subject,
-          snippet: parsed.snippet,
-          internalDate: parsed.internalDate,
-          labelIds: parsed.labelIds,
-          contacts: parsed.contacts,
-          body,
-          bodyFormat,
-          urls,
-          attachments,
+      const ref = acct(sub, a);
+      const result = await getMessageIndexed(
+        env,
+        {
+          gmail: new GmailService(env, ref),
+          ref,
+          accountKey: a.as_user ?? sub,
+          email: await accountEmailFor(env, ref),
         },
-      };
+        {
+          id: a.id,
+          format: (a.bodyFormat ?? "text") as BodyFormat,
+          includeAttachmentText: a.includeAttachmentText === true,
+        },
+      );
+      return { result };
     },
   },
   {
     name: "gmail_get_thread",
     description:
-      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. Every message carries a `body` (decoded plain text), a `urls` array of { label, href } extracted from that message, and an attachments[] manifest of { filename, mimeType, size, attachmentId }. By default each message's attachments are ALSO uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and the manifest is enriched with { driveId, doc_text, sha256_hash }. Pass includeAttachments:false to skip all Drive writes and return the metadata-only manifest. For a single message in a specific body format (html/rfc), use gmail_get_message.",
+      "Get a full Gmail thread (all messages) by threadId, best for feeding conversation context to the model. Served from the worker's Postgres cache: Gmail is asked only for the thread's message list, and only messages we have not stored yet are fetched in full (a message never changes after it is sent). The result carries `index` ({ gmailCount, indexedCount, newlyIndexed, pending, complete }): complete:true means every message Gmail reports is stored and returned. Every message has `body` (plain text), `from`/`to`/`cc`/`date`, `urls` ({ label, href }), `attachments[]` and `notes` (what earlier sessions concluded about it; read these before re-deriving anything). Each attachment has an `id` (use it with gmail_note_add) and `status`. Thread-level `notes` sit at the top. By default attachments are uploaded to the acting account's Drive ONCE (thread-subject folder under 'MCP Email Threads') and registered, so later calls reuse the Drive file: stored attachments carry { driveId, driveUrl, doc_text, sha256_hash }. Pass includeAttachments:false to skip Drive. A failed upload lands in `attachmentErrors` and never hides the thread. Drafts are read live (`draft:true`, never cached). For a message in html/rfc form use gmail_get_message",
     inputSchema: z.object({
       threadId: z.string(),
       includeAttachments: z.boolean().optional(),
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const gmail = new GmailService(env, account);
-      const thread = await gmail.getThread(a.threadId);
-      // Decoded plain-text body + extracted { label, href } links for a message.
-      const bodyOf = (m: (typeof thread.messages)[number]) => {
-        const { body, urls } = extractBody((m as any).payload, "text");
-        return { body, urls };
-      };
-      if (a.includeAttachments === false) {
-        // Still surface attachment metadata (count/filename/mimeType/size) for
-        // every message — cheap payload walk, no Drive writes — so the model is
-        // never blind to attachments just because byte-fetching was skipped.
-        const messages = thread.messages.map((m) => ({
-          ...m,
-          ...bodyOf(m),
-          attachments: attachmentManifest(m.payload),
-        }));
-        return { result: { ...thread, messages } };
-      }
-
-      const accountKey = a.as_user ?? sub;
-      const subject =
-        thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
-      // Resolve the thread folder once (on the first message that has attachments)
-      // and reuse it for the rest, so the whole thread lands in one folder.
-      let folderId: string | undefined;
-      const messages = [];
-      for (const m of thread.messages) {
-        const up = await uploadMessageAttachments(env, account, accountKey, {
-          messageId: m.id,
-          payload: m.payload,
-          subject,
-          folderId,
-          gmail,
-        });
-        if (up.folderId) folderId = up.folderId;
-        messages.push({ ...m, ...bodyOf(m), attachments: up.attachments });
-      }
-      return { result: { ...thread, messages, attachmentsFolderId: folderId ?? null } };
+      const ref = acct(sub, a);
+      const result = await getThreadIndexed(
+        env,
+        {
+          gmail: new GmailService(env, ref),
+          ref,
+          accountKey: a.as_user ?? sub,
+          email: await accountEmailFor(env, ref),
+        },
+        { threadId: a.threadId, includeAttachments: a.includeAttachments !== false },
+      );
+      return { result };
+    },
+  },
+  {
+    name: "gmail_thread_sync",
+    description:
+      "Reconcile one thread into the worker's Postgres cache without reading it back: asks Gmail for the thread's message list, stores every message we do not hold yet, and reports `{ gmailCount, indexedCount, newlyIndexed, pending, complete }` so you can confirm the cache holds every message Gmail does (e.g. 15 of 15). gmail_get_thread does this automatically on every call; use this to check completeness, or to finish a very long thread (at most 60 messages are fetched per call, `pending` says how many remain). Attachments are not uploaded here.",
+    inputSchema: z.object({ threadId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const ref = acct(sub, a);
+      const { status } = await syncThread(env, new GmailService(env, ref), await accountEmailFor(env, ref), a.threadId);
+      return { result: { threadId: a.threadId, ...status } };
+    },
+  },
+  {
+    name: "gmail_note_add",
+    description:
+      "Write a note on a Gmail thread, one of its messages, or one of its attachments, so the interpretation is saved and the next read of the thread shows it instead of redoing the analysis. Name the target with ONE of: `attachmentId` (attachments[].id from gmail_get_thread / gmail_get_message), `messageId`, or `threadId`. Any target can hold many notes; every note is its own row with a created time. Use it for conclusions, not summaries: who said what, what a message commits them to, what is still owed. Notes come back inline on gmail_get_thread / gmail_get_message (`notes` on the thread, each message and each attachment) and via gmail_notes_list.",
+    inputSchema: z.object({
+      note: z.string().min(1).max(20_000),
+      threadId: z.string().optional(),
+      messageId: z.string().optional(),
+      attachmentId: z.coerce.number().int().positive().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const ref = acct(sub, a);
+      const ctx = { env, gmail: new GmailService(env, ref), email: await accountEmailFor(env, ref), author: a.as_user ?? sub };
+      return { result: await addNote(ctx, a) };
+    },
+  },
+  {
+    name: "gmail_notes_list",
+    description:
+      "List saved Gmail notes. Filter by `threadId` (every note in the thread: thread, message and attachment level), `messageId` (that message's notes plus its attachments'), `attachmentId`, and/or `query` (case-insensitive text match, e.g. 'certificate of insurance'). With no target, returns the newest notes across the mailbox. Each note says its `scope` (thread | message | attachment).",
+    inputSchema: z.object({
+      threadId: z.string().optional(),
+      messageId: z.string().optional(),
+      attachmentId: z.coerce.number().int().positive().optional(),
+      query: z.string().optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const notes = await listNotes(env, await accountEmailFor(env, acct(sub, a)), a);
+      return { result: { count: notes.length, notes } };
+    },
+  },
+  {
+    name: "gmail_note_update",
+    description: "Replace the text of one saved Gmail note (by the note `id` from gmail_notes_list or gmail_note_add).",
+    inputSchema: z.object({ id: z.coerce.number().int().positive(), note: z.string().min(1).max(20_000), ...asUser }),
+    async run({ env, sub }, a) {
+      const row = await updateNote(env, await accountEmailFor(env, acct(sub, a)), a.id, a.note);
+      if (!row) throw new Error(`no note ${a.id} in this mailbox`);
+      return { result: row };
+    },
+  },
+  {
+    name: "gmail_note_delete",
+    description: "Delete one saved Gmail note by its `id`. The thread, message and attachment it was on are untouched.",
+    inputSchema: z.object({ id: z.coerce.number().int().positive(), ...asUser }),
+    async run({ env, sub }, a) {
+      const deleted = await deleteNote(env, await accountEmailFor(env, acct(sub, a)), a.id);
+      return { result: { id: a.id, deleted } };
     },
   },
   {

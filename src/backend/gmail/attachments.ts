@@ -8,6 +8,8 @@
 
 export interface AttachmentPart {
   attachmentId: string;
+  /** MIME part id ("0.1"): stable across fetches, unlike attachmentId. */
+  partId?: string | null;
   filename: string;
   mimeType: string;
   size: number;
@@ -31,6 +33,7 @@ export function extractAttachmentParts(payload: any): AttachmentPart[] {
       const cid = headerVal(headers, "content-id");
       out.push({
         attachmentId: p.body.attachmentId,
+        partId: p.partId ?? null,
         filename: p.filename ?? "",
         mimeType: p.mimeType ?? "application/octet-stream",
         size: p.body.size ?? 0,
