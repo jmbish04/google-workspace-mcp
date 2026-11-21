@@ -81,6 +81,7 @@ import {
 } from "@/backend/gmail/draft-studio";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
 import { addNote, deleteNote, listNotes, updateNote } from "@/backend/gmail/gmail-notes";
+import * as ingest from "@/backend/gmail/ingest-admin";
 import { getMessageIndexed, getThreadIndexed, syncThread } from "@/backend/gmail/thread-index";
 import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
 import { isValidCron } from "@/backend/gmail/cron";
@@ -3285,6 +3286,130 @@ export const TOOLS: ToolDef[] = [
     async run({ env, sub }, a) {
       const deleted = await deleteNote(env, await accountEmailFor(env, acct(sub, a)), a.id);
       return { result: { id: a.id, deleted } };
+    },
+  },
+  {
+    name: "mail_search",
+    description:
+      "Search the embedded mail store (message bodies and extracted attachment text) by meaning AND keywords. Returns the best chunks with the Gmail message/thread ids, subject and attachment filename. Only mail that an enabled ingest rule routed to embedding is searchable. Pass `projectKey` to search only threads linked to a project (e.g. a contractor dispute). Embeddings go through Core Guardian.",
+    inputSchema: z.object({ query: z.string().min(2), limit: z.number().int().min(1).max(50).optional(), projectKey: z.string().optional(), ...asUser }),
+    async run({ env }, a) {
+      return { result: { hits: await ingest.searchMail(env, a) } };
+    },
+  },
+  {
+    name: "ingest_status",
+    description: "Counts for the Postgres mail store (threads, messages, people, attachments, distinct files, chunks, notes, rules), the job queue by kind/status, and each mailbox's poll cursor. Use it to see whether indexing is keeping up.",
+    inputSchema: z.object({ ...asUser }),
+    async run({ env }) {
+      return { result: await ingest.ingestStatus(env) };
+    },
+  },
+  {
+    name: "ingest_rules_list",
+    description: "List the routing rules that decide what mail gets indexed (like Gmail filters). Each has conditions (from, to, subjectContains, bodyContains, labels: all must hold; entries inside a list are ORed) and actions (embed, extractAttachments, projectKey, addLabels).",
+    inputSchema: z.object({ ...asUser }),
+    async run({ env }) {
+      return { result: { rules: await ingest.listRules(env) } };
+    },
+  },
+  {
+    name: "ingest_rule_upsert",
+    description: "Create a routing rule, or update one when `id` is given. Example: { name: 'Mr. Roofing', target: 'gmail', conditions: { from: ['iproofing.com'] }, actions: { embed: true, extractAttachments: true, projectKey: 'mr-roofing' } }. A rule with no conditions is refused. `projectKey` must already exist (project_upsert).",
+    inputSchema: z.object({
+      id: z.number().int().positive().optional(),
+      name: z.string().min(1),
+      target: z.enum(["gmail", "drive"]).default("gmail"),
+      priority: z.number().int().optional(),
+      enabled: z.boolean().optional(),
+      projectKey: z.string().optional(),
+      conditions: z.record(z.string(), z.unknown()),
+      actions: z.record(z.string(), z.unknown()),
+      ...asUser,
+    }),
+    async run({ env }, a) {
+      return { result: await ingest.upsertRule(env, a) };
+    },
+  },
+  {
+    name: "ingest_rule_delete",
+    description: "Delete one routing rule by id. Mail already indexed stays indexed.",
+    inputSchema: z.object({ id: z.number().int().positive(), ...asUser }),
+    async run({ env }, a) {
+      return { result: { id: a.id, deleted: await ingest.deleteRule(env, a.id) } };
+    },
+  },
+  {
+    name: "project_upsert",
+    description: "Create or update a project by `key` (e.g. 'mr-roofing'): name, `background` (the story so far) and `context` (free-form JSON: contract amount, parties, deadlines). Threads, people and tasks attach to it.",
+    inputSchema: z.object({
+      key: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]*$/),
+      name: z.string().min(1),
+      description: z.string().optional(),
+      background: z.string().optional(),
+      context: z.record(z.string(), z.unknown()).optional(),
+      status: z.enum(["active", "archived", "on_hold"]).optional(),
+      ...asUser,
+    }),
+    async run({ env }, a) {
+      return { result: await ingest.upsertProject(env, a) };
+    },
+  },
+  {
+    name: "project_get",
+    description: "Read one project with its background, context, tasks, linked Gmail threads and people. Read this first when resuming work on a matter.",
+    inputSchema: z.object({ key: z.string(), ...asUser }),
+    async run({ env }, a) {
+      const p = await ingest.getProject(env, a.key);
+      if (!p) throw new Error(`no project ${a.key}`);
+      return { result: p };
+    },
+  },
+  {
+    name: "project_list",
+    description: "List projects with open-task and linked-thread counts.",
+    inputSchema: z.object({ ...asUser }),
+    async run({ env }) {
+      return { result: { projects: await ingest.listProjects(env) } };
+    },
+  },
+  {
+    name: "project_link",
+    description: "Link a stored Gmail thread (`threadId`) and/or a person (`personEmail`, with `roleNote` like 'roofing contractor') to a project. The thread must already be stored: call gmail_get_thread first.",
+    inputSchema: z.object({ projectKey: z.string(), threadId: z.string().optional(), personEmail: z.string().email().optional(), roleNote: z.string().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      return { result: await ingest.linkProject(env, { ...a, email: await accountEmailFor(env, acct(sub, a)) }) };
+    },
+  },
+  {
+    name: "task_add",
+    description: "Add a task to a project: what has to be done. Optionally `sourceMessageId` (a stored Gmail message id) records the message that caused it. `dueAt` is ISO-8601.",
+    inputSchema: z.object({
+      projectKey: z.string(),
+      title: z.string().min(1),
+      description: z.string().optional(),
+      priority: z.string().optional(),
+      dueAt: z.string().optional(),
+      sourceMessageId: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      return { result: await ingest.addTask(env, { ...a, email: await accountEmailFor(env, acct(sub, a)) }) };
+    },
+  },
+  {
+    name: "task_update",
+    description: "Change a task's status (todo | in_progress | blocked | done | cancelled), title, description or priority.",
+    inputSchema: z.object({
+      id: z.number().int().positive(),
+      status: z.enum(["todo", "in_progress", "blocked", "done", "cancelled"]).optional(),
+      title: z.string().optional(),
+      description: z.string().optional(),
+      priority: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env }, a) {
+      return { result: await ingest.updateTask(env, a.id, a) };
     },
   },
   {
