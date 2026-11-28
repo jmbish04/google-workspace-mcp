@@ -8,10 +8,10 @@
  * server-stringified HTML.
  */
 import * as React from "react";
-import { GlobeIcon, TerminalIcon, KeyRoundIcon, ShieldCheckIcon } from "lucide-react";
+import { GlobeIcon, TerminalIcon, KeyRoundIcon, ShieldCheckIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CodeBlock } from "@/components/ui/code-block";
 import { CopyButton } from "@/components/CopyButton";
@@ -25,6 +25,7 @@ export type ConnectPanelProps = {
 
 export function ConnectPanel({ token, email, expiresAt, baseUrl }: ConnectPanelProps) {
   const mcpUrl = `${baseUrl}/mcp`;
+  const [revealed, setRevealed] = React.useState(false);
 
   if (!token) {
     return (
@@ -44,9 +45,18 @@ export function ConnectPanel({ token, email, expiresAt, baseUrl }: ConnectPanelP
     );
   }
 
-  const claudeCode = `claude mcp add --transport http google-workspace \\\n  ${mcpUrl} \\\n  --header "Authorization: Bearer ${token}"`;
+  const maskedToken = `${token.slice(0, 14)}••••••••••••••••••••••••••••••••••••••••`;
+  const displayToken = revealed ? token : maskedToken;
 
-  const desktopConfig = JSON.stringify(
+  const claudeCodeDisplay = `claude mcp add --transport http google-workspace \\\n  ${mcpUrl} \\\n  --header "Authorization: Bearer ${displayToken}"`;
+  const claudeCodeReal = `claude mcp add --transport http google-workspace \\\n  ${mcpUrl} \\\n  --header "Authorization: Bearer ${token}"`;
+
+  const desktopConfigDisplay = JSON.stringify(
+    { mcpServers: { "google-workspace": { url: mcpUrl, headers: { Authorization: `Bearer ${displayToken}` } } } },
+    null,
+    2,
+  );
+  const desktopConfigReal = JSON.stringify(
     { mcpServers: { "google-workspace": { url: mcpUrl, headers: { Authorization: `Bearer ${token}` } } } },
     null,
     2,
@@ -54,10 +64,22 @@ export function ConnectPanel({ token, email, expiresAt, baseUrl }: ConnectPanelP
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-muted-foreground">
-        Signed in{email ? <> as <span className="font-medium text-foreground">{email}</span></> : null}.
-        {expiresAt ? <> Token valid until {expiresAt}.</> : null} Pick how you're using Claude below.
-      </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          Signed in{email ? <> as <span className="font-medium text-foreground">{email}</span></> : null}.
+          {expiresAt ? <> Token valid until {expiresAt}.</> : null}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setRevealed(!revealed)}
+          className="w-fit"
+        >
+          {revealed ? <EyeOffIcon className="size-3.5 mr-1.5" /> : <EyeIcon className="size-3.5 mr-1.5" />}
+          {revealed ? "Hide credentials" : "Show credentials"}
+        </Button>
+      </div>
 
       {/* claude.ai web — OAuth, no token needed */}
       <Card>
@@ -85,10 +107,15 @@ export function ConnectPanel({ token, email, expiresAt, baseUrl }: ConnectPanelP
           <CardTitle className="flex items-center gap-2">
             <TerminalIcon className="size-4 text-muted-foreground" /> Claude Code
           </CardTitle>
-          <CardDescription>Run this once. The token is your Bearer credential.</CardDescription>
+          <CardDescription>Run this once. The token is your Bearer credential (sanitized on screen, full command copied).</CardDescription>
         </CardHeader>
         <CardContent>
-          <CodeBlock filename="terminal" language="bash" code={claudeCode} />
+          <CodeBlock
+            filename="terminal"
+            language="bash"
+            code={claudeCodeDisplay}
+            copyText={claudeCodeReal}
+          />
         </CardContent>
       </Card>
 
@@ -101,7 +128,12 @@ export function ConnectPanel({ token, email, expiresAt, baseUrl }: ConnectPanelP
           <CardDescription>Add this server block to your client's MCP config.</CardDescription>
         </CardHeader>
         <CardContent>
-          <CodeBlock filename="mcp config" language="json" code={desktopConfig} />
+          <CodeBlock
+            filename="mcp config"
+            language="json"
+            code={desktopConfigDisplay}
+            copyText={desktopConfigReal}
+          />
         </CardContent>
       </Card>
 
@@ -115,7 +147,16 @@ export function ConnectPanel({ token, email, expiresAt, baseUrl }: ConnectPanelP
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex items-center gap-2 rounded-lg bg-muted/40 p-3">
-            <code className="flex-1 overflow-x-auto font-mono text-xs break-all">{token}</code>
+            <code className="flex-1 overflow-x-auto font-mono text-xs break-all">{displayToken}</code>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setRevealed(!revealed)}
+              className="h-8 px-2"
+            >
+              {revealed ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+            </Button>
             <CopyButton text={token} label="Copy" />
           </div>
           <p className="text-xs text-muted-foreground">

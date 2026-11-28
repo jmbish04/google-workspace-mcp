@@ -1,0 +1,257 @@
+# agents-sync — drop this at .github/workflows/agents-sync.yml in any repo Justin works in.
+#
+# It pulls the machine-wide agent briefings from jmbish04/colby-ecosystem, right-sized to
+# what this repo actually is, and commits them. Because they are committed, a plain
+# `git clone` already has them — whoever clones next needs no bootstrap step.
+#
+# Self-contained on purpose. A reusable workflow living in a PRIVATE repo only works after
+# that repo's Actions access is opened to the account; this needs no such setting.
+#
+# ONE SECRET, set it once per repo:
+#   gh secret set COLBY_ECOSYSTEM_TOKEN --repo <owner>/<repo>
+# A PAT with read access to jmbish04/colby-ecosystem. The workflow's own GITHUB_TOKEN
+# cannot read another repository — that failure arrives as a 404, not a 403, which is why
+# pull-agents names the secret in its error.
+#
+# Value: `tokens show GH_ECOSYSTEM_READ_TOKEN --value-only` if that exists, otherwise
+# `tokens show GH_TOKEN --value-only`. A fine-grained PAT with contents:read on
+# colby-ecosystem alone is better; it belongs in the tokens CLI only, since no Worker
+# reads it and the Cloudflare Secret Store has a hard 100-secret ceiling.
+#
+# PREFERRED — the colby-ecosystem GitHub App (decided 2026-11-18, option 3 of
+# decisions/2026-11-18-agents-sync-off-the-runners.md). A PAT draws on jmbish04's personal
+# 5,000/hour REST budget, the SAME pool `gh`, gh-tools, agents-audit/-rollout and every
+# interactive agent session spend from. 64 repos fetching 5-8 files per PR exhaust it, and
+# the fetch then returns 403 — the real cause of the agents-sync failures. An App
+# installation token draws on the installation's OWN budget instead, so the fleet's fetches
+# stop competing with that interactive work. The ceiling rises too: 5,000/hour, +50/hour
+# per repo over 20, capped at 12,500. It is still ONE pool shared by all 64 repos, so the
+# head-SHA change gate in pull-agents (reuse on-disk files when colby-ecosystem has not
+# moved; a 304 conditional request is NOT free, measured 2026-11-18) stacks on top of this
+# and cuts the request count. Both are now built.
+#
+#   Repo VARIABLE (App id is public, not sensitive):
+#     gh variable set COLBY_ECOSYSTEM_APP_ID  --repo <owner>/<repo> --body <app-id>
+#   Repo SECRET (the App private key, PEM):
+#     gh secret   set COLBY_ECOSYSTEM_APP_KEY --repo <owner>/<repo> < app-private-key.pem
+# The App needs contents:read on colby-ecosystem and must be installed on jmbish04 with
+# access to colby-ecosystem. A repo with the variable UNSET skips the mint step and uses
+# COLBY_ECOSYSTEM_TOKEN, so the App can roll out one repo at a time with nothing breaking.
+
+name: agents-sync
+
+# WHEN IT RUNS — on a pull request, never on a push to the default branch and never on a
+# schedule (Justin, 2026-10-21; decisions/2026-10-21-agents-sync-fanout.md).
+# The old push + weekly cron triggers committed straight to main in every repo, so ONE
+# change in colby-ecosystem became an Actions run AND a Workers Build in every repo, and
+# every merge anywhere cost an extra run. Now the refreshed briefings are committed to the
+# PR's own branch, so they reach main inside a merge that was going to build anyway.
+#
+# The commit uses GITHUB_TOKEN, and GitHub does not start workflows from a GITHUB_TOKEN
+# push, so this cannot loop. A Workers Builds preview build may still run for that push if
+# the Worker builds non-production branches.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agents-sync-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    # WHICH RUNNER — decided per repo by an Actions VARIABLE, not by editing this file.
+    # GitHub Actions hosted minutes are FREE for public repos and BILLED for private ones,
+    # and on this account billing has lapsed: a private repo's job is refused before it
+    # starts (measured 2026-10-12 — runner_name "", steps 0, ~3s, annotation "recent
+    # account payments have failed"). 8 public repos succeeded and 4 private ones were
+    # refused on the same rollout: 100% correlation. So a private repo can only sync on a
+    # self-hosted runner.
+    #
+    # `jmbish04` is a USER account, not an org, so runners are registered PER REPO — there
+    # is no org pool. A blanket `runs-on: self-hosted` would therefore SIT QUEUED in any repo
+    # without one instead of failing, and a queued job is invisible: strictly worse than one
+    # that fails red in 3s. (GitHub's documented usage limits cancel a self-hosted job queued
+    # for 24 hours — not measured here, but it is a silent day either way.) Hence the
+    # variable, and hence the hosted fallback.
+    #
+    #   variable absent        -> ubuntu-latest   (today's behaviour; no regression, and it
+    #                                              recovers by itself when billing is fixed)
+    #   ["self-hosted","Linux","X64","proxmox-actions"]
+    #                          -> this repo's own pve-135-<repo> runner
+    #
+    # GitHub's cloud runners are the DEFAULT, whatever the variable holds (Justin,
+    # 2026-11-02: the hosted budget is raised, and the Proxmox boxes are for when hosted
+    # fails). Only one value sends a job to Proxmox: a JSON array of that repo's runner
+    # labels. Unset, empty, or anything that is not an array -> `ubuntu-latest`.
+    #
+    # That is why the brackets are checked before `fromJSON` is reached. The expression used
+    # to be `vars.AGENTS_SYNC_RUNNER && fromJSON(...)`, which throws on a hand-mangled value
+    # and fails the job. Failing loudly was a deliberate choice over an invisible queue, and
+    # it is still the wrong one here: a garbled variable is not a request to leave the
+    # default, so it should land on hosted rather than take the repo's CI down.
+    #
+    # Measured against GitHub's own expression engine (@actions/expressions 0.3.61):
+    # unset -> "ubuntu-latest", empty -> "ubuntu-latest", `self-hosted` (bare, no brackets)
+    # -> "ubuntu-latest", valid array -> the four labels. `&&` short-circuits (evaluator.js
+    # visitLogical breaks on a falsy left operand), so fromJSON is never reached unless the
+    # value both starts with `[` and ends with `]`.
+    #
+    # One case the brackets cannot catch: a value shaped like an array whose contents are not
+    # valid JSON (`[oops]`) still throws. Expression syntax has no way to validate JSON, so
+    # this narrows the failure from "any non-JSON string" to "a malformed array", and no
+    # further.
+    #
+    # `gh-tools agents-sync` / `agents-rollout` writes this variable where an ONLINE runner
+    # exists and deletes it otherwise. Under the policy above that writer is itself in
+    # question — pinning belongs to the failover router, not to a briefing refresh — and the
+    # expression here is deliberately safe either way: it honours a pin that is really there
+    # and ignores everything else.
+    #
+    # DO NOT replace this with the fork guard from test.yml:
+    #   ${{ github.event.pull_request.head.repo.full_name && … || fromJSON('[…]') }}
+    # On workflow_dispatch github.event.pull_request is null, so that guard is falsy and it
+    # becomes unconditional self-hosted in disguise — which is exactly what sits queued in
+    # a repo with no runner. Forks are handled by the `if:` below instead.
+    #
+    # A PR from a fork gets no secrets and a read-only token: it can neither pull the
+    # briefings nor push to the fork's branch. Skip it rather than fail it red.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ startsWith(vars.AGENTS_SYNC_RUNNER, '[') && endsWith(vars.AGENTS_SYNC_RUNNER, ']') && fromJSON(vars.AGENTS_SYNC_RUNNER) || 'ubuntu-latest' }}
+    steps:
+      # A branch name, not the bare SHA: a detached HEAD cannot push. On a pull request
+      # that is head_ref (the PR branch); ref_name there is "<n>/merge", which cannot push.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      # Mint a short-lived token from the colby-ecosystem GitHub App when this repo carries
+      # its App id. See the "PREFERRED" note in the header for why this exists: the App's own
+      # rate-limit budget is separate from jmbish04's personal 5,000/hour pool. The `owner` +
+      # `repositories` inputs are required because the App is installed on colby-ecosystem,
+      # which is NOT the repo this workflow runs in; without them the action scopes the token
+      # to the current repo and the fetch below 404s.
+      #
+      # v3 is the floating major, matching actions/checkout@v4 above; v3.3.0 was latest on
+      # 2026-11-18. The step is gated on the variable, so a repo without the App skips it.
+      - name: Mint a colby-ecosystem App token
+        id: app-token
+        if: ${{ vars.COLBY_ECOSYSTEM_APP_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.COLBY_ECOSYSTEM_APP_ID }}
+          private-key: ${{ secrets.COLBY_ECOSYSTEM_APP_KEY }}
+          owner: jmbish04
+          repositories: colby-ecosystem
+
+      - name: Pull the right-sized briefings
+        env:
+          # The minted App token when the step above ran; the PAT otherwise. A skipped step's
+          # output is the empty string, and GitHub's `'' || secrets.X` resolves to the PAT, so
+          # a repo with no COLBY_ECOSYSTEM_APP_ID set keeps working exactly as it did before.
+          # Dropping this fallback would empty GH_TOKEN in every un-migrated repo and break
+          # the whole fleet's sync at once — scripts/test-agents-sync-workflow plants that.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.COLBY_ECOSYSTEM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "COLBY_ECOSYSTEM_TOKEN is not set on this repo." >&2
+            echo "  gh secret set COLBY_ECOSYSTEM_TOKEN --repo ${{ github.repository }}" >&2
+            exit 1
+          fi
+          # The GitHub CLI is NOT on every runner, and this step used `gh api`. The pve-135
+          # box registers a fresh `pve-135-job-<id>` runner per job and those images ship no
+          # `gh`, while the persistent `pve-135-colby-orchestrator` on the same box does and
+          # answers the same labels — so the failure landed on whichever runner picked the
+          # job, which is why it read as intermittent. pull-agents itself was taught to fall
+          # back to curl for exactly this reason, but THIS step is what fetches pull-agents,
+          # so it died at line 7 before any fallback could help:
+          #   /home/runner/_work/_temp/....sh: line 7: gh: command not found
+          #   ##[error]Process completed with exit code 127
+          # Measured on jmbish04/core-template-cf-reui run 41379248409 (job 125066209203),
+          # 2026-11-02: every pull_request run there had failed that way since 2026-10-21,
+          # when the repo's AGENTS_SYNC_RUNNER variable was set.
+          #
+          # curl is on both runner images and on ubuntu-latest. `Accept: ...raw` returns the
+          # file's bytes, so there is no base64 hop to get wrong, and --fail-with-body turns
+          # an HTTP error into a non-zero exit instead of a file full of JSON.
+          curl -sSL --fail-with-body \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/jmbish04/colby-ecosystem/contents/scripts/pull-agents \
+            > /tmp/pull-agents
+          # A 200 that is not the script would otherwise be run by bash and could exit 0,
+          # which is a sync that reports success and changes nothing.
+          head -1 /tmp/pull-agents | grep -q '^#!/usr/bin/env bash' || {
+            echo "fetched pull-agents is not a bash script:" >&2
+            head -5 /tmp/pull-agents >&2
+            exit 1
+          }
+          bash /tmp/pull-agents --list
+          bash /tmp/pull-agents
+
+      - name: Commit if anything changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # -f: several repos .gitignore `.agents`, and `git add` then refuses the whole
+          # step with exit 1. These files are deliberately committed — a repo-local ignore
+          # must not silently defeat the sync. Measured 2026-09-28 on agentic-inbox and
+          # core-github-api: both runs died here with "paths are ignored by .gitignore".
+          git add -A -f .agents AGENTS.md
+          # pull-agents also writes scripts/, and lists everything it owns in MANAGED.
+          # `git add -A scripts` would sweep in whatever else the repo keeps there, so
+          # the manifest is the precise list — and pull-agents drops any line that is
+          # not a real path, because one stray line here fails the run in every repo.
+          if [ -s .agents/ecosystem/MANAGED ]; then
+            tr '\n' '\0' < .agents/ecosystem/MANAGED | xargs -0 git add -f --
+          fi
+          if git diff --cached --quiet; then
+            echo "briefings already current"
+            exit 0
+          fi
+          git commit -m "chore(agents): sync right-sized briefings from colby-ecosystem"
+          # One retry: the branch may have moved while this ran.
+          git push || { git pull --rebase -q && git push; }
+
+      # The D1 guard runs HERE, not only from package.json. pull-agents ships
+      # scripts/check-d1-not-inherited.mjs into every Worker repo, and a vendored script
+      # that nothing invokes is a scanner that prints nothing -- 41 repos vendored
+      # ui-guard.mjs and 10 ran it. Wiring it into each repo's package.json would mean
+      # this sync rewriting a repo's own manifest, where the script names differ in every
+      # repo; running it here costs one step and covers every repo on every PR.
+      #
+      # It runs AFTER the commit on purpose: a D1 problem must not also stop this repo
+      # getting its refreshed briefings, which are unrelated to it.
+      #
+      # It fails the job on purpose. A PR that binds another project's D1 database --
+      # core-guardian's production spend governor, which 13 default branches carried on
+      # 2026-11-02 -- should go red before anyone merges it.
+      #
+      # Only Worker repos have the file, so a Python repo skips by declaration: the step
+      # says which case it took. node is NOT optional where the file exists; every Worker
+      # repo here is a Node repo, and treating a missing node as a pass is how the guard
+      # would quietly stop reporting.
+      - name: Check this repo's D1 binding is its own
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/check-d1-not-inherited.mjs ]; then
+            echo "no scripts/check-d1-not-inherited.mjs — not a Worker repo, nothing to check"
+            exit 0
+          fi
+          command -v node >/dev/null 2>&1 || {
+            echo "scripts/check-d1-not-inherited.mjs is here but node is not on this runner," >&2
+            echo "so the D1 binding was NOT checked. Install node on the runner." >&2
+            exit 1
+          }
+          # The real check first, so a repo with a foreign binding gets the refusal that
+          # names the uuid rather than a self-check assertion about it. --self-check runs
+          # second and proves the rules can still fail after the sync moved the file.
+          node scripts/check-d1-not-inherited.mjs
+          node scripts/check-d1-not-inherited.mjs --self-check

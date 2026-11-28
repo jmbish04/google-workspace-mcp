@@ -219,6 +219,15 @@ export function stripForeignStamps(root: HTMLElement, keepUuid?: string): { refs
   return { refs, tags };
 }
 
+/** Remove this message's own leaf `ref:<uuid>` marker(s) so it can be re-stamped hidden. */
+function dropOwnRefMarker(root: HTMLElement, uuid: string): void {
+  for (const el of root.querySelectorAll("*")) {
+    if (el.childNodes.some(isElement)) continue;
+    const m = REF_TEXT_RE.exec(el.textContent.trim());
+    if (m && m[1].toLowerCase() === uuid.toLowerCase()) el.remove();
+  }
+}
+
 /* ------------------------------------------------------------ structure --- */
 
 /**
@@ -268,15 +277,63 @@ function attrsOf(el: HTMLElement): string {
     .join("");
 }
 
-/** Plain text → escaped paragraphs (blank line = new paragraph, newline = `<br>`). */
+type PlainTextListKind = "ul" | "ol";
+
+/** Return a plain-text line's list kind and escaped item text, if it has a supported marker. */
+function plainTextListItem(line: string): { kind: PlainTextListKind; item: string } | undefined {
+  const unordered = /^(?:[-*]|•)\s+(.+)$/.exec(line);
+  const ordered = /^\d+[.)]\s+(.+)$/.exec(line);
+  const match = unordered ?? ordered;
+  if (!match || !match[1].trim()) return undefined;
+  return { kind: unordered ? "ul" : "ol", item: escapeHtml(match[1].trim()) };
+}
+
+/**
+ * Convert plain text into escaped email blocks.
+ *
+ * Blank lines separate paragraphs, single newlines become `<br>`, and
+ * consecutive `- `, `* `, `• `, or numbered lines become semantic lists.
+ *
+ * @param text - Untrusted plain-text email input.
+ * @returns Escaped paragraph, unordered-list, and ordered-list HTML.
+ */
 export function textToHtml(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .split(/\n{2,}/)
-    .map((para) => para.trim())
-    .filter(Boolean)
-    .map((para) => `<p>${para.split("\n").map(escapeHtml).join("<br>")}</p>`)
-    .join("");
+  const blocks: string[] = [];
+  let paragraphLines: string[] = [];
+  let listKind: PlainTextListKind | undefined;
+  let listItems: string[] = [];
+
+  const flushParagraph = () => {
+    const paragraph = paragraphLines.join("\n").trim();
+    if (paragraph) blocks.push(`<p>${paragraph.split("\n").map(escapeHtml).join("<br>")}</p>`);
+    paragraphLines = [];
+  };
+  const flushList = () => {
+    if (listKind && listItems.length) {
+      blocks.push(
+        `<${listKind}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${listKind}>`,
+      );
+    }
+    listKind = undefined;
+    listItems = [];
+  };
+
+  for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
+    const listItem = plainTextListItem(line);
+    if (listItem) {
+      flushParagraph();
+      if (listKind && listKind !== listItem.kind) flushList();
+      listKind = listItem.kind;
+      listItems.push(listItem.item);
+    } else {
+      flushList();
+      if (line.trim()) paragraphLines.push(line);
+      else flushParagraph();
+    }
+  }
+  flushList();
+  flushParagraph();
+  return blocks.join("");
 }
 
 /* -------------------------------------------------------------- inline --- */
@@ -428,6 +485,10 @@ export function composeBody(
   const stripped = stripForeignStamps(root, opts.uuid);
   report.removedRefs = stripped.refs;
   report.removedAuthorTags = stripped.tags;
+  // Our OWN marker is dropped too and re-stamped once below. Carried through,
+  // toEmailBlocks retags its hidden <div> as an ordinary <p> and the recipient
+  // reads "ref:<uuid>" as body text — the draft-edit path (measured 2026-10-23).
+  if (opts.uuid) dropOwnRefMarker(root, opts.uuid);
 
   let inner = inlineGmailStyles(toEmailBlocks(root.toString()));
   if (opts.uuid && !inner.includes(`ref:${opts.uuid}`)) inner += refMarkerHtml(opts.uuid);

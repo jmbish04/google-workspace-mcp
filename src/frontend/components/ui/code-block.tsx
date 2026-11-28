@@ -36,6 +36,8 @@ export type CodeBlockFile = {
   language?: string;
   /** The raw source string. */
   code: string;
+  /** Custom text to copy to clipboard instead of `code`. */
+  copyText?: string;
 };
 
 export type CodeBlockProps = {
@@ -47,6 +49,8 @@ export type CodeBlockProps = {
   language?: string;
   /** Filename for the single-file form. */
   filename?: string;
+  /** Custom text to copy to clipboard instead of `code`. */
+  copyText?: string;
   /**
    * Multi-file form. When two or more files are supplied the header renders
    * filename tabs that switch the highlighted snippet.
@@ -65,7 +69,7 @@ export type CodeBlockProps = {
 /** Normalizes the single-file vs multi-file props into one list. */
 function resolveFiles(props: CodeBlockProps): CodeBlockFile[] {
   if (props.files && props.files.length > 0) return props.files;
-  return [{ code: props.code ?? "", language: props.language, filename: props.filename }];
+  return [{ code: props.code ?? "", copyText: props.copyText, language: props.language, filename: props.filename }];
 }
 
 /**
@@ -187,7 +191,7 @@ export function CodeBlock(props: CodeBlockProps) {
       {props.hideHeader ? null : isMultiFile ? (
         <HeaderBar
           language={activeFile.language}
-          copyText={activeFile.code}
+          copyText={activeFile.copyText ?? activeFile.code}
           left={
             <div className="-mb-px flex min-w-0 items-center gap-1 overflow-x-auto">
               {files.map((file, i) => (
@@ -211,7 +215,7 @@ export function CodeBlock(props: CodeBlockProps) {
       ) : (
         <HeaderBar
           language={activeFile.language}
-          copyText={activeFile.code}
+          copyText={activeFile.copyText ?? activeFile.code}
           left={
             activeFile.filename ? (
               <span className="truncate font-mono text-xs text-muted-foreground">
