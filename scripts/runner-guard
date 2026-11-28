@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+# colby-ecosystem: managed script — edit it in jmbish04/colby-ecosystem/templates/scripts/,
+# never here. `pull-agents` overwrites this file.
+"""runner-guard — keep GitHub Actions on the 3-tier failover router.
+
+    scripts/runner-guard check FILE...      exit 1 if a workflow hardcodes a self-hosted runner
+    scripts/runner-guard check --staged     same, over staged .github/workflows/*.y*ml (pre-commit)
+    scripts/runner-guard hook               Claude Code PreToolUse hook: JSON on stdin, exit 2 blocks
+
+THE RULE (AGENTS-github.md -> "GitHub Actions routing"). Every job reads its runner from a
+repo variable and falls back to a GitHub-hosted one, in the bracket-checked form:
+
+    runs-on: ${{ startsWith(vars.CI_RUNNER, '[') && endsWith(vars.CI_RUNNER, ']') && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
+
+agents-sync.yml uses vars.AGENTS_SYNC_RUNNER the same way. A literal `self-hosted` or
+`proxmox-actions` in runs-on traps the repo on the Proxmox runners even while Tier 1
+(ubuntu-latest) is the live default, and queues forever in a repo with no runner.
+
+The older unchecked form, `${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}`,
+is still accepted here so this guard does not fail repos that have not been swept. Do not
+write a new one: it throws on CI_RUNNER=self-hosted and queues forever on a non-array JSON
+value. See the comment above GOOD.
+
+THE BASH BAN (AGENTS-proxmox.md -> "Persistent runner services are banned"). Persistent
+`actions.runner.*.service` units on lxc/135 and lxc/139 put 137 idle .NET Runner.Listener
+processes on one 5400 RPM disk: 43% CPU I/O wait, load average 419. Self-hosted jobs run only
+as ephemeral containers through gh-runner-dispatch (:8791). `hook` blocks the commands that
+bring a persistent runner back.
+
+Stdlib only, Python 3.8+. Self-check: `python3 scripts/runner-guard --self-check`.
+"""
+import json
+import re
+import shlex
+import subprocess
+import sys
+
+VARS = ("CI_RUNNER", "AGENTS_SYNC_RUNNER")
+
+# TWO router forms are recognised, and the FIRST is the one to write.
+#
+#   bracket-checked (MANDATED, AGENTS-github.md -> "GitHub Actions routing")
+#       ${{ startsWith(vars.X, '[') && endsWith(vars.X, ']') && fromJSON(vars.X) || 'ubuntu-latest' }}
+#   unchecked (LEGACY, still accepted so this guard does not fail older repos)
+#       ${{ vars.X && fromJSON(vars.X) || 'ubuntu-latest' }}
+#
+# Why the brackets matter, and why the legacy form is not merely a style choice: the
+# unchecked form is safe only while the variable holds a JSON array or an empty string.
+# `CI_RUNNER=self-hosted` makes a bare fromJSON THROW, and `CI_RUNNER={"a":1}` makes
+# runs-on the label `Object`, so the job QUEUES FOREVER against a label no runner carries
+# - a gate that reports nothing, which is worse than one that goes red. The variable is
+# written by gh-actions-failover-router, not by hand, so a malformed write arrives during
+# a Tier 1 outage: the one moment CI has to work.
+#
+# This guard previously knew only the legacy form, and its own docstring and FIX text told
+# developers to write it. Measured 2026-11-08 on colby-maestro: 5 of 6 workflow files
+# carried the legacy shape while AGENTS-github.md mandated the bracket-checked one. The
+# written rule and the shipped enforcement disagreed, and the shipped one wins in practice.
+_VAR_ALT = "|".join(VARS)
+GOOD = re.compile(
+    r"^\$\{\{\s*(?:"
+    # bracket-checked, mandated
+    r"startsWith\(\s*vars\.(%s)\s*,\s*'\['\s*\)\s*&&\s*endsWith\(\s*vars\.\1\s*,\s*'\]'\s*\)"
+    r"\s*&&\s*fromJSON\(\s*vars\.\1\s*\)"
+    r"|"
+    # unchecked, legacy
+    r"vars\.(%s)\s*&&\s*fromJSON\(\s*vars\.\2\s*\)"
+    r")\s*\|\|\s*'ubuntu-latest'\s*\}\}$" % (_VAR_ALT, _VAR_ALT)
+)
+BAD_LABEL = re.compile(r"self-hosted|proxmox-actions", re.I)
+WORKFLOW = re.compile(r"(^|/)(\.github/workflows|templates)/[^/]+\.ya?ml$")
+RUNS_ON = re.compile(r"^(\s*)(?:-\s+)?runs-on:\s*(.*)$")
+
+
+def _bracket(var, fallback="ubuntu-latest", json_var=None):
+    """The mandated runs-on value, as a string, for the self-check to assert GOOD against."""
+    return (
+        "${{ startsWith(vars.%s, '[') && endsWith(vars.%s, ']') && fromJSON(vars.%s) || '%s' }}"
+        % (var, var, json_var or var, fallback)
+    )
+
+
+BRACKET_VALUE = _bracket("CI_RUNNER")
+BRACKET_SYNC_VALUE = _bracket("AGENTS_SYNC_RUNNER")
+LEGACY_VALUE = "${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}"
+# Brackets present, but fromJSON reads a DIFFERENT variable than the one tested.
+MISMATCHED_VALUE = _bracket("CI_RUNNER", json_var="AGENTS_SYNC_RUNNER")
+# Brackets present, but Tier 1 is not the fallback, so the routing is still wrong.
+SELF_HOSTED_FALLBACK_VALUE = _bracket("CI_RUNNER", fallback="self-hosted")
+
+FIX = """\
+Use the failover-router form (Tier 1 = ubuntu-latest unless the repo variable says otherwise):
+
+    runs-on: ${{ startsWith(vars.CI_RUNNER, '[') && endsWith(vars.CI_RUNNER, ']') && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
+
+The brackets are tested BEFORE fromJSON is reached, and that is the point: CI_RUNNER=self-hosted
+makes a bare fromJSON throw, and CI_RUNNER={"a":1} makes runs-on the label `Object`, which
+queues forever against a label no runner carries.
+
+(agents-sync.yml: vars.AGENTS_SYNC_RUNNER.) Set the variable to
+["self-hosted","Linux","X64","proxmox-actions"] to fail over; clear it to return to Tier 1.
+Detail: AGENTS-github.md -> "GitHub Actions routing"."""
+
+
+def _strip(line):
+    return re.sub(r"\s+#.*$", "", line).rstrip()
+
+
+def violations(text):
+    """[(line_no, value)] for every runs-on that names a self-hosted label outside the router form."""
+    lines = text.splitlines()
+    found = []
+    for i, raw in enumerate(lines):
+        m = RUNS_ON.match(_strip(raw)) if not raw.lstrip().startswith("#") else None
+        if not m:
+            continue
+        indent, value = len(m.group(1)), m.group(2).strip()
+        j = i + 1
+        while j < len(lines):  # block-style value: lines indented deeper than the key
+            nxt = lines[j]
+            if nxt.strip() and not nxt.lstrip().startswith("#"):
+                if len(nxt) - len(nxt.lstrip()) <= indent:
+                    break
+                value += " " + _strip(nxt).strip()
+            j += 1
+        if GOOD.match(value):
+            continue
+        if BAD_LABEL.search(value):
+            found.append((i + 1, value))
+    return found
+
+
+def report(path, text):
+    return "\n".join("%s:%d: runs-on hardcodes a self-hosted runner: %s" % (path, n, v)
+                     for n, v in violations(text))
+
+
+# ---- Bash ban ---------------------------------------------------------------------------
+SVC_UNIT = re.compile(r"actions\.runner\.")
+SVC_VERB = re.compile(r"\b(enable|start|restart|unmask)\b")
+SVC_SH = re.compile(r"svc\.sh\s+(install|start)\b")
+# Where the banned hosts show up in a command: pct exec 135, lxc/139, their IPs, their names.
+TARGET = re.compile(r"\bpct\s+(exec|enter|push)\s+(135|139)\b|lxc/13[59]\b|192\.168\.1\.(197|208)\b|github-actions-[12]\b")
+
+BASH_MSG = """\
+BLOCKED: persistent GitHub runner services are banned on lxc/135 and lxc/139.
+137 idle .NET Runner.Listener processes on one 5400 RPM HDD (vg_sda) caused 43% CPU I/O wait
+and load average 419. Self-hosted jobs run only as ephemeral containers
+(docker run --rm ... --ephemeral) started by gh-runner-dispatch on :8791. Nothing to install:
+set the repo variable CI_RUNNER and the dispatcher handles it. Detail: AGENTS-proxmox.md."""
+
+
+# Commands that only print or record text. A commit message, PR body or grep pattern that
+# MENTIONS a banned command is not running it (the first version of this guard blocked the
+# commit that documented it). ssh, pct, bash -c, sh and the like are not in this set, so
+# their quoted payload is still scanned.
+TEXT_ONLY = {"git", "gh", "grep", "egrep", "fgrep", "rg", "echo", "printf", "cat", "sed", "awk",
+             "diff", "head", "tail", "less", "man", "ls", "wc"}
+WRAPPERS = {"sudo", "exec", "command", "time", "env", "nohup", "builtin"}
+
+
+def _commands(cmd):
+    """Split into simple commands outside quotes; each is its token list. None if unparseable."""
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    out, cur = [], []
+    try:
+        for tok in lex:
+            if tok and set(tok) <= set(";&|()"):
+                out.append(cur)
+                cur = []
+            else:
+                cur.append(tok)
+    except ValueError:
+        return None
+    return out + [cur]
+
+
+def _violates(text):
+    if "systemctl" in text and SVC_UNIT.search(text) and SVC_VERB.search(text):
+        return True
+    if re.search(r"actions\.runner\..*\.service.*\b(enable|start)\b", text):
+        return True
+    return bool(SVC_SH.search(text) and TARGET.search(text))
+
+
+def bash_violation(cmd):
+    cmds = _commands(cmd)
+    if cmds is None:  # unbalanced quotes: cannot tell text from command, so scan it all
+        return _violates(cmd)
+    for toks in cmds:
+        words = [t for t in toks if not re.match(r"^\w+=", t)]
+        while words and words[0] in WRAPPERS:
+            words = words[1:]
+        if not words or words[0].rsplit("/", 1)[-1] in TEXT_ONLY:
+            continue
+        if _violates(" ".join(toks)):
+            return True
+    return False
+
+
+# ---- hook -------------------------------------------------------------------------------
+def hook(payload):
+    tool, inp = payload.get("tool_name", ""), payload.get("tool_input") or {}
+    if tool == "Bash":
+        return BASH_MSG if bash_violation(inp.get("command", "")) else ""
+    if tool not in ("Write", "Edit", "MultiEdit"):
+        return ""
+    path = inp.get("file_path", "")
+    if not WORKFLOW.search(path):
+        return ""
+    if tool == "Write":
+        texts = [inp.get("content", "")]
+    elif tool == "Edit":
+        texts = [inp.get("new_string", "")]
+    else:
+        texts = [e.get("new_string", "") for e in inp.get("edits", [])]
+    found = "\n".join(r for r in (report(path, t) for t in texts) if r)
+    return found + "\n" + FIX if found else ""
+
+
+def staged_files():
+    out = subprocess.run(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+                         capture_output=True, text=True, check=True).stdout.split("\n")
+    return [f for f in out if f and WORKFLOW.search(f)]
+
+
+def read_staged(path):  # the staged blob, not the working tree: that is what gets committed
+    return subprocess.run(["git", "show", ":" + path], capture_output=True, text=True, check=True).stdout
+
+
+def self_check():
+    bad = "jobs:\n  a:\n    runs-on: [self-hosted, Linux, X64, proxmox-actions]\n"
+    good = "jobs:\n  a:\n    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}\n"
+    bracket = "jobs:\n  a:\n    runs-on: " + BRACKET_VALUE + "\n"
+    cases = [
+        ("flow list", violations(bad), True),
+        ("scalar", violations("    runs-on: self-hosted\n"), True),
+        ("block list", violations("    runs-on:\n      - self-hosted\n      - linux\n"), True),
+        ("labels map", violations("    runs-on:\n      labels: proxmox-actions\n"), True),
+        ("router fallback to self-hosted", violations("    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'self-hosted' }}\n"), True),
+        ("router form (legacy, still accepted)", violations(good), False),
+        ("sync router form (legacy)", violations("runs-on: ${{ vars.AGENTS_SYNC_RUNNER && fromJSON(vars.AGENTS_SYNC_RUNNER) || 'ubuntu-latest' }}\n"), False),
+        ("bracket-checked form", violations(bracket), False),
+
+        # GOOD is asserted DIRECTLY here, not through violations(), and that distinction
+        # is the whole reason these five exist. violations() only ever reports a value
+        # that BAD_LABEL matches, so a bracket-checked form with an `ubuntu-latest`
+        # fallback comes back clean whether GOOD recognises it or not. Four cases written
+        # through violations() passed with the bracket branch of GOOD deliberately broken
+        # - pre-satisfied fixtures, testing nothing. These fail when that branch breaks.
+        ("GOOD accepts the mandated bracket-checked form", GOOD.match(BRACKET_VALUE), True),
+        ("GOOD accepts the bracket-checked sync form", GOOD.match(BRACKET_SYNC_VALUE), True),
+        ("GOOD still accepts the legacy form", GOOD.match(LEGACY_VALUE), True),
+        # The backreference must refuse a bracket test on one variable and a fromJSON on
+        # another, or a copy-paste across two variables reads as correct.
+        ("GOOD refuses mismatched variables", GOOD.match(MISMATCHED_VALUE), False),
+        ("GOOD refuses a self-hosted fallback", GOOD.match(SELF_HOSTED_FALLBACK_VALUE), False),
+
+        # And the same mismatch end to end: GOOD declines it, so BAD_LABEL gets to see
+        # the self-hosted fallback and report it.
+        ("bracket-checked but falls back to self-hosted", violations(
+            "    runs-on: " + SELF_HOSTED_FALLBACK_VALUE + "\n"), True),
+        ("comment mentioning self-hosted", violations("# runs-on: self-hosted is banned\n    runs-on: ubuntu-latest  # not self-hosted\n"), False),
+        ("matrix", violations("    runs-on: ${{ matrix.os }}\n"), False),
+        ("svc enable", bash_violation("ssh Proxmox 'systemctl enable --now actions.runner.foo.bar.service'"), True),
+        ("svc.sh on 135", bash_violation("pct exec 135 -- ./svc.sh install"), True),
+        ("svc.sh elsewhere", bash_violation("cd ~/dev-runner && ./svc.sh install"), False),
+        ("unrelated systemctl", bash_violation("systemctl enable nginx"), False),
+        ("commit message that mentions it", bash_violation("cd r && git commit -m 'blocks systemctl enable actions.runner.x.service'"), False),
+        ("grep for it", bash_violation("grep -rn 'systemctl enable actions.runner.' docs"), False),
+        ("echo of it", bash_violation("echo 'pct exec 135 -- ./svc.sh install'"), False),
+        ("banned command after a safe one", bash_violation("git log && ssh P 'systemctl start actions.runner.q.service'"), True),
+        ("bash -c payload", bash_violation("bash -c 'systemctl enable actions.runner.q.service'"), True),
+        ("env prefix + sudo", bash_violation("FOO=1 sudo systemctl enable actions.runner.q.service"), True),
+        ("unbalanced quote still scanned", bash_violation("ssh P \"systemctl enable actions.runner.q.service"), True),
+    ]
+    for name, got, want in cases:
+        if bool(got) != want:
+            sys.exit("self-check FAILED: %s (want %s, got %r)" % (name, want, got))
+    print("runner-guard self-check: %d cases ok" % len(cases))
+
+
+def main(argv):
+    if argv[:1] == ["--self-check"]:
+        return self_check()
+    if argv[:1] == ["hook"]:
+        try:
+            msg = hook(json.load(sys.stdin))
+        except (ValueError, AttributeError):  # unparseable payload: never wedge the agent
+            return 0
+        if msg:
+            sys.stderr.write(msg + "\n")
+            return 2
+        return 0
+    if argv[:1] == ["check"]:
+        paths = argv[1:]
+        staged = paths == ["--staged"]
+        if staged:
+            paths = staged_files()
+        if not paths and not staged:
+            sys.exit("usage: runner-guard check FILE... | --staged")
+        bad = []
+        for p in paths:
+            text = read_staged(p) if staged else open(p, encoding="utf-8").read()
+            r = report(p, text)
+            if r:
+                bad.append(r)
+        if bad:
+            sys.stderr.write("\n".join(bad) + "\n" + FIX + "\n")
+            return 1
+        return 0
+    sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
