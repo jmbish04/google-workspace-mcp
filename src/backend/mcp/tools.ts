@@ -55,7 +55,6 @@ import { putPreview } from "@/backend/docs/preview-store";
 import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
 import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
 import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/schema";
-import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
 import { buildFolderTree } from "@/backend/drive/folder-tree";
 import {
   walkFolder,
@@ -129,10 +128,12 @@ import {
 } from "@/backend/workspace-events/subscription-manager";
 import { getDb } from "@/db";
 
-import { GoogleApiError } from "./googleClient";
+import { isRevisionConflict } from "@/backend/docs/batch-errors";
 import type { AssetAction } from "./logging";
 
 import { runCodeMode, runCodeModeSearch } from "./code-mode";
+import { docsEngineTools } from "./docs-engine-tools";
+import { acct, asUser } from "./tool-common";
 import { documentAgentTools } from "./document-tools";
 import { AppsScriptService } from "./services/appsscript";
 import { CalendarService } from "./services/calendar";
@@ -175,17 +176,6 @@ const codeModeResultSchema = z.object({
   logs: z.array(z.string()),
 });
 
-/** Optional impersonation field mixed into every tool schema. */
-const asUser = {
-  as_user: z
-    .string()
-    .email()
-    .optional()
-    .describe(
-      "Optional email to act as. Uses a stored per-user OAuth refresh token for that account when one exists (works for consumer/standalone mailboxes), otherwise falls back to Workspace domain-wide delegation. Omit to use the signed-in account (default).",
-    ),
-};
-
 /**
  * One-or-more email recipients: a single/comma-separated string OR an array of
  * addresses. Normalize with {@link addrList} before handing to the Gmail service
@@ -198,24 +188,6 @@ function addrList(v: string | string[] | undefined): string | undefined {
   if (v == null) return undefined;
   const s = Array.isArray(v) ? v.filter(Boolean).join(", ") : v;
   return s.trim() ? s : undefined;
-}
-
-/**
- * Whether a batchUpdate failure was Google rejecting a pinned
- * `writeControl.requiredRevisionId` (the document moved between the read and
- * the write) rather than some other 400 (e.g. a genuinely malformed request).
- *
- * @param err - the value caught from `DocsService.batchUpdate`
- * @returns true only for a `GoogleApiError` whose body carries `error.status === "FAILED_PRECONDITION"`
- */
-function isRevisionConflict(err: unknown): boolean {
-  if (!(err instanceof GoogleApiError) || err.status !== 400) return false;
-  try {
-    const parsed = JSON.parse(err.body) as { error?: { status?: string } };
-    return parsed.error?.status === "FAILED_PRECONDITION";
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -304,10 +276,6 @@ const richBody = {
     ),
 };
 
-/** Resolve the account ref for a call: the as_user email, else the signed-in sub (OAuth-only). */
-export function acct(sub: string, a: { as_user?: string }): string {
-  return a.as_user ? a.as_user.trim().toLowerCase() : sub;
-}
 
 /**
  * Read-only, account-scoped tools eligible for mandatory cross-account "shadow
@@ -4495,88 +4463,8 @@ export const TOOLS: ToolDef[] = [
       return { result: { folderId, filesIndexed: results.length, skipped, results } };
     },
   },
-  // ---- Docs batchUpdate engine (braille replay) -------------------------
-  {
-    name: "docs_get_json",
-    description:
-      "Return a Google Doc's raw structure JSON (the 'braille'), tab-aware (includeTabsContent=true). This is the exact shape docs_batch_update replays. Defaults to the service-account identity; as_user overrides.",
-    inputSchema: z.object({ documentId: z.string(), ...asUser }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      return { result: await new DocsService(env, account).getRaw(a.documentId) };
-    },
-  },
-  {
-    name: "docs_batch_update",
-    description:
-      "Apply an array of native Google Docs API requests to a document atomically — the full grammar: headings, tables, colors, spacing, page/section breaks, tabs (addDocumentTab), landscape (updateSectionStyle flipPageOrientation), styled tables. Each request carries its own tabId/location. This is how stored braille is replayed into docs. Defaults to the service-account identity; as_user overrides.",
-    inputSchema: z.object({
-      documentId: z.string(),
-      requests: z.array(z.record(z.string(), z.unknown())),
-      ...asUser,
-    }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const result = await new DocsService(env, account).batchUpdate(a.documentId, a.requests);
-      return {
-        result,
-        asset: {
-          assetType: "doc",
-          googleId: a.documentId,
-          action: "modify",
-          detail: { requests: a.requests.length },
-        },
-      };
-    },
-  },
-  {
-    name: "table_factory",
-    description:
-      "Insert a themed table into a Google Doc from a 2D array (first row = header). Header row gets a dark-blue fill with white bold centered text; every cell gets a 1pt border. Handles the index math (fills bottom-up, styles after re-fetch). Defaults to the signed-in account.",
-    inputSchema: z.object({
-      documentId: z.string(),
-      data: z.array(z.array(z.string())),
-      theme: z.string().optional(),
-      tabId: z.string().optional(),
-      ...asUser,
-    }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const docs = new DocsService(env, account);
-      const rows = a.data.length;
-      const cols = Math.max(0, ...a.data.map((r: string[]) => r.length));
-      if (!rows || !cols) throw new Error("data must be a non-empty 2D array");
-
-      await docs.batchUpdate(a.documentId, [
-        {
-          insertTable: {
-            rows,
-            columns: cols,
-            endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {},
-          },
-        },
-      ]);
-      let table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
-      if (!table) throw new Error("Could not locate the inserted table.");
-      await docs.batchUpdate(a.documentId, buildFillRequests(table, a.data, a.tabId));
-      table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
-      if (!table) throw new Error("Table not found after fill.");
-      await docs.batchUpdate(
-        a.documentId,
-        buildTableStyleRequests(table, a.data, a.theme ?? "default", a.tabId),
-      );
-
-      return {
-        result: { documentId: a.documentId, rows, cols },
-        asset: {
-          assetType: "doc",
-          googleId: a.documentId,
-          action: "modify",
-          detail: { table: `${rows}x${cols}` },
-        },
-      };
-    },
-  },
+  // ---- Docs batchUpdate engine (docs-engine-tools.ts) -------------------
+  ...docsEngineTools,
   {
     name: "code_block_factory",
     description:

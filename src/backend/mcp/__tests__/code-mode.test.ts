@@ -105,3 +105,12 @@ describe("buildSearchModule", () => {
     expect(mod).toContain("return codemode.tools().filter(t => t.name.includes('gmail'));");
   });
 });
+
+describe("apiGuide docs helpers (B4)", () => {
+  it("documents the sandbox docs helper object", () => {
+    const guide = apiGuide();
+    for (const name of ["docs.outline(", "docs.find(", "docs.cellIndex(", "docs.afterTable(", "docs.finalCellStarts("]) {
+      expect(guide).toContain(name);
+    }
+  });
+});

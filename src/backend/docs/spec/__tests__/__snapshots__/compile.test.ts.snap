@@ -1,0 +1,2250 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`compileSpec (C2) > 1 list: one createParagraphBullets over the items; list items keep the list indentation 1`] = `
+{
+  "insertedLength": 7,
+  "layout": {
+    "end": 9,
+    "paragraphs": [
+      {
+        "end": 5,
+        "start": 1,
+        "text": "One",
+      },
+      {
+        "end": 9,
+        "start": 5,
+        "text": "Two",
+      },
+    ],
+    "tables": [],
+  },
+  "requests": [
+    {
+      "insertText": {
+        "location": {
+          "index": 1,
+          "tabId": "t.0",
+        },
+        "text": "One
+Two",
+      },
+    },
+    {
+      "createParagraphBullets": {
+        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+        "range": {
+          "endIndex": 9,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 9,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 9,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+  ],
+  "spec": {
+    "blocks": [
+      {
+        "items": [
+          "One",
+          "Two",
+        ],
+        "type": "list",
+      },
+    ],
+    "document": {},
+    "styles": {},
+    "theme": {
+      "colors": {},
+      "fonts": {},
+    },
+  },
+  "stats": {
+    "createParagraphBullets": 1,
+    "insertText": 1,
+    "updateParagraphStyle": 1,
+    "updateTextStyle": 1,
+  },
+}
+`;
+
+exports[`compileSpec (C2) > 1 paragraph: insert without a final newline (it merges into the empty paragraph), then style 1`] = `
+{
+  "insertedLength": 5,
+  "layout": {
+    "end": 7,
+    "paragraphs": [
+      {
+        "end": 7,
+        "start": 1,
+        "text": "Hello",
+      },
+    ],
+    "tables": [],
+  },
+  "requests": [
+    {
+      "insertText": {
+        "location": {
+          "index": 1,
+          "tabId": "t.0",
+        },
+        "text": "Hello",
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 7,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 7,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": true,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+  ],
+  "spec": {
+    "blocks": [
+      {
+        "bold": true,
+        "text": "Hello",
+        "type": "paragraph",
+      },
+    ],
+    "document": {},
+    "styles": {},
+    "theme": {
+      "colors": {},
+      "fonts": {},
+    },
+  },
+  "stats": {
+    "insertText": 1,
+    "updateParagraphStyle": 1,
+    "updateTextStyle": 1,
+  },
+}
+`;
+
+exports[`compileSpec (C2) > 1x1 table: gap paragraph, empty table, fill, trailing paragraph 1`] = `
+{
+  "insertedLength": 7,
+  "layout": {
+    "end": 9,
+    "paragraphs": [
+      {
+        "end": 2,
+        "gap": true,
+        "start": 1,
+        "text": "",
+      },
+      {
+        "cell": [
+          0,
+          0,
+        ],
+        "end": 7,
+        "start": 5,
+        "table": 0,
+        "text": "A",
+      },
+      {
+        "end": 9,
+        "gap": true,
+        "start": 8,
+        "text": "",
+      },
+    ],
+    "tables": [
+      {
+        "cells": [
+          [
+            {
+              "end": 7,
+              "start": 4,
+            },
+          ],
+        ],
+        "columns": 1,
+        "end": 8,
+        "rows": 1,
+        "start": 2,
+      },
+    ],
+  },
+  "requests": [
+    {
+      "insertTable": {
+        "columns": 1,
+        "location": {
+          "index": 1,
+          "tabId": "t.0",
+        },
+        "rows": 1,
+      },
+    },
+    {
+      "insertText": {
+        "location": {
+          "index": 5,
+          "tabId": "t.0",
+        },
+        "text": "A",
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 100,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 2,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 7,
+          "startIndex": 5,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 100,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 9,
+          "startIndex": 8,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 2,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "fontSize": {
+            "magnitude": 1,
+            "unit": "PT",
+          },
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 7,
+          "startIndex": 5,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 9,
+          "startIndex": 8,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "fontSize": {
+            "magnitude": 1,
+            "unit": "PT",
+          },
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTableColumnProperties": {
+        "fields": "widthType",
+        "tableColumnProperties": {
+          "widthType": "EVENLY_DISTRIBUTED",
+        },
+        "tableStartLocation": {
+          "index": 2,
+          "tabId": "t.0",
+        },
+      },
+    },
+  ],
+  "spec": {
+    "blocks": [
+      {
+        "columns": 1,
+        "rows": [
+          {
+            "cells": [
+              {
+                "blocks": [
+                  {
+                    "text": "A",
+                    "type": "paragraph",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        "type": "table",
+      },
+    ],
+    "document": {},
+    "styles": {},
+    "theme": {
+      "colors": {},
+      "fonts": {},
+    },
+  },
+  "stats": {
+    "insertTable": 1,
+    "insertText": 1,
+    "updateParagraphStyle": 3,
+    "updateTableColumnProperties": 1,
+    "updateTextStyle": 3,
+  },
+}
+`;
+
+exports[`compileSpec (C2) > 1x2 table with nested lists in a cell 1`] = `
+{
+  "insertedLength": 29,
+  "layout": {
+    "end": 31,
+    "paragraphs": [
+      {
+        "end": 2,
+        "gap": true,
+        "start": 1,
+        "text": "",
+      },
+      {
+        "cell": [
+          0,
+          0,
+        ],
+        "end": 10,
+        "start": 5,
+        "table": 0,
+        "text": "Left",
+      },
+      {
+        "cell": [
+          0,
+          0,
+        ],
+        "end": 12,
+        "start": 10,
+        "table": 0,
+        "text": "x",
+      },
+      {
+        "cell": [
+          0,
+          0,
+        ],
+        "end": 14,
+        "start": 12,
+        "table": 0,
+        "text": "y",
+      },
+      {
+        "cell": [
+          0,
+          1,
+        ],
+        "end": 19,
+        "start": 15,
+        "table": 0,
+        "text": "one",
+      },
+      {
+        "cell": [
+          0,
+          1,
+        ],
+        "end": 23,
+        "start": 19,
+        "table": 0,
+        "text": "two",
+      },
+      {
+        "cell": [
+          0,
+          1,
+        ],
+        "end": 29,
+        "start": 23,
+        "table": 0,
+        "text": "three",
+      },
+      {
+        "end": 31,
+        "gap": true,
+        "start": 30,
+        "text": "",
+      },
+    ],
+    "tables": [
+      {
+        "cells": [
+          [
+            {
+              "end": 14,
+              "start": 4,
+            },
+            {
+              "end": 29,
+              "start": 14,
+            },
+          ],
+        ],
+        "columns": 2,
+        "end": 30,
+        "rows": 1,
+        "start": 2,
+      },
+    ],
+  },
+  "requests": [
+    {
+      "insertTable": {
+        "columns": 2,
+        "location": {
+          "index": 1,
+          "tabId": "t.0",
+        },
+        "rows": 1,
+      },
+    },
+    {
+      "insertText": {
+        "location": {
+          "index": 7,
+          "tabId": "t.0",
+        },
+        "text": "one
+two
+three",
+      },
+    },
+    {
+      "insertText": {
+        "location": {
+          "index": 5,
+          "tabId": "t.0",
+        },
+        "text": "Left
+x
+y",
+      },
+    },
+    {
+      "createParagraphBullets": {
+        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+        "range": {
+          "endIndex": 14,
+          "startIndex": 10,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "createParagraphBullets": {
+        "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+        "range": {
+          "endIndex": 29,
+          "startIndex": 15,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 100,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 2,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": true,
+          "lineSpacing": 115,
+          "namedStyleType": "HEADING_3",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 10,
+          "startIndex": 5,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 14,
+          "startIndex": 10,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 29,
+          "startIndex": 15,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 100,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 31,
+          "startIndex": 30,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 2,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "fontSize": {
+            "magnitude": 1,
+            "unit": "PT",
+          },
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 14,
+          "startIndex": 5,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 29,
+          "startIndex": 15,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 31,
+          "startIndex": 30,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "fontSize": {
+            "magnitude": 1,
+            "unit": "PT",
+          },
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTableCellStyle": {
+        "fields": "borderTop,borderBottom,borderLeft,borderRight",
+        "tableCellStyle": {
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderLeft": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderRight": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+        },
+        "tableRange": {
+          "columnSpan": 1,
+          "rowSpan": 1,
+          "tableCellLocation": {
+            "columnIndex": 0,
+            "rowIndex": 0,
+            "tableStartLocation": {
+              "index": 2,
+              "tabId": "t.0",
+            },
+          },
+        },
+      },
+    },
+    {
+      "updateTableCellStyle": {
+        "fields": "borderTop,borderBottom,borderLeft,borderRight",
+        "tableCellStyle": {
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderLeft": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderRight": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+        },
+        "tableRange": {
+          "columnSpan": 1,
+          "rowSpan": 1,
+          "tableCellLocation": {
+            "columnIndex": 1,
+            "rowIndex": 0,
+            "tableStartLocation": {
+              "index": 2,
+              "tabId": "t.0",
+            },
+          },
+        },
+      },
+    },
+    {
+      "updateTableColumnProperties": {
+        "columnIndices": [
+          1,
+        ],
+        "fields": "widthType",
+        "tableColumnProperties": {
+          "widthType": "EVENLY_DISTRIBUTED",
+        },
+        "tableStartLocation": {
+          "index": 2,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateTableColumnProperties": {
+        "columnIndices": [
+          0,
+        ],
+        "fields": "widthType,width",
+        "tableColumnProperties": {
+          "width": {
+            "magnitude": 150,
+            "unit": "PT",
+          },
+          "widthType": "FIXED_WIDTH",
+        },
+        "tableStartLocation": {
+          "index": 2,
+          "tabId": "t.0",
+        },
+      },
+    },
+  ],
+  "spec": {
+    "blocks": [
+      {
+        "cell": {
+          "borders": "none",
+        },
+        "columns": [
+          {
+            "width": 150,
+          },
+          {},
+        ],
+        "rows": [
+          {
+            "cells": [
+              {
+                "blocks": [
+                  {
+                    "level": 3,
+                    "text": "Left",
+                    "type": "heading",
+                  },
+                  {
+                    "items": [
+                      "x",
+                      "y",
+                    ],
+                    "type": "list",
+                  },
+                ],
+              },
+              {
+                "blocks": [
+                  {
+                    "items": [
+                      "one",
+                      "two",
+                      "three",
+                    ],
+                    "ordered": true,
+                    "type": "list",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        "type": "table",
+      },
+    ],
+    "document": {},
+    "styles": {},
+    "theme": {
+      "colors": {},
+      "fonts": {},
+    },
+  },
+  "stats": {
+    "createParagraphBullets": 2,
+    "insertTable": 1,
+    "insertText": 2,
+    "updateParagraphStyle": 5,
+    "updateTableCellStyle": 2,
+    "updateTableColumnProperties": 2,
+    "updateTextStyle": 4,
+  },
+}
+`;
+
+exports[`compileSpec (C2) > 1x3 table: fills the last cell first at the measured empty indices 1`] = `
+{
+  "insertedLength": 16,
+  "layout": {
+    "end": 18,
+    "paragraphs": [
+      {
+        "end": 2,
+        "gap": true,
+        "start": 1,
+        "text": "",
+      },
+      {
+        "cell": [
+          0,
+          0,
+        ],
+        "end": 7,
+        "start": 5,
+        "table": 0,
+        "text": "a",
+      },
+      {
+        "cell": [
+          0,
+          1,
+        ],
+        "end": 11,
+        "start": 8,
+        "table": 0,
+        "text": "bb",
+      },
+      {
+        "cell": [
+          0,
+          2,
+        ],
+        "end": 16,
+        "start": 12,
+        "table": 0,
+        "text": "ccc",
+      },
+      {
+        "end": 18,
+        "gap": true,
+        "start": 17,
+        "text": "",
+      },
+    ],
+    "tables": [
+      {
+        "cells": [
+          [
+            {
+              "end": 7,
+              "start": 4,
+            },
+            {
+              "end": 11,
+              "start": 7,
+            },
+            {
+              "end": 16,
+              "start": 11,
+            },
+          ],
+        ],
+        "columns": 3,
+        "end": 17,
+        "rows": 1,
+        "start": 2,
+      },
+    ],
+  },
+  "requests": [
+    {
+      "insertTable": {
+        "columns": 3,
+        "location": {
+          "index": 1,
+          "tabId": "t.0",
+        },
+        "rows": 1,
+      },
+    },
+    {
+      "insertText": {
+        "location": {
+          "index": 9,
+          "tabId": "t.0",
+        },
+        "text": "ccc",
+      },
+    },
+    {
+      "insertText": {
+        "location": {
+          "index": 7,
+          "tabId": "t.0",
+        },
+        "text": "bb",
+      },
+    },
+    {
+      "insertText": {
+        "location": {
+          "index": 5,
+          "tabId": "t.0",
+        },
+        "text": "a",
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 100,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 2,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 7,
+          "startIndex": 5,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 11,
+          "startIndex": 8,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 115,
+          "namedStyleType": "NORMAL_TEXT",
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 16,
+          "startIndex": 12,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateParagraphStyle": {
+        "fields": "namedStyleType,alignment,lineSpacing,spaceAbove,spaceBelow,keepWithNext,keepLinesTogether,indentEnd,borderBottom,borderTop,pageBreakBefore,shading,indentStart,indentFirstLine",
+        "paragraphStyle": {
+          "alignment": "START",
+          "borderBottom": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "borderTop": {
+            "color": {
+              "color": {
+                "rgbColor": {
+                  "blue": 1,
+                  "green": 1,
+                  "red": 1,
+                },
+              },
+            },
+            "dashStyle": "SOLID",
+            "padding": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+            "width": {
+              "magnitude": 0,
+              "unit": "PT",
+            },
+          },
+          "indentEnd": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentFirstLine": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "indentStart": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "keepLinesTogether": false,
+          "keepWithNext": false,
+          "lineSpacing": 100,
+          "namedStyleType": "NORMAL_TEXT",
+          "pageBreakBefore": false,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+          "spaceBelow": {
+            "magnitude": 0,
+            "unit": "PT",
+          },
+        },
+        "range": {
+          "endIndex": 18,
+          "startIndex": 17,
+          "tabId": "t.0",
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 2,
+          "startIndex": 1,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "fontSize": {
+            "magnitude": 1,
+            "unit": "PT",
+          },
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 7,
+          "startIndex": 5,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 11,
+          "startIndex": 8,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 16,
+          "startIndex": 12,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTextStyle": {
+        "fields": "weightedFontFamily,fontSize,bold,italic,underline,strikethrough,smallCaps,foregroundColor,backgroundColor,baselineOffset,link",
+        "range": {
+          "endIndex": 18,
+          "startIndex": 17,
+          "tabId": "t.0",
+        },
+        "textStyle": {
+          "baselineOffset": "NONE",
+          "bold": false,
+          "fontSize": {
+            "magnitude": 1,
+            "unit": "PT",
+          },
+          "italic": false,
+          "smallCaps": false,
+          "strikethrough": false,
+          "underline": false,
+        },
+      },
+    },
+    {
+      "updateTableColumnProperties": {
+        "fields": "widthType",
+        "tableColumnProperties": {
+          "widthType": "EVENLY_DISTRIBUTED",
+        },
+        "tableStartLocation": {
+          "index": 2,
+          "tabId": "t.0",
+        },
+      },
+    },
+  ],
+  "spec": {
+    "blocks": [
+      {
+        "columns": 3,
+        "rows": [
+          {
+            "cells": [
+              {
+                "blocks": [
+                  {
+                    "text": "a",
+                    "type": "paragraph",
+                  },
+                ],
+              },
+              {
+                "blocks": [
+                  {
+                    "text": "bb",
+                    "type": "paragraph",
+                  },
+                ],
+              },
+              {
+                "blocks": [
+                  {
+                    "text": "ccc",
+                    "type": "paragraph",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        "type": "table",
+      },
+    ],
+    "document": {},
+    "styles": {},
+    "theme": {
+      "colors": {},
+      "fonts": {},
+    },
+  },
+  "stats": {
+    "insertTable": 1,
+    "insertText": 3,
+    "updateParagraphStyle": 5,
+    "updateTableColumnProperties": 1,
+    "updateTextStyle": 5,
+  },
+}
+`;

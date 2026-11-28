@@ -1,3 +1,34 @@
+<!-- BEGIN colby-ecosystem: managed by pull-agents, do not edit inside this block -->
+## Machine-wide agent briefings (synced — do not edit here)
+
+Pulled from `jmbish04/colby-ecosystem` by `.github/workflows/agents-sync.yml`, right-sized to this
+repo's stack. Read them before your first load-bearing change; where they and the
+notes below this block disagree, they win. Edit them in `jmbish04/colby-ecosystem`, never here.
+
+@.agents/ecosystem/AGENTS.md
+@.agents/ecosystem/AGENTS-maestro.md
+@.agents/ecosystem/AGENTS-github.md
+@.agents/ecosystem/AGENTS-cloudflare-workers.md
+@.agents/ecosystem/AGENTS-frontend.md
+@.agents/ecosystem/AGENTS-python.md
+@.agents/ecosystem/AGENTS-mcp.md
+@.agents/ecosystem/AGENTS-ai.md
+
+The scripts in `scripts/` carrying a `colby-ecosystem: managed script` banner come from there too.
+Use them rather than writing another: `scripts/gh.mjs` is the GitHub entry point
+and wraps the `gh-tools` CLI, which already solves the auth this machine trips on.
+`scripts/run.sh` is the verbose step runner: source it and put every step through
+`run`, so a script that fails on its first line says so instead of reading as a
+success. `bash scripts/run.sh --self-check` proves its own checks can fail.
+
+Work is tracked in **colby-maestro** (`https://colby-maestro.hacolby.workers.dev/mcp`,
+bearer `$(tokens show WORKER_API_KEY --value-only)`) — never in this repo and never
+in colby-ecosystem, which only stores config. Refresh this block with
+`.agents/ecosystem/pull-agents`.
+
+Before a step these briefings do not plainly cover — a credential, a host, a database, a deploy, a backup — search **playbooks** on colby-maestro first, on a half-remembered fragment rather than a title, and say in the worklog what you found; write one when you had to work something out that nobody had written down (`.agents/ecosystem/AGENTS.md`, "Write down what you worked out").
+<!-- END colby-ecosystem -->
+
 # AGENTS
 
 - At the start of every turn, use the `cloudflare-docs` MCP server to verify Cloudflare assumptions, architecture, and deprecations before writing or changing code.
@@ -71,6 +102,49 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   a year of full Workspace access. Google sign-in stays open to any host: it binds the
   signer's own identity. Failed passcodes are `console.warn`ed (host + client_id only).
   Live check: `scripts/auth-check.mjs`.
+- **Batch-first Docs engine** (Maestro plan `5c89f396506d`; tools in
+  `mcp/docs-engine-tools.ts`, pure helpers in `docs/`): every engine write goes through
+  `docs/batch-runner.ts#runBatch` → `writeControl` passed through, new `revisionId`
+  returned, Google failures typed by `docs/batch-errors.ts` (`REVISION_CONFLICT`,
+  `INVALID_REQUEST`+`requestIndex`, `UNKNOWN_REQUEST_TYPE`, `WRITE_MODE_REFUSED`,
+  `GOOGLE_ERROR`; Google's text kept in `googleMessage`) — never a raw 400.
+  `docs_get_json` leads with `summary` (`docs/doc-summary.ts`: revisionId, documentMode,
+  flattened tabs). `docs_set_page_setup` (`docs/page-setup.ts`) always sets `tabId`
+  (margins fail without it) and names only the set fields (never `"*"`).
+  `asUser`/`acct` live in `mcp/tool-common.ts` so spread-in tool modules avoid a
+  circular value import of `tools.ts`.
+  Positions: `docs_outline` (elements with range/style/bullet/table+cell/preview,
+  per-tab endIndex, `format:"lines"`) and `docs_find` (all matches, bold true|false|
+  "mixed", `inSuggestion`, never across a non-text element or cell). All pure index
+  code lives in ONE module, `docs/index-core.ts` (`positions.ts`/`outline.ts`/`find.ts`
+  and `locate.ts#flattenTabs|foldCase` re-export it): `code_mode_run` gets it as the
+  frozen `docs` object by SOURCE TEXT (`mcp/sandbox-docs-helpers.ts`), so every function
+  there must be a top-level `function` using only its params + same-file functions + inline
+  anonymous callbacks (a cross-module call compiles to `__vite_ssr_import_0__.x`, which
+  the sandbox lacks; a guard test enforces this). Table formulas were measured live:
+  table at `i` starts `i+1`, empty cell (r,c) para `i+4+r(2C+1)+2c`, next insertAt
+  `i+3+R(2C+1)`. `docs/__fixtures__/reference-resume.structure.json` is the real
+  2026-10-08 reference resume structure (final positions) used by tests.
+  Layout spec → batch: `docs_build_from_spec` (`mcp/docs-spec-tools.ts`) validates
+  `docs/spec/schema.ts` (theme tokens + `styles` presets, checked with Zod paths), compiles
+  with `docs/spec/compile.ts` (forward structure inserts → cell fills LAST to FIRST →
+  bullets → styles at FINAL positions, identical ranges merged), sends ONE batch pinned to
+  the read revision, re-reads and (insert mode) checks the text before/after is unchanged.
+  Text before a table omits its last newline (the table's own newline ends it); only a table
+  first/after a table/after a page break gets an empty gap paragraph. Every text/paragraph
+  style names ALL managed fields, so inserts never inherit heading/bullet/link style.
+  Google refuses `pageBreakBefore` on table-cell paragraphs — `requests.ts` leaves it out
+  there. The golden resume spec (`docs/spec/golden/resume.ts`) compiles to 181 requests
+  whose layout equals the reference exactly. `table_factory` = `docs/table-spec.ts` spec +
+  same compiler, appended at the tab end in 1 batch (old `table-format.ts` kept for tests).
+- **Dev Worker**: `pnpm run deploy:dev` → `google-workspace-mcp-dev` (`env.dev` in
+  `wrangler.jsonc`, dev-only D1/KV/R2, no crons, no Hyperdrive/Vectorize, SELF_RPC →
+  dev). Check with `pnpm run deploy:dev:dry-run` first. Never deploy prod from an agent.
+  Google OAuth for dev: `pnpm run oauth:dev-setup` (`scripts/setup-dev-oauth.mjs`) checks
+  both client files (gcloud project/APIs, live token + redirect probes), then
+  `wrangler secret bulk --env dev` sets GOOGLE_CLIENT_ID/SECRET + the per-account pair.
+  It refuses any non-`-dev` Worker. Normal web clients have no redirect-URI API: the
+  script opens the Console page and re-checks.
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →
