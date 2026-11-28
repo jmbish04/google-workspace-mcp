@@ -16,6 +16,8 @@
  *   table/cell and a text preview (`docs/outline.ts`).
  * - `docs_find` — every match of a literal string with its range, bold flag
  *   and suggestion flag (`docs/find.ts`).
+ * - `docs_build_from_spec` — a layout spec compiled to one guarded batch
+ *   (`docs-spec-tools.ts`, `docs/spec/`).
  *
  * Registered in `TOOLS` (spread in from `tools.ts`); reachable in the code-mode
  * sandbox as `await tools.<name>(args)`.
@@ -37,6 +39,7 @@ import { outlineDoc, outlineLines } from "@/backend/docs/outline";
 import { resolveTabId, summarizeDoc } from "@/backend/docs/doc-summary";
 import { buildPageSetupRequest, hasPageSetup, PAGE_SIZES, readPageSetup, type PageSetup } from "@/backend/docs/page-setup";
 import { flattenTabs } from "@/backend/docs/locate";
+import { docsSpecTools } from "@/backend/mcp/docs-spec-tools";
 import { DocsService } from "@/backend/mcp/services/docs";
 import { acct, asUser } from "@/backend/mcp/tool-common";
 import type { ToolDef } from "@/backend/mcp/tools";
@@ -198,4 +201,5 @@ export const docsEngineTools: ToolDef[] = [
       return { result: { summary: summarizeDoc(raw), count: matches.length, matches } };
     },
   },
+  ...docsSpecTools,
 ];

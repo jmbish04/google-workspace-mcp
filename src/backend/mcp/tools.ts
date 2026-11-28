@@ -55,7 +55,6 @@ import { putPreview } from "@/backend/docs/preview-store";
 import { lintDoc, buildQcFixRequests } from "@/backend/docs/qc";
 import { analyzePages, collectHeadings, pdfToPages } from "@/backend/docs/render-qc";
 import { RECIPES, getRequestTypes, type SchemaSurface } from "@/backend/docs/schema";
-import { buildFillRequests, buildTableStyleRequests } from "@/backend/docs/table-format";
 import { buildFolderTree } from "@/backend/drive/folder-tree";
 import {
   walkFolder,
@@ -80,11 +79,15 @@ import {
   type DraftWithHistory,
 } from "@/backend/gmail/draft-studio";
 import { captureAccount, captureAllAccounts } from "@/backend/gmail/capture-service";
+import { addNote, deleteNote, listNotes, updateNote } from "@/backend/gmail/gmail-notes";
+import * as ingest from "@/backend/gmail/ingest-admin";
+import { getMessageIndexed, getThreadIndexed, syncThread } from "@/backend/gmail/thread-index";
 import { composeBody, inlineGmailStyles } from "@/backend/gmail/compose";
 import { isValidCron } from "@/backend/gmail/cron";
 import { seedBuiltinTemplates } from "@/backend/gmail/email-templates";
 import { parseRawMessage } from "@/backend/gmail/parse-message";
 import { searchGmail } from "@/backend/gmail/search-service";
+import { toAttachmentSpecs } from "@/backend/gmail/outgoing-attachments";
 import {
   syncLabels,
   syncLabelsForAllAccounts,
@@ -231,11 +234,27 @@ const richBody = {
           as: z.enum(["attach", "link", "inline"]).optional(),
           contentId: z.string().optional(),
         }),
-      ]),
+        z.object({
+          url: z.string().describe("https URL the Worker fetches (public hosts only; private/loopback/metadata are refused)"),
+          filename: z.string().optional(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+        z.object({
+          r2Key: z.string().describe("object key in the R2_FILES_BUCKET bucket"),
+          filename: z.string().optional(),
+          mimeType: z.string().optional(),
+          as: z.enum(["attach", "link", "inline"]).optional(),
+          contentId: z.string().optional(),
+        }),
+      ]).refine((a) => ["driveFileId", "blob", "url", "r2Key"].filter((k) => k in a).length === 1, {
+        message: "each attachment needs exactly one of driveFileId | blob | url | r2Key",
+      }),
     )
     .optional()
     .describe(
-      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
+      "Attachments, each ONE of: { driveFileId } (attach the Drive file's bytes), { blob, filename, mimeType } (attach inline base64), { url, filename? } (Worker fetches an https URL; SSRF-guarded), { r2Key, filename? } (read from the R2 files bucket), { driveFileId, as:'link' } (force a shared Drive link instead of attaching), or as:'inline' + contentId for an INLINE image embedded in the HTML body — reference it as <img src=\"cid:<contentId>\">. Processed in order; when the cumulative encoded size would exceed Gmail's 25 MiB cap (~18 MiB raw), overflow FILE attachments auto-fall back to 'anyone with link' Drive links (inline images never fall back). The tool result's `attachments` report says how each was delivered (attached | linked-by-request | linked-over-limit) with the link URL.",
     ),
   driveIds: z
     .array(z.string())
@@ -2491,6 +2510,73 @@ export const TOOLS: ToolDef[] = [
       };
     },
   },
+  {
+    name: "gmail_get_draft",
+    description:
+      "Read an existing Gmail DRAFT by id — the counterpart to gmail_update_draft, and the read half of editing a draft (e.g. adding a Cc). Returns draftId, messageId (changes on every edit; draftId does not), threadId, headers { from, to[], cc[], bcc[], subject, inReplyTo?, references? }, the hidden reference `uuid` plus `refCount` (should be 1), the stored `html` and `text` bodies, and an `attachments` manifest of { attachmentId, filename, mimeType, size, disposition ('attachment'|'inline'), contentId? }. Use it before gmail_update_draft to see the current recipients, subject, body and attachment set.",
+    inputSchema: z.object({
+      draftId: z.string().describe("Gmail draft id (from gmail_create_draft, gmail_draft_html, or a drafts listing)."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      return { result: await new GmailService(env, acct(sub, a)).getDraft(a.draftId) };
+    },
+  },
+  {
+    name: "gmail_update_draft",
+    description:
+      "Non-destructively edit an existing Gmail DRAFT in place — the fix for 'I can't add a Cc to a draft'. Gmail has no partial update, so this reads the draft, merges your changes, and rewrites it while PRESERVING its threadId, In-Reply-To and References (it stays in its thread) and its existing attachments (inline images keep rendering). The body ALWAYS rebuilds through the house Gmail HTML standard — send `markdown`/`html`/`text` and never hand-write inline CSS — and the draft keeps its single hidden reference id. To add a Cc without re-typing the whole list, pass `addCc` (de-duplicated). `mode` controls the body edit: replace (default), append, or prepend. Omit the body to change only headers. Returns { draftId, messageId, threadId, uuid, attachments, body report }.",
+    inputSchema: z.object({
+      draftId: z.string().describe("Gmail draft id to edit (from gmail_get_draft / gmail_create_draft)."),
+      mode: z
+        .enum(["replace", "append", "prepend"])
+        .optional()
+        .describe("How to apply the body content: replace (default), append, or prepend. Ignored when no body is supplied."),
+      text: z.string().optional().describe("Plain-text body. Escaped, never parsed as HTML."),
+      to: recipients.optional().describe("REPLACE the To header (array or comma-separated). Omit to keep the current To."),
+      subject: z.string().optional().describe("REPLACE the Subject. Omit to keep the current subject."),
+      addCc: z
+        .array(z.string())
+        .optional()
+        .describe("ADD these to Cc, de-duplicated case-insensitively against the current Cc. The one-call way to add a Cc — no need to re-send the whole list."),
+      addBcc: z.array(z.string()).optional().describe("ADD these to Bcc, de-duplicated case-insensitively."),
+      removeAttachments: z
+        .array(z.string())
+        .optional()
+        .describe("Drop a currently-attached file by its filename or (for an inline image) its contentId. Everything not listed is retained."),
+      ...richBody,
+      cc: recipients
+        .optional()
+        .describe("REPLACE the Cc header (array or comma-separated). To ADD one address without re-sending the list, use addCc instead. Omit to keep the current Cc."),
+      bcc: recipients.optional().describe("REPLACE the Bcc header. To ADD without re-sending the list, use addBcc. Omit to keep the current Bcc."),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const hasBody = [a.markdown, a.html, a.text].some((b) => b != null && b !== "");
+      const addedSpecs = toAttachmentSpecs({ attachments: a.attachments, driveIds: a.driveIds, blobs: a.blobs });
+      const d = await new GmailService(env, acct(sub, a)).updateDraft(a.draftId, {
+        body: hasBody || a.mode ? { mode: a.mode, markdown: a.markdown, html: a.html, text: a.text } : undefined,
+        to: addrList(a.to),
+        cc: addrList(a.cc),
+        bcc: addrList(a.bcc),
+        addCc: a.addCc,
+        addBcc: a.addBcc,
+        subject: a.subject,
+        attachments: addedSpecs.length ? addedSpecs : undefined,
+        removeAttachments: a.removeAttachments,
+      });
+      return {
+        result: d,
+        asset: {
+          assetType: "gmail",
+          googleId: d.draftId,
+          title: a.subject,
+          action: "modify",
+          detail: { draft: true, threadId: d.threadId, uuid: d.uuid },
+        },
+      };
+    },
+  },
   // ---- Draft studio (revise on the worker page, not in Gmail) -----------
   {
     name: "email_draft_studio_create",
@@ -3050,88 +3136,248 @@ export const TOOLS: ToolDef[] = [
   {
     name: "gmail_get_message",
     description:
-      "Read one Gmail message by id, returning its headers, body, and links. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes).",
+      "Read one Gmail message by id, returning its headers, body, and links. Served from the worker's Postgres cache once stored (`cached:true`; a message never changes after it is sent), fetched from Gmail and stored the first time. Carries any `notes` written on the message or its attachments. `bodyFormat` picks the body representation: 'text' (decoded plain text — smallest, the DEFAULT), 'html' (raw HTML body), or 'rfc' (the full raw RFC822 message). Whichever body you pick, the result ALWAYS includes `urls`: an array of { label, href } extracted from the message (anchor text + bare links, deduped). Attachments are surfaced as a metadata-only manifest (no Drive writes) unless includeAttachmentText:true, which uploads them to Drive and adds { driveId, doc_text, sha256_hash } per attachment exactly as gmail_get_thread does (PDF/image OCR, Office to Markdown, csv/txt/json decoded, forwarded .eml headers+body).",
     inputSchema: z.object({
       id: z.string(),
       bodyFormat: z
         .enum(["text", "html", "rfc"])
         .optional()
         .describe("Body representation to return. Default 'text' (most efficient)."),
+      includeAttachmentText: z
+        .boolean()
+        .optional()
+        .describe("Extract doc_text for each attachment (writes to Drive). Default false."),
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const gmail = new GmailService(env, acct(sub, a));
-      const raw = await gmail.getRawMessage(a.id);
-      const format = (a.bodyFormat ?? "text") as BodyFormat;
-      const rfc = format === "rfc" ? await gmail.getMessageRfc(a.id) : undefined;
-      const parsed = parseRawMessage(raw);
-      const { body, bodyFormat, urls } = extractBody((raw as any).payload, format, rfc);
-      return {
-        result: {
-          id: parsed.id,
-          threadId: parsed.threadId,
-          subject: parsed.subject,
-          snippet: parsed.snippet,
-          internalDate: parsed.internalDate,
-          labelIds: parsed.labelIds,
-          contacts: parsed.contacts,
-          body,
-          bodyFormat,
-          urls,
-          attachments: attachmentManifest((raw as any).payload),
+      const ref = acct(sub, a);
+      const result = await getMessageIndexed(
+        env,
+        {
+          gmail: new GmailService(env, ref),
+          ref,
+          accountKey: a.as_user ?? sub,
+          email: await accountEmailFor(env, ref),
         },
-      };
+        {
+          id: a.id,
+          format: (a.bodyFormat ?? "text") as BodyFormat,
+          includeAttachmentText: a.includeAttachmentText === true,
+        },
+      );
+      return { result };
     },
   },
   {
     name: "gmail_get_thread",
     description:
-      "Get a full Gmail thread (all messages) by threadId — best for feeding conversation context to the model. Every message carries a `body` (decoded plain text), a `urls` array of { label, href } extracted from that message, and an attachments[] manifest of { filename, mimeType, size, attachmentId }. By default each message's attachments are ALSO uploaded to the acting account's Drive (thread-subject folder under 'MCP Email Threads') and the manifest is enriched with { driveId, doc_text, sha256_hash }. Pass includeAttachments:false to skip all Drive writes and return the metadata-only manifest. For a single message in a specific body format (html/rfc), use gmail_get_message.",
+      "Get a full Gmail thread (all messages) by threadId, best for feeding conversation context to the model. Served from the worker's Postgres cache: Gmail is asked only for the thread's message list, and only messages we have not stored yet are fetched in full (a message never changes after it is sent). The result carries `index` ({ gmailCount, indexedCount, newlyIndexed, pending, complete }): complete:true means every message Gmail reports is stored and returned. Every message has `body` (plain text), `from`/`to`/`cc`/`date`, `urls` ({ label, href }), `attachments[]` and `notes` (what earlier sessions concluded about it; read these before re-deriving anything). Each attachment has an `id` (use it with gmail_note_add) and `status`. Thread-level `notes` sit at the top. By default attachments are uploaded to the acting account's Drive ONCE (thread-subject folder under 'MCP Email Threads') and registered, so later calls reuse the Drive file: stored attachments carry { driveId, driveUrl, doc_text, sha256_hash }. Pass includeAttachments:false to skip Drive. A failed upload lands in `attachmentErrors` and never hides the thread. Drafts are read live (`draft:true`, never cached). For a message in html/rfc form use gmail_get_message",
     inputSchema: z.object({
       threadId: z.string(),
       includeAttachments: z.boolean().optional(),
       ...asUser,
     }),
     async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const gmail = new GmailService(env, account);
-      const thread = await gmail.getThread(a.threadId);
-      // Decoded plain-text body + extracted { label, href } links for a message.
-      const bodyOf = (m: (typeof thread.messages)[number]) => {
-        const { body, urls } = extractBody((m as any).payload, "text");
-        return { body, urls };
-      };
-      if (a.includeAttachments === false) {
-        // Still surface attachment metadata (count/filename/mimeType/size) for
-        // every message — cheap payload walk, no Drive writes — so the model is
-        // never blind to attachments just because byte-fetching was skipped.
-        const messages = thread.messages.map((m) => ({
-          ...m,
-          ...bodyOf(m),
-          attachments: attachmentManifest(m.payload),
-        }));
-        return { result: { ...thread, messages } };
-      }
-
-      const accountKey = a.as_user ?? sub;
-      const subject =
-        thread.messages.map((m) => subjectFromPayload(m.payload)).find(Boolean) ?? "(no subject)";
-      // Resolve the thread folder once (on the first message that has attachments)
-      // and reuse it for the rest, so the whole thread lands in one folder.
-      let folderId: string | undefined;
-      const messages = [];
-      for (const m of thread.messages) {
-        const up = await uploadMessageAttachments(env, account, accountKey, {
-          messageId: m.id,
-          payload: m.payload,
-          subject,
-          folderId,
-          gmail,
-        });
-        if (up.folderId) folderId = up.folderId;
-        messages.push({ ...m, ...bodyOf(m), attachments: up.attachments });
-      }
-      return { result: { ...thread, messages, attachmentsFolderId: folderId ?? null } };
+      const ref = acct(sub, a);
+      const result = await getThreadIndexed(
+        env,
+        {
+          gmail: new GmailService(env, ref),
+          ref,
+          accountKey: a.as_user ?? sub,
+          email: await accountEmailFor(env, ref),
+        },
+        { threadId: a.threadId, includeAttachments: a.includeAttachments !== false },
+      );
+      return { result };
+    },
+  },
+  {
+    name: "gmail_thread_sync",
+    description:
+      "Reconcile one thread into the worker's Postgres cache without reading it back: asks Gmail for the thread's message list, stores every message we do not hold yet, and reports `{ gmailCount, indexedCount, newlyIndexed, pending, complete }` so you can confirm the cache holds every message Gmail does (e.g. 15 of 15). gmail_get_thread does this automatically on every call; use this to check completeness, or to finish a very long thread (at most 60 messages are fetched per call, `pending` says how many remain). Attachments are not uploaded here.",
+    inputSchema: z.object({ threadId: z.string(), ...asUser }),
+    async run({ env, sub }, a) {
+      const ref = acct(sub, a);
+      const { status } = await syncThread(env, new GmailService(env, ref), await accountEmailFor(env, ref), a.threadId);
+      return { result: { threadId: a.threadId, ...status } };
+    },
+  },
+  {
+    name: "gmail_note_add",
+    description:
+      "Write a note on a Gmail thread, one of its messages, or one of its attachments, so the interpretation is saved and the next read of the thread shows it instead of redoing the analysis. Name the target with ONE of: `attachmentId` (attachments[].id from gmail_get_thread / gmail_get_message), `messageId`, or `threadId`. Any target can hold many notes; every note is its own row with a created time. Use it for conclusions, not summaries: who said what, what a message commits them to, what is still owed. Notes come back inline on gmail_get_thread / gmail_get_message (`notes` on the thread, each message and each attachment) and via gmail_notes_list.",
+    inputSchema: z.object({
+      note: z.string().min(1).max(20_000),
+      threadId: z.string().optional(),
+      messageId: z.string().optional(),
+      attachmentId: z.coerce.number().int().positive().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const ref = acct(sub, a);
+      const ctx = { env, gmail: new GmailService(env, ref), email: await accountEmailFor(env, ref), author: a.as_user ?? sub };
+      return { result: await addNote(ctx, a) };
+    },
+  },
+  {
+    name: "gmail_notes_list",
+    description:
+      "List saved Gmail notes. Filter by `threadId` (every note in the thread: thread, message and attachment level), `messageId` (that message's notes plus its attachments'), `attachmentId`, and/or `query` (case-insensitive text match, e.g. 'certificate of insurance'). With no target, returns the newest notes across the mailbox. Each note says its `scope` (thread | message | attachment).",
+    inputSchema: z.object({
+      threadId: z.string().optional(),
+      messageId: z.string().optional(),
+      attachmentId: z.coerce.number().int().positive().optional(),
+      query: z.string().optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      const notes = await listNotes(env, await accountEmailFor(env, acct(sub, a)), a);
+      return { result: { count: notes.length, notes } };
+    },
+  },
+  {
+    name: "gmail_note_update",
+    description: "Replace the text of one saved Gmail note (by the note `id` from gmail_notes_list or gmail_note_add).",
+    inputSchema: z.object({ id: z.coerce.number().int().positive(), note: z.string().min(1).max(20_000), ...asUser }),
+    async run({ env, sub }, a) {
+      const row = await updateNote(env, await accountEmailFor(env, acct(sub, a)), a.id, a.note);
+      if (!row) throw new Error(`no note ${a.id} in this mailbox`);
+      return { result: row };
+    },
+  },
+  {
+    name: "gmail_note_delete",
+    description: "Delete one saved Gmail note by its `id`. The thread, message and attachment it was on are untouched.",
+    inputSchema: z.object({ id: z.coerce.number().int().positive(), ...asUser }),
+    async run({ env, sub }, a) {
+      const deleted = await deleteNote(env, await accountEmailFor(env, acct(sub, a)), a.id);
+      return { result: { id: a.id, deleted } };
+    },
+  },
+  {
+    name: "mail_search",
+    description:
+      "Search the embedded mail store (message bodies and extracted attachment text) by meaning AND keywords. Returns the best chunks with the Gmail message/thread ids, subject and attachment filename. Only mail that an enabled ingest rule routed to embedding is searchable. Pass `projectKey` to search only threads linked to a project (e.g. a contractor dispute). Embeddings go through Core Guardian.",
+    inputSchema: z.object({ query: z.string().min(2), limit: z.number().int().min(1).max(50).optional(), projectKey: z.string().optional(), ...asUser }),
+    async run({ env }, a) {
+      return { result: { hits: await ingest.searchMail(env, a) } };
+    },
+  },
+  {
+    name: "ingest_status",
+    description: "Counts for the Postgres mail store (threads, messages, people, attachments, distinct files, chunks, notes, rules), the job queue by kind/status, and each mailbox's poll cursor. Use it to see whether indexing is keeping up.",
+    inputSchema: z.object({ ...asUser }),
+    async run({ env }) {
+      return { result: await ingest.ingestStatus(env) };
+    },
+  },
+  {
+    name: "ingest_rules_list",
+    description: "List the routing rules that decide what mail gets indexed (like Gmail filters). Each has conditions (from, to, subjectContains, bodyContains, labels: all must hold; entries inside a list are ORed) and actions (embed, extractAttachments, projectKey, addLabels).",
+    inputSchema: z.object({ ...asUser }),
+    async run({ env }) {
+      return { result: { rules: await ingest.listRules(env) } };
+    },
+  },
+  {
+    name: "ingest_rule_upsert",
+    description: "Create a routing rule, or update one when `id` is given. Example: { name: 'Mr. Roofing', target: 'gmail', conditions: { from: ['iproofing.com'] }, actions: { embed: true, extractAttachments: true, projectKey: 'mr-roofing' } }. A rule with no conditions is refused. `projectKey` must already exist (project_upsert).",
+    inputSchema: z.object({
+      id: z.number().int().positive().optional(),
+      name: z.string().min(1),
+      target: z.enum(["gmail", "drive"]).default("gmail"),
+      priority: z.number().int().optional(),
+      enabled: z.boolean().optional(),
+      projectKey: z.string().optional(),
+      conditions: z.record(z.string(), z.unknown()),
+      actions: z.record(z.string(), z.unknown()),
+      ...asUser,
+    }),
+    async run({ env }, a) {
+      return { result: await ingest.upsertRule(env, a) };
+    },
+  },
+  {
+    name: "ingest_rule_delete",
+    description: "Delete one routing rule by id. Mail already indexed stays indexed.",
+    inputSchema: z.object({ id: z.number().int().positive(), ...asUser }),
+    async run({ env }, a) {
+      return { result: { id: a.id, deleted: await ingest.deleteRule(env, a.id) } };
+    },
+  },
+  {
+    name: "project_upsert",
+    description: "Create or update a project by `key` (e.g. 'mr-roofing'): name, `background` (the story so far) and `context` (free-form JSON: contract amount, parties, deadlines). Threads, people and tasks attach to it.",
+    inputSchema: z.object({
+      key: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]*$/),
+      name: z.string().min(1),
+      description: z.string().optional(),
+      background: z.string().optional(),
+      context: z.record(z.string(), z.unknown()).optional(),
+      status: z.enum(["active", "archived", "on_hold"]).optional(),
+      ...asUser,
+    }),
+    async run({ env }, a) {
+      return { result: await ingest.upsertProject(env, a) };
+    },
+  },
+  {
+    name: "project_get",
+    description: "Read one project with its background, context, tasks, linked Gmail threads and people. Read this first when resuming work on a matter.",
+    inputSchema: z.object({ key: z.string(), ...asUser }),
+    async run({ env }, a) {
+      const p = await ingest.getProject(env, a.key);
+      if (!p) throw new Error(`no project ${a.key}`);
+      return { result: p };
+    },
+  },
+  {
+    name: "project_list",
+    description: "List projects with open-task and linked-thread counts.",
+    inputSchema: z.object({ ...asUser }),
+    async run({ env }) {
+      return { result: { projects: await ingest.listProjects(env) } };
+    },
+  },
+  {
+    name: "project_link",
+    description: "Link a stored Gmail thread (`threadId`) and/or a person (`personEmail`, with `roleNote` like 'roofing contractor') to a project. The thread must already be stored: call gmail_get_thread first.",
+    inputSchema: z.object({ projectKey: z.string(), threadId: z.string().optional(), personEmail: z.string().email().optional(), roleNote: z.string().optional(), ...asUser }),
+    async run({ env, sub }, a) {
+      return { result: await ingest.linkProject(env, { ...a, email: await accountEmailFor(env, acct(sub, a)) }) };
+    },
+  },
+  {
+    name: "task_add",
+    description: "Add a task to a project: what has to be done. Optionally `sourceMessageId` (a stored Gmail message id) records the message that caused it. `dueAt` is ISO-8601.",
+    inputSchema: z.object({
+      projectKey: z.string(),
+      title: z.string().min(1),
+      description: z.string().optional(),
+      priority: z.string().optional(),
+      dueAt: z.string().optional(),
+      sourceMessageId: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env, sub }, a) {
+      return { result: await ingest.addTask(env, { ...a, email: await accountEmailFor(env, acct(sub, a)) }) };
+    },
+  },
+  {
+    name: "task_update",
+    description: "Change a task's status (todo | in_progress | blocked | done | cancelled), title, description or priority.",
+    inputSchema: z.object({
+      id: z.number().int().positive(),
+      status: z.enum(["todo", "in_progress", "blocked", "done", "cancelled"]).optional(),
+      title: z.string().optional(),
+      description: z.string().optional(),
+      priority: z.string().optional(),
+      ...asUser,
+    }),
+    async run({ env }, a) {
+      return { result: await ingest.updateTask(env, a.id, a) };
     },
   },
   {
@@ -4219,54 +4465,6 @@ export const TOOLS: ToolDef[] = [
   },
   // ---- Docs batchUpdate engine (docs-engine-tools.ts) -------------------
   ...docsEngineTools,
-  {
-    name: "table_factory",
-    description:
-      "Insert a themed table into a Google Doc from a 2D array (first row = header). Header row gets a dark-blue fill with white bold centered text; every cell gets a 1pt border. Handles the index math (fills bottom-up, styles after re-fetch). Defaults to the signed-in account.",
-    inputSchema: z.object({
-      documentId: z.string(),
-      data: z.array(z.array(z.string())),
-      theme: z.string().optional(),
-      tabId: z.string().optional(),
-      ...asUser,
-    }),
-    async run({ env, sub }, a) {
-      const account = acct(sub, a);
-      const docs = new DocsService(env, account);
-      const rows = a.data.length;
-      const cols = Math.max(0, ...a.data.map((r: string[]) => r.length));
-      if (!rows || !cols) throw new Error("data must be a non-empty 2D array");
-
-      await docs.batchUpdate(a.documentId, [
-        {
-          insertTable: {
-            rows,
-            columns: cols,
-            endOfSegmentLocation: a.tabId ? { tabId: a.tabId } : {},
-          },
-        },
-      ]);
-      let table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
-      if (!table) throw new Error("Could not locate the inserted table.");
-      await docs.batchUpdate(a.documentId, buildFillRequests(table, a.data, a.tabId));
-      table = findLastTable(await docs.getRaw(a.documentId), a.tabId);
-      if (!table) throw new Error("Table not found after fill.");
-      await docs.batchUpdate(
-        a.documentId,
-        buildTableStyleRequests(table, a.data, a.theme ?? "default", a.tabId),
-      );
-
-      return {
-        result: { documentId: a.documentId, rows, cols },
-        asset: {
-          assetType: "doc",
-          googleId: a.documentId,
-          action: "modify",
-          detail: { table: `${rows}x${cols}` },
-        },
-      };
-    },
-  },
   {
     name: "code_block_factory",
     description:
