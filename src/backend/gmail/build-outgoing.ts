@@ -50,6 +50,12 @@ export interface BuiltOutgoing {
   links: AttachLink[];
   /** What the body normaliser repaired/removed on the way through. */
   bodyReport: ComposeReport;
+  /**
+   * Byte length of the composed body (html+text) that went into the MIME, after
+   * any Drive-links section was prepended. The transport uses it to reject an
+   * oversized body — which, unlike an attachment, cannot fall back to a link.
+   */
+  bodyRawBytes: number;
 }
 
 /** Build the base64url `raw` for send/draft, applying sanitize + styling + attachment policy. */
@@ -65,7 +71,7 @@ export async function buildOutgoingRaw(
     { text: o.text, html: o.html, markdown: o.markdown },
     { uuid: o.uuid, prebuilt: o.prebuilt },
   );
-  const bodyRawBytes = new TextEncoder().encode(html + text).length;
+  let bodyRawBytes = new TextEncoder().encode(html + text).length;
   const resolved = await resolveAttachments(env, accountRef, specs, bodyRawBytes);
 
   if (resolved.links.length > 0) {
@@ -74,6 +80,10 @@ export async function buildOutgoingRaw(
     // Inside the native wrapper, so the section inherits the message font.
     html = prependInsideBody(html, linksSectionHtml(resolved.links));
   }
+
+  // Re-measure after the links section is prepended: that text is part of the
+  // body that ships, so it counts toward the oversized-body guard.
+  bodyRawBytes = new TextEncoder().encode(html + text).length;
 
   const raw = buildRawMessage({
     to: o.to,
@@ -88,5 +98,5 @@ export async function buildOutgoingRaw(
     attachments: resolved.attachments,
   });
 
-  return { raw, attachmentReport: resolved.report, links: resolved.links, bodyReport: report };
+  return { raw, attachmentReport: resolved.report, links: resolved.links, bodyReport: report, bodyRawBytes };
 }

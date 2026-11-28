@@ -253,7 +253,20 @@ function makeHandler(): ExportedHandler<Env> {
       }
       if (astroApp) {
         recordUsage(env, ctx, "request");
-        return handle(astroManifest, astroApp, request as any, env as any, ctx as any);
+        const res = await handle(astroManifest, astroApp, request as any, env as any, ctx as any);
+        // Dynamic SSR pages must NEVER be cached by edge CDN unless explicitly opted-in
+        // with a Cache-Control header. If no Cache-Control header exists, default to no-store.
+        if (!res.headers.has("cache-control")) {
+          const headers = new Headers(res.headers);
+          headers.set("cache-control", "private, no-cache, no-store, must-revalidate");
+          headers.set("vary", "Cookie");
+          return new Response(res.body, {
+            status: res.status,
+            statusText: res.statusText,
+            headers,
+          });
+        }
+        return res;
       }
       return env.ASSETS.fetch(request as any);
     },

@@ -19,6 +19,8 @@
  */
 import { z } from "zod";
 
+import { buildDocsHelperSource } from "@/backend/mcp/sandbox-docs-helpers";
+
 import { TOOLS } from "./tools";
 
 export interface CodeModeToolInfo {
@@ -69,6 +71,12 @@ export function apiGuide(): string {
     "- The sandbox has NO network access and NO secrets — only `tools.*` reaches the outside world.",
     "- Errors thrown (including tool errors) are returned as `{ ok:false, error }`.",
     "",
+    "## `docs` helpers (pure, no network, no import needed)",
+    "- `docs.outline(json, { tabId })` → `{ tabs:[{ tabId, endIndex, items:[{ kind, start, end, style, bullet, table, cell:[r,c], text }] }] }` (same as docs_outline); `docs.outlineLines(outline)` → compact lines.",
+    "- `docs.find(json, text, { matchCase, tabId })` → every match `{ tabId, startIndex, endIndex, bold, inSuggestion, table, cell }` (same as docs_find).",
+    "- Empty-table math for a table inserted at `insertAt` (the start of the empty paragraph it goes before): `docs.tableStart(insertAt)` = insertAt+1; `docs.cellIndex(insertAt, R, C, r, c)` = insertAt+4+r(2C+1)+2c; `docs.afterTable(insertAt, R, C)` = insertAt+3+R(2C+1) (the next insertAt); `docs.layoutTables(insertAt, [{ rows, columns }, …])` lays out consecutive tables.",
+    "- Fill cells LAST to FIRST (`docs.fillOrder(cells)`) so earlier indices stay valid; `docs.finalCellStarts(cells, insertedLengths)` gives positions after all fills, for styles in the same batch. `docs.utf16Length(text)` counts UTF-16 units (emoji = 2).",
+    "",
     "## Markdown → Google Docs (two SEPARATE methods)",
     "- `docs_create_from_markdown({ name, markdown })` — Method 1: Drive's native importer turns a WHOLE Markdown string into a NEW doc (high fidelity: tables, lists, links). New doc only.",
     "- `docs_append_markdown({ documentId, markdown })` — Method 2: our own Markdown→batchUpdate mapping APPENDS to an EXISTING doc (headings/bold/italic/code/lists; no tables/images).",
@@ -90,9 +98,12 @@ export function apiGuide(): string {
  * Wrap a user snippet as an ES module whose default fetch handler runs the code
  * with a `tools` proxy (bridged over RPC) and captures the return value + logs.
  * The snippet is embedded as real module source (Workers block eval/new Function).
+ * A frozen, pure `docs` helper object (positions, outline, find) is declared
+ * at the top of the module — see `sandbox-docs-helpers.ts`.
  */
 export function buildHarnessModule(userCode: string): string {
   return `
+${buildDocsHelperSource()}
 function __fmt(v) {
   try { return typeof v === "string" ? v : JSON.stringify(v); } catch { return String(v); }
 }

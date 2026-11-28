@@ -1,0 +1,444 @@
+{
+ "_source": "documents.get of the 2026-10-08 reference resume (doc 1_u5KwmNkHww6WbnvzBJpqwiiPJPZhHTxyP4VXQ3w3qU, jmbish04@gmail.com), read-only, structure only",
+ "tabId": "t.0",
+ "body": [
+  {
+   "p": 1,
+   "end": 2,
+   "text": "\n",
+   "bullet": false
+  },
+  {
+   "table": 2,
+   "end": 153,
+   "rows": 1,
+   "columns": 1,
+   "cells": [
+    [
+     {
+      "start": 4,
+      "end": 152,
+      "content": [
+       {
+        "p": 5,
+        "end": 15,
+        "text": "YOUR NAME\n",
+        "bullet": false
+       },
+       {
+        "p": 15,
+        "end": 36,
+        "text": "Full-Stack Developer\n",
+        "bullet": false
+       },
+       {
+        "p": 36,
+        "end": 152,
+        "text": "San Francisco, CA   \u2022   you@email.com   \u2022   (555) 123-4567   \u2022   linkedin.com/in/yourname   \u2022   github.com/yourname\n",
+        "bullet": false
+       }
+      ]
+     }
+    ]
+   ]
+  },
+  {
+   "p": 153,
+   "end": 154,
+   "text": "\n",
+   "bullet": false
+  },
+  {
+   "table": 154,
+   "end": 273,
+   "rows": 1,
+   "columns": 3,
+   "cells": [
+    [
+     {
+      "start": 156,
+      "end": 203,
+      "content": [
+       {
+        "p": 157,
+        "end": 161,
+        "text": "40%\n",
+        "bullet": false
+       },
+       {
+        "p": 161,
+        "end": 203,
+        "text": "faster page loads after moving to Next.js\n",
+        "bullet": false
+       }
+      ]
+     },
+     {
+      "start": 203,
+      "end": 236,
+      "content": [
+       {
+        "p": 204,
+        "end": 208,
+        "text": "2M+\n",
+        "bullet": false
+       },
+       {
+        "p": 208,
+        "end": 236,
+        "text": "API requests served per day\n",
+        "bullet": false
+       }
+      ]
+     },
+     {
+      "start": 236,
+      "end": 272,
+      "content": [
+       {
+        "p": 237,
+        "end": 239,
+        "text": "8\n",
+        "bullet": false
+       },
+       {
+        "p": 239,
+        "end": 272,
+        "text": "engineers onboarded and mentored\n",
+        "bullet": false
+       }
+      ]
+     }
+    ]
+   ]
+  },
+  {
+   "p": 273,
+   "end": 274,
+   "text": "\n",
+   "bullet": false
+  },
+  {
+   "table": 274,
+   "end": 2386,
+   "rows": 1,
+   "columns": 2,
+   "cells": [
+    [
+     {
+      "start": 276,
+      "end": 769,
+      "content": [
+       {
+        "p": 277,
+        "end": 284,
+        "text": "SKILLS\n",
+        "bullet": false
+       },
+       {
+        "p": 284,
+        "end": 303,
+        "text": "TypeScript & React\n",
+        "bullet": false
+       },
+       {
+        "p": 303,
+        "end": 314,
+        "text": "\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\n",
+        "bullet": false
+       },
+       {
+        "p": 314,
+        "end": 332,
+        "text": "Node.js & Express\n",
+        "bullet": false
+       },
+       {
+        "p": 332,
+        "end": 343,
+        "text": "\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\n",
+        "bullet": false
+       },
+       {
+        "p": 343,
+        "end": 362,
+        "text": "PostgreSQL & Redis\n",
+        "bullet": false
+       },
+       {
+        "p": 362,
+        "end": 373,
+        "text": "\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\n",
+        "bullet": false
+       },
+       {
+        "p": 373,
+        "end": 387,
+        "text": "System Design\n",
+        "bullet": false
+       },
+       {
+        "p": 387,
+        "end": 398,
+        "text": "\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\n",
+        "bullet": false
+       },
+       {
+        "p": 398,
+        "end": 415,
+        "text": "Python & FastAPI\n",
+        "bullet": false
+       },
+       {
+        "p": 415,
+        "end": 426,
+        "text": "\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\n",
+        "bullet": false
+       },
+       {
+        "p": 426,
+        "end": 439,
+        "text": "AWS & Docker\n",
+        "bullet": false
+       },
+       {
+        "p": 439,
+        "end": 450,
+        "text": "\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\u25a0\n",
+        "bullet": false
+       },
+       {
+        "p": 450,
+        "end": 461,
+        "text": "TECH STACK\n",
+        "bullet": false
+       },
+       {
+        "p": 461,
+        "end": 571,
+        "text": " Next.js    GraphQL    Tailwind    Prisma    Jest    Playwright    Kubernetes    Terraform    GitHub Actions \n",
+        "bullet": false
+       },
+       {
+        "p": 571,
+        "end": 581,
+        "text": "EDUCATION\n",
+        "bullet": false
+       },
+       {
+        "p": 581,
+        "end": 603,
+        "text": "B.S. Computer Science\n",
+        "bullet": false
+       },
+       {
+        "p": 603,
+        "end": 619,
+        "text": "University Name\n",
+        "bullet": false
+       },
+       {
+        "p": 619,
+        "end": 631,
+        "text": "2013 \u2013 2017\n",
+        "bullet": false
+       },
+       {
+        "p": 631,
+        "end": 646,
+        "text": "CERTIFICATIONS\n",
+        "bullet": false
+       },
+       {
+        "p": 646,
+        "end": 670,
+        "text": "AWS Certified Developer\n",
+        "bullet": false
+       },
+       {
+        "p": 670,
+        "end": 686,
+        "text": "Associate, 2023\n",
+        "bullet": false
+       },
+       {
+        "p": 686,
+        "end": 714,
+        "text": "Kubernetes Developer (CKAD)\n",
+        "bullet": false
+       },
+       {
+        "p": 714,
+        "end": 719,
+        "text": "2022\n",
+        "bullet": false
+       },
+       {
+        "p": 719,
+        "end": 729,
+        "text": "LANGUAGES\n",
+        "bullet": false
+       },
+       {
+        "p": 729,
+        "end": 745,
+        "text": "English  native\n",
+        "bullet": false
+       },
+       {
+        "p": 745,
+        "end": 769,
+        "text": "Spanish  conversational\n",
+        "bullet": false
+       }
+      ]
+     },
+     {
+      "start": 769,
+      "end": 2385,
+      "content": [
+       {
+        "p": 770,
+        "end": 778,
+        "text": "PROFILE\n",
+        "bullet": false
+       },
+       {
+        "p": 778,
+        "end": 1035,
+        "text": "Full-stack developer with 8+ years of experience building web products from the database schema to the finished UI. I work mostly in TypeScript, React and Node.js on AWS, and I focus on fast pages, clear APIs and code the next engineer can pick up quickly.\n",
+        "bullet": false
+       },
+       {
+        "p": 1035,
+        "end": 1046,
+        "text": "EXPERIENCE\n",
+        "bullet": false
+       },
+       {
+        "p": 1046,
+        "end": 1073,
+        "text": "Senior Full-Stack Engineer\n",
+        "bullet": false
+       },
+       {
+        "p": 1073,
+        "end": 1131,
+        "text": "Company Name   |   San Francisco, CA   |   2022 \u2013 Present\n",
+        "bullet": false
+       },
+       {
+        "p": 1131,
+        "end": 1249,
+        "text": "Led the migration of the customer dashboard from a legacy SPA to Next.js, cutting median page load from 3.1s to 1.8s.\n",
+        "bullet": true
+       },
+       {
+        "p": 1249,
+        "end": 1357,
+        "text": "Designed a GraphQL gateway over 14 internal services that now serves 2M+ requests per day at 99.95% uptime.\n",
+        "bullet": true
+       },
+       {
+        "p": 1357,
+        "end": 1456,
+        "text": "Added preview environments to every pull request, so QA review went from two days to the same day.\n",
+        "bullet": true
+       },
+       {
+        "p": 1456,
+        "end": 1477,
+        "text": "Full-Stack Developer\n",
+        "bullet": false
+       },
+       {
+        "p": 1477,
+        "end": 1521,
+        "text": "Company Name   |   Remote   |   2019 \u2013 2022\n",
+        "bullet": false
+       },
+       {
+        "p": 1521,
+        "end": 1627,
+        "text": "Built a billing and invoicing module in Node.js and PostgreSQL that processes $4M in payments each month.\n",
+        "bullet": true
+       },
+       {
+        "p": 1627,
+        "end": 1743,
+        "text": "Replaced a nightly batch job with an event-driven pipeline on AWS Lambda and SQS, so reports update within minutes.\n",
+        "bullet": true
+       },
+       {
+        "p": 1743,
+        "end": 1835,
+        "text": "Mentored 8 junior engineers through code review, pairing and a weekly frontend study group.\n",
+        "bullet": true
+       },
+       {
+        "p": 1835,
+        "end": 1853,
+        "text": "Software Engineer\n",
+        "bullet": false
+       },
+       {
+        "p": 1853,
+        "end": 1902,
+        "text": "Company Name   |   Oakland, CA   |   2017 \u2013 2019\n",
+        "bullet": false
+       },
+       {
+        "p": 1902,
+        "end": 2009,
+        "text": "Shipped the first React Native release of the mobile app, which reached 50k installs in its first quarter.\n",
+        "bullet": true
+       },
+       {
+        "p": 2009,
+        "end": 2086,
+        "text": "Wrote the Playwright end-to-end suite that runs before every weekly release.\n",
+        "bullet": true
+       },
+       {
+        "p": 2086,
+        "end": 2104,
+        "text": "SELECTED PROJECTS\n",
+        "bullet": false
+       },
+       {
+        "p": 2104,
+        "end": 2145,
+        "text": "API Starter CLI   TypeScript  \u00b7  Node.js\n",
+        "bullet": false
+       },
+       {
+        "p": 2145,
+        "end": 2254,
+        "text": "An open-source tool that scaffolds API services with auth, logging and tests built in. 1.2k stars on GitHub.\n",
+        "bullet": false
+       },
+       {
+        "p": 2254,
+        "end": 2305,
+        "text": "Live Whiteboard   Next.js  \u00b7  WebSockets  \u00b7  Redis\n",
+        "bullet": false
+       },
+       {
+        "p": 2305,
+        "end": 2385,
+        "text": "A shared whiteboard with live cursors and presence for up to 50 users per room.\n",
+        "bullet": false
+       }
+      ]
+     }
+    ]
+   ]
+  },
+  {
+   "p": 2386,
+   "end": 2387,
+   "text": "\n",
+   "bullet": false
+  }
+ ]
+}

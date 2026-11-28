@@ -82,9 +82,38 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   (margins fail without it) and names only the set fields (never `"*"`).
   `asUser`/`acct` live in `mcp/tool-common.ts` so spread-in tool modules avoid a
   circular value import of `tools.ts`.
+  Positions: `docs_outline` (elements with range/style/bullet/table+cell/preview,
+  per-tab endIndex, `format:"lines"`) and `docs_find` (all matches, bold true|false|
+  "mixed", `inSuggestion`, never across a non-text element or cell). All pure index
+  code lives in ONE module, `docs/index-core.ts` (`positions.ts`/`outline.ts`/`find.ts`
+  and `locate.ts#flattenTabs|foldCase` re-export it): `code_mode_run` gets it as the
+  frozen `docs` object by SOURCE TEXT (`mcp/sandbox-docs-helpers.ts`), so every function
+  there must be a top-level `function` using only its params + same-file functions + inline
+  anonymous callbacks (a cross-module call compiles to `__vite_ssr_import_0__.x`, which
+  the sandbox lacks; a guard test enforces this). Table formulas were measured live:
+  table at `i` starts `i+1`, empty cell (r,c) para `i+4+r(2C+1)+2c`, next insertAt
+  `i+3+R(2C+1)`. `docs/__fixtures__/reference-resume.structure.json` is the real
+  2026-10-08 reference resume structure (final positions) used by tests.
+  Layout spec → batch: `docs_build_from_spec` (`mcp/docs-spec-tools.ts`) validates
+  `docs/spec/schema.ts` (theme tokens + `styles` presets, checked with Zod paths), compiles
+  with `docs/spec/compile.ts` (forward structure inserts → cell fills LAST to FIRST →
+  bullets → styles at FINAL positions, identical ranges merged), sends ONE batch pinned to
+  the read revision, re-reads and (insert mode) checks the text before/after is unchanged.
+  Text before a table omits its last newline (the table's own newline ends it); only a table
+  first/after a table/after a page break gets an empty gap paragraph. Every text/paragraph
+  style names ALL managed fields, so inserts never inherit heading/bullet/link style.
+  Google refuses `pageBreakBefore` on table-cell paragraphs — `requests.ts` leaves it out
+  there. The golden resume spec (`docs/spec/golden/resume.ts`) compiles to 181 requests
+  whose layout equals the reference exactly. `table_factory` = `docs/table-spec.ts` spec +
+  same compiler, appended at the tab end in 1 batch (old `table-format.ts` kept for tests).
 - **Dev Worker**: `pnpm run deploy:dev` → `google-workspace-mcp-dev` (`env.dev` in
   `wrangler.jsonc`, dev-only D1/KV/R2, no crons, no Hyperdrive/Vectorize, SELF_RPC →
   dev). Check with `pnpm run deploy:dev:dry-run` first. Never deploy prod from an agent.
+  Google OAuth for dev: `pnpm run oauth:dev-setup` (`scripts/setup-dev-oauth.mjs`) checks
+  both client files (gcloud project/APIs, live token + redirect probes), then
+  `wrangler secret bulk --env dev` sets GOOGLE_CLIENT_ID/SECRET + the per-account pair.
+  It refuses any non-`-dev` Worker. Normal web clients have no redirect-URI API: the
+  script opens the Console page and re-checks.
 - **Formatting-safe edits**: `docs_edit_text` (one occurrence; `insertText` inside the
   match + `deleteContentRange`, no style requests; mixed-style match →
   `{ok:false,mixedStyles:true,runs}`; non-text-element match →
@@ -136,6 +165,17 @@ the client tool-catalog under ~1k tokens. Only two tools are advertised; the ful
   mimeType}` | `{driveFileId, as:"link"}`, `outgoing-attachments.ts`), cumulative
   encoded 25 MiB budget, per-item Drive-link overflow + per-attachment report.
   MIME in `mime.ts`; orchestration in `build-outgoing.ts`.
+- **Gmail verification harness** (`backend/gmail/harness/`, route
+  `POST /api/gmail-harness/run`, agent-auth): proves the DEPLOYED worker, not the
+  suite. Creates a real draft via `GmailService.createDraft` from a known markdown
+  body (+ inline `cid:` image + file), reads it back from Gmail, checks the stored
+  html/text/headers/parts against the standard (`checks.ts`), round-trips
+  `getDraft`→`updateDraft`, deletes it. Each check has a severity; failed
+  critical/major → `verdict:"fail"` + HTTP 503; any skipped → `incomplete`, never
+  `pass`. `{"plant":"<name>"}` (`plant.ts`) injects a known regression into the
+  checked COPY to prove a check can go red live. Run it after every deploy that
+  touches `gmail/`. Draft-edit/attachment/transport contract:
+  `docs/gmail-draft-attachment-transport-contract.md`.
 - **Draft studio** (`backend/gmail/draft-studio.ts`, tables `email_drafts` /
   `email_draft_revisions` / `email_draft_comments`, page `/gws/draft-studio`): an email
   revised on the worker instead of in Gmail, for when it will take several rounds.

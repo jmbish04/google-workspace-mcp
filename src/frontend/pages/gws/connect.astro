@@ -7,31 +7,29 @@
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { Badge } from "@/components/ui/badge";
 import { ConnectPanel } from "@/components/gws/ConnectPanel";
+import { readCookie, verifySessionCookie } from "@/backend/lib/cookies";
+
+// Explicitly forbid any edge or browser caching on this authenticated page
+Astro.response.headers.set("Cache-Control", "private, no-cache, no-store, must-revalidate");
+Astro.response.headers.set("Pragma", "no-cache");
+Astro.response.headers.set("Expires", "0");
+Astro.response.headers.set("Vary", "Cookie");
 
 const BASE = Astro.url.origin;
+const env = (Astro.locals as any)?.runtime?.env;
 
-function readCookie(raw: string | null, name: string): string | null {
-  if (!raw) return null;
-  const prefix = `${name}=`;
-  const hit = raw.split(";").map((s) => s.trim()).find((s) => s.startsWith(prefix));
-  return hit ? hit.slice(prefix.length) : null;
-}
-
-function decodePayload(token: string): { email?: string; sub?: string; exp?: number } | null {
+const cookie = readCookie(Astro.request.headers.get("cookie"), "cr_session");
+// Verify cryptographic signature against SESSIONS KV; never trust unverified cookies
+let payload = null;
+if (env && cookie) {
   try {
-    const enc = token.split(".")[0];
-    const json = new TextDecoder().decode(
-      Uint8Array.from(atob(enc.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
-    );
-    return JSON.parse(json);
+    payload = await verifySessionCookie(env, Astro.request.headers.get("cookie"));
   } catch {
-    return null;
+    payload = null;
   }
 }
 
-const cookie = readCookie(Astro.request.headers.get("cookie"), "cr_session");
-const payload = cookie ? decodePayload(cookie) : null;
-const token = payload?.sub ? cookie : null; // only treat as valid if it decodes to a sub
+const token = payload?.sub ? cookie : null; // only treat as valid if signature is verified
 const expiresAt = payload?.exp ? new Date(payload.exp * 1000).toLocaleDateString() : undefined;
 ---
 

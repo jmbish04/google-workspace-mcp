@@ -13,13 +13,16 @@ import { DriveService } from "@/backend/mcp/services/drive";
 import type { GmailService } from "@/backend/mcp/services/gmail";
 import { OFFICE_TO_GOOGLE, exportGoogleAsMarkdown } from "@/backend/drive/office-markdown";
 
-import { keepableAttachments } from "./attachments";
+import { keepableAttachments, type AttachmentPart } from "./attachments";
 import { decodeAttachment, hashBytes } from "./attachment-store";
+import { extractDirectText } from "./attachment-text";
 import { ocrAttachment } from "./ocr-service";
 import { resolveThreadFolder } from "./threads-folder";
 
 /** The attachment object returned to the agent alongside email content. */
 export interface DriveAttachment {
+  /** gws.gmail_attachments.id when the registry knows this attachment: use it to attach notes. */
+  id?: number;
   filename: string;
   driveId: string;
   driveUrl: string | null;
@@ -64,12 +67,21 @@ export interface UploadOpts {
   /** Pre-resolved destination folder id (used to reuse one folder across a thread). */
   folderId?: string;
   gmail: GmailService;
+  /**
+   * Registry of attachments already uploaded. A hit skips the download, upload
+   * and OCR, and does not use the per-call upload cap. `put` runs after each new
+   * upload so the next call is a hit.
+   */
+  cache?: {
+    get(part: AttachmentPart): DriveAttachment | undefined;
+    put(part: AttachmentPart, uploaded: DriveAttachment): Promise<void>;
+  };
 }
 
 /**
  * Upload a message's kept attachments to Drive and return their objects.
- * Returns `{ folderId, attachments }`; `folderId` is null when the message had
- * no keepable attachments (no folder was resolved/created).
+ * Returns `{ folderId, attachments }`; `folderId` is null when nothing needed a
+ * folder (no keepable attachments, or every one was already in `opts.cache`).
  */
 export async function uploadMessageAttachments(
   env: Env,
@@ -77,14 +89,23 @@ export async function uploadMessageAttachments(
   accountKey: string,
   opts: UploadOpts,
 ): Promise<{ folderId: string | null; attachments: DriveAttachment[] }> {
-  const parts = keepableAttachments(opts.payload).slice(0, MAX_ATTACHMENTS_PER_CALL);
+  const parts = keepableAttachments(opts.payload);
   if (!parts.length) return { folderId: null, attachments: [] };
 
-  const folderId = opts.folderId ?? (await resolveThreadFolder(env, ref, accountKey, opts.subject, opts.parentId));
+  // Resolved on the first real upload, so a fully-cached message costs no Drive call.
+  let folderId: string | null = opts.folderId ?? null;
   const drive = new DriveService(env, ref);
   const attachments: DriveAttachment[] = [];
+  let uploads = 0;
 
   for (const part of parts) {
+    const hit = opts.cache?.get(part);
+    if (hit) {
+      attachments.push(hit);
+      continue;
+    }
+    if (uploads++ >= MAX_ATTACHMENTS_PER_CALL) break;
+    folderId ??= await resolveThreadFolder(env, ref, accountKey, opts.subject, opts.parentId);
     const bytes = decodeAttachment((await opts.gmail.getAttachment(opts.messageId, part.attachmentId)).data);
     const name = safeName(part.filename || part.attachmentId);
     const [sha256, file] = await Promise.all([
@@ -105,20 +126,23 @@ export async function uploadMessageAttachments(
         googleMimeType = converted.mimeType;
         docText = await exportGoogleAsMarkdown(drive, converted.id, office.kind);
       } else {
-        // ocrAttachment dedups by MD5 against previously OCR'd bytes.
+        // csv/txt/json decoded as UTF-8 and forwarded .eml re-parsed in-worker;
+        // everything else goes to OCR, which dedups by MD5 against prior bytes.
         docText =
+          extractDirectText(bytes, part.mimeType, part.filename) ??
           (await ocrAttachment(env, {
             bytes,
             mimeType: part.mimeType,
             hash: hashBytes(bytes),
             filename: part.filename || undefined,
-          })) ?? "";
+          })) ??
+          "";
       }
     } catch (err) {
       console.error(`[attachment-drive] text extract ${part.filename}:`, err instanceof Error ? err.message : err);
     }
 
-    attachments.push({
+    const uploaded: DriveAttachment = {
       filename: part.filename || name,
       driveId: file.id,
       driveUrl: file.webViewLink ?? null,
@@ -127,7 +151,9 @@ export async function uploadMessageAttachments(
       sha256_hash: sha256,
       doc_text: docText,
       ...(googleDriveId ? { googleDriveId, googleMimeType } : {}),
-    });
+    };
+    await opts.cache?.put(part, uploaded);
+    attachments.push(uploaded);
   }
 
   return { folderId, attachments };

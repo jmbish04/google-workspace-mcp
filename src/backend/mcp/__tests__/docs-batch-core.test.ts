@@ -191,3 +191,52 @@ describe("docs_set_page_setup (A3)", () => {
     await expect(tool("docs_set_page_setup").run(ctx, args)).rejects.toThrow(/Tab not found: t\.9/);
   });
 });
+
+describe("docs_outline and docs_find tools (B1, B2)", () => {
+  const textDoc = {
+    ...rawDoc,
+    tabs: [
+      {
+        ...rawDoc.tabs[0],
+        documentTab: {
+          ...rawDoc.tabs[0].documentTab,
+          body: {
+            content: [
+              { endIndex: 1, sectionBreak: {} },
+              {
+                startIndex: 1,
+                endIndex: 12,
+                paragraph: {
+                  elements: [{ startIndex: 1, endIndex: 12, textRun: { content: "Hello again\n", textStyle: { bold: true } } }],
+                  paragraphStyle: { namedStyleType: "HEADING_2" },
+                },
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  beforeEach(() => {
+    fetchSpy.mockImplementation(async () => new Response(JSON.stringify(textDoc), { status: 200 }));
+  });
+
+  it("docs_outline leads with the summary and lists items per tab", async () => {
+    const { result } = (await tool("docs_outline").run(ctx, { documentId: "doc1" })) as { result: any };
+    expect(result.summary.revisionId).toBe("rev-1");
+    expect(result.tabs[0].items[1]).toMatchObject({ kind: "paragraph", start: 1, end: 12, style: "HEADING_2", text: "Hello again" });
+    expect(result.tabs[0].endIndex).toBe(12);
+  });
+
+  it("docs_outline format:lines returns compact lines", async () => {
+    const { result } = (await tool("docs_outline").run(ctx, { documentId: "doc1", format: "lines", tabId: "t.0" })) as { result: any };
+    expect(result.lines).toEqual(['# tab t.0 "Main"', 'P 1-12 HEADING_2 "Hello again"', "END t.0 12"]);
+  });
+
+  it("docs_find returns every match with its range and flags", async () => {
+    const { result } = (await tool("docs_find").run(ctx, { documentId: "doc1", text: "a" })) as { result: any };
+    expect(result.count).toBe(2);
+    expect(result.matches[0]).toMatchObject({ tabId: "t.0", startIndex: 7, endIndex: 8, bold: true, inSuggestion: false });
+    expect(result.summary.revisionId).toBe("rev-1");
+  });
+});
